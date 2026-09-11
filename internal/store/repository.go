@@ -1,0 +1,54 @@
+package store
+
+import (
+	"errors"
+
+	"webmonitoring/internal/domain"
+)
+
+var (
+	ErrNotFound = errors.New("resource not found")
+	ErrConflict = errors.New("resource conflicts with existing state")
+)
+
+type Repository interface {
+	CreateUser(domain.User) error
+	FindUserByUsername(tenantID, username string) (domain.User, error)
+	GetUser(tenantID, id string) (domain.User, error)
+
+	CreateAsset(domain.Asset) error
+	UpdateAsset(domain.Asset) error
+	GetAsset(tenantID, id string) (domain.Asset, error)
+	ListAssets(tenantID string) []domain.Asset
+
+	UpsertPolicy(domain.MonitorPolicy) error
+	GetPolicy(tenantID, assetID string) (domain.MonitorPolicy, error)
+	ListPolicies(tenantID string) []domain.MonitorPolicy
+
+	CreateBaseline(domain.BaselineVersion) error
+	UpdateBaseline(domain.BaselineVersion) error
+	GetBaseline(tenantID, id string) (domain.BaselineVersion, error)
+	GetApprovedBaseline(tenantID, assetID string) (domain.BaselineVersion, error)
+	ListBaselines(tenantID, assetID string) []domain.BaselineVersion
+
+	CreateJob(domain.DetectionJob) error
+	UpdateJob(domain.DetectionJob) error
+	GetJob(tenantID, id string) (domain.DetectionJob, error)
+	ListJobs(tenantID string) []domain.DetectionJob
+
+	CreateEvidence(domain.Evidence) error
+	GetEvidence(tenantID, id string) (domain.Evidence, error)
+	ListEvidence(tenantID, assetID string) []domain.Evidence
+
+	UpsertIncident(domain.Incident) (domain.Incident, bool, error)
+	UpdateIncident(domain.Incident) error
+	GetIncident(tenantID, id string) (domain.Incident, error)
+	ListIncidents(tenantID string) []domain.Incident
+
+	CreateAlertChannel(domain.AlertChannel) error
+	ListAlertChannels(tenantID string) []domain.AlertChannel
+	ListAlertChannelsWithSecrets(tenantID string) []domain.AlertChannel
+
+	AppendAudit(domain.AuditEvent) error
+	ListAudits(tenantID string) []domain.AuditEvent
+}

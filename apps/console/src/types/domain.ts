@@ -1,0 +1,31 @@
+import type { components } from "./generated/api";
+
+export type Role = components["schemas"]["Role"];
+export type AssetType = components["schemas"]["AssetType"];
+export type VerificationStatus = components["schemas"]["VerificationStatus"];
+export type Severity = components["schemas"]["Severity"];
+export type IncidentStatus = components["schemas"]["IncidentStatus"];
+export type User = components["schemas"]["User"];
+export type Session = components["schemas"]["Session"];
+export type Asset = components["schemas"]["Asset"];
+export type Incident = components["schemas"]["Incident"];
+export type Baseline = components["schemas"]["Baseline"];
+export type DetectionJob = components["schemas"]["DetectionJob"];
+export type Policy = components["schemas"]["Policy"];
+export type Evidence = components["schemas"]["Evidence"];
+export type AlertChannel = components["schemas"]["AlertChannel"];
+export type CreateAlertChannel = components["schemas"]["CreateAlertChannel"];
+export type AuditEvent = components["schemas"]["AuditEvent"];
+
+export type Dashboard = {
+  assets: number;
+  verifiedAssets: number;
+  openIncidents: number;
+  criticalIncidents: number;
+  failedJobs: number;
+};
+
+export type ListResponse<T> = {
+  items: T[];
+  nextCursor: string;
+};

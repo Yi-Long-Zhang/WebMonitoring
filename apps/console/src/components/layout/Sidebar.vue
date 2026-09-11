@@ -1,0 +1,55 @@
+<script setup lang="ts">
+import {
+  Aim,
+  Bell,
+  Checked,
+  Collection,
+  House,
+  List,
+  Monitor,
+  SwitchButton,
+  WarningFilled,
+} from "@element-plus/icons-vue";
+import type { View } from "../../types/views";
+
+defineProps<{
+  activeView: View;
+  username: string;
+  roleLabel: string;
+  candidateCount: number;
+  openIncidentCount: number;
+}>();
+
+const emit = defineEmits<{
+  navigate: [view: View];
+  signOut: [];
+}>();
+</script>
+
+<template>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark small">WM</div>
+      <div><strong>WebMonitoring</strong><span>Integrity Control</span></div>
+    </div>
+    <div class="sidebar-caption">运营工作台</div>
+    <nav class="nav-list">
+      <button :class="{ active: activeView === 'overview' }" @click="emit('navigate', 'overview')"><el-icon class="nav-icon"><House /></el-icon> 总览</button>
+      <button :class="{ active: activeView === 'assets' }" @click="emit('navigate', 'assets')"><el-icon class="nav-icon"><Monitor /></el-icon> 资产中心</button>
+      <button :class="{ active: activeView === 'baselines' }" @click="emit('navigate', 'baselines')"><el-icon class="nav-icon"><Checked /></el-icon> 基线审批<span v-if="candidateCount" class="nav-count">{{ candidateCount }}</span></button>
+      <button :class="{ active: activeView === 'incidents' }" @click="emit('navigate', 'incidents')"><el-icon class="nav-icon"><WarningFilled /></el-icon> 事件中心<span v-if="openIncidentCount" class="nav-count alert">{{ openIncidentCount }}</span></button>
+      <button :class="{ active: activeView === 'jobs' }" @click="emit('navigate', 'jobs')"><el-icon class="nav-icon"><Aim /></el-icon> 检测任务</button>
+      <button :class="{ active: activeView === 'evidence' }" @click="emit('navigate', 'evidence')"><el-icon class="nav-icon"><Collection /></el-icon> 证据中心</button>
+      <button :class="{ active: activeView === 'channels' }" @click="emit('navigate', 'channels')"><el-icon class="nav-icon"><Bell /></el-icon> 告警渠道</button>
+      <button :class="{ active: activeView === 'audits' }" @click="emit('navigate', 'audits')"><el-icon class="nav-icon"><List /></el-icon> 审计日志</button>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="status-dot"><span /> 检测服务运行中</div>
+      <div class="user-chip">
+        <span class="avatar">{{ username.slice(0, 1).toUpperCase() }}</span>
+        <span><strong>{{ username }}</strong><small>{{ roleLabel }}</small></span>
+        <button title="退出登录" aria-label="退出登录" @click="emit('signOut')"><el-icon><SwitchButton /></el-icon></button>
+      </div>
+    </div>
+  </aside>
+</template>

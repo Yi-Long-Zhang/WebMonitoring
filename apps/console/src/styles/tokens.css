@@ -1,0 +1,13 @@
+:root {
+  font-family: Inter, "Microsoft YaHei", "PingFang SC", sans-serif;
+  color: #172b4d;
+  background: #f5f7fa;
+  font-synthesis: none;
+  --navy: #10233f;
+  --ink: #172b4d;
+  --muted: #758399;
+  --line: #e4e9f0;
+  --teal: #0f8b8d;
+  --red: #c94b5c;
+  --panel: #ffffff;
+}

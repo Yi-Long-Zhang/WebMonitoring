@@ -1,0 +1,16 @@
+DROP TABLE IF EXISTS audit_events;
+DROP TABLE IF EXISTS alert_channels;
+DROP TABLE IF EXISTS incidents;
+DROP TABLE IF EXISTS evidence;
+DROP TABLE IF EXISTS detection_jobs;
+DROP TABLE IF EXISTS baseline_versions;
+DROP TABLE IF EXISTS monitor_policies;
+DROP TABLE IF EXISTS assets;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS tenants;
+DROP TYPE IF EXISTS severity;
+DROP TYPE IF EXISTS incident_status;
+DROP TYPE IF EXISTS job_status;
+DROP TYPE IF EXISTS baseline_status;
+DROP TYPE IF EXISTS verification_status;
+DROP TYPE IF EXISTS user_role;

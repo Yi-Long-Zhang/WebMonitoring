@@ -1,0 +1,14 @@
+{
+  "name": "webmonitoring",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "dev:console": "pnpm --filter @webmonitoring/console dev",
+    "dev:browser-worker": "pnpm --filter @webmonitoring/browser-worker dev",
+    "generate:api": "pnpm --filter @webmonitoring/console generate:api",
+    "build": "pnpm --filter @webmonitoring/console --filter @webmonitoring/browser-worker build",
+    "typecheck": "pnpm --filter @webmonitoring/console --filter @webmonitoring/browser-worker typecheck",
+    "lint": "pnpm --filter @webmonitoring/console lint",
+    "test": "pnpm --filter @webmonitoring/console --filter @webmonitoring/browser-worker test"
+  }
+}

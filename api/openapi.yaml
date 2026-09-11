@@ -1,0 +1,618 @@
+openapi: 3.1.0
+info:
+  title: WebMonitoring API
+  version: 0.1.0
+  description: 网页篡改监测与安全事件处置平台控制面 API。
+servers:
+  - url: /api/v1
+security:
+  - sessionCookie: []
+paths:
+  /auth/session:
+    post:
+      security: []
+      operationId: createSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        "201":
+          description: 已登录
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/Error" }
+    get:
+      operationId: getSession
+      responses:
+        "200":
+          description: 当前会话
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteSession
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "204": { description: 已退出 }
+  /dashboard:
+    get:
+      operationId: getDashboard
+      responses:
+        "200":
+          description: 运营总览
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assets, verifiedAssets, openIncidents, criticalIncidents, failedJobs]
+                properties:
+                  assets: { type: integer }
+                  verifiedAssets: { type: integer }
+                  openIncidents: { type: integer }
+                  criticalIncidents: { type: integer }
+                  failedJobs: { type: integer }
+  /assets:
+    get:
+      operationId: listAssets
+      responses:
+        "200":
+          description: 资产列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetList"
+    post:
+      operationId: createAsset
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, url, type]
+              properties:
+                name: { type: string }
+                url: { type: string, format: uri }
+                type: { $ref: "#/components/schemas/AssetType" }
+                ownerId: { type: string, format: uuid }
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Asset" }
+        "400": { $ref: "#/components/responses/Error" }
+  /assets/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    get:
+      operationId: getAsset
+      responses:
+        "200":
+          description: 资产详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Asset" }
+        "404": { $ref: "#/components/responses/Error" }
+    patch:
+      operationId: updateAsset
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                ownerId: { type: string, format: uuid }
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Asset" }
+  /assets/{id}/verification:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    post:
+      operationId: verifyAsset
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [ISSUE, VERIFY]
+      responses:
+        "200": { description: 验证令牌或验证结果 }
+  /policies:
+    get:
+      operationId: listPolicies
+      responses:
+        "200":
+          description: 策略列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PolicyList" }
+  /policies/{assetId}:
+    put:
+      operationId: updatePolicy
+      parameters:
+        - name: assetId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Policy" }
+  /baselines:
+    get:
+      operationId: listBaselines
+      parameters:
+        - name: assetId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 基线列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BaselineList" }
+  /baselines/{id}/approve:
+    post:
+      operationId: approveBaseline
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200":
+          description: 已批准
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Baseline" }
+  /baselines/{id}/reject:
+    post:
+      operationId: rejectBaseline
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200":
+          description: 已拒绝
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Baseline" }
+  /detection-jobs:
+    get:
+      operationId: listDetectionJobs
+      responses:
+        "200":
+          description: 检测任务列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DetectionJobList" }
+    post:
+      operationId: createDetectionJob
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assetId, mode]
+              properties:
+                assetId: { type: string, format: uuid }
+                mode: { type: string, enum: [HTTP, BROWSER] }
+      responses:
+        "202":
+          description: 已进入队列
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DetectionJob" }
+  /incidents:
+    get:
+      operationId: listIncidents
+      responses:
+        "200":
+          description: 事件列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IncidentList" }
+  /incidents/{id}:
+    get:
+      operationId: getIncident
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: 事件详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Incident" }
+  /incidents/{id}/transition:
+    post:
+      operationId: transitionIncident
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: "#/components/schemas/IncidentStatus" }
+                ownerId: { type: string, format: uuid }
+                resolution: { type: string }
+      responses:
+        "200":
+          description: 已流转
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Incident" }
+  /evidence:
+    get:
+      operationId: listEvidence
+      parameters:
+        - name: assetId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 证据列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvidenceList" }
+  /evidence/{id}/download:
+    get:
+      operationId: downloadEvidence
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200": { description: 证据文件 }
+  /alert-channels:
+    get:
+      operationId: listAlertChannels
+      responses:
+        "200":
+          description: 告警渠道列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AlertChannelList" }
+    post:
+      operationId: createAlertChannel
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAlertChannel" }
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AlertChannel" }
+  /audit-events:
+    get:
+      operationId: listAuditEvents
+      responses:
+        "200":
+          description: 审计列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditEventList" }
+  /reports/{incidentId}:
+    get:
+      operationId: downloadIncidentReport
+      parameters:
+        - name: incidentId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: ZIP 证据报告 }
+  /events/stream:
+    get:
+      operationId: streamEvents
+      responses:
+        "200":
+          description: SSE 任务与事件流
+          content:
+            text/event-stream:
+              schema: { type: string }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: webmonitoring_session
+  parameters:
+    ResourceID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: { type: string }
+  responses:
+    Error:
+      description: 请求失败
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      required: [code, message, traceId]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        traceId: { type: string }
+        details: { type: object, additionalProperties: true }
+    Role:
+      type: string
+      enum: [ADMIN, OPERATOR, AUDITOR]
+    User:
+      type: object
+      required: [id, tenantId, username, role, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        tenantId: { type: string, format: uuid }
+        username: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        createdAt: { type: string, format: date-time }
+    Session:
+      type: object
+      required: [user, csrfToken, expiresAt]
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        csrfToken: { type: string }
+        expiresAt: { type: string, format: date-time }
+    AssetType:
+      type: string
+      enum: [OFFICIAL, BUSINESS, LOGIN, OTHER]
+    VerificationStatus:
+      type: string
+      enum: [PENDING, VERIFIED, REJECTED, SUSPENDED]
+    Asset:
+      type: object
+      required: [id, tenantId, name, url, type, enabled, verificationStatus, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        tenantId: { type: string, format: uuid }
+        name: { type: string }
+        url: { type: string, format: uri }
+        type: { $ref: "#/components/schemas/AssetType" }
+        ownerId: { type: string, format: uuid }
+        enabled: { type: boolean }
+        verificationStatus: { $ref: "#/components/schemas/VerificationStatus" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AssetList:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Asset" }
+        nextCursor: { type: string }
+    Severity:
+      type: string
+      enum: [INFO, LOW, MEDIUM, HIGH, CRITICAL]
+    IncidentStatus:
+      type: string
+      enum: [OPEN, ACKNOWLEDGED, INVESTIGATING, RESOLVED, CLOSED, FALSE_POSITIVE]
+    Signal:
+      type: object
+      required: [id, kind, severity, summary, evidenceIds, ruleVersion, fingerprint]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string }
+        severity: { $ref: "#/components/schemas/Severity" }
+        summary: { type: string }
+        before: {}
+        after: {}
+        evidenceIds:
+          type: array
+          items: { type: string, format: uuid }
+        ruleVersion: { type: string }
+        fingerprint: { type: string }
+    Incident:
+      type: object
+      required: [id, assetId, severity, status, title, occurrenceCount, firstSeenAt, lastSeenAt]
+      properties:
+        id: { type: string, format: uuid }
+        assetId: { type: string, format: uuid }
+        severity: { $ref: "#/components/schemas/Severity" }
+        status: { $ref: "#/components/schemas/IncidentStatus" }
+        title: { type: string }
+        occurrenceCount: { type: integer }
+        firstSeenAt: { type: string, format: date-time }
+        lastSeenAt: { type: string, format: date-time }
+        signals:
+          type: array
+          items: { $ref: "#/components/schemas/Signal" }
+        evidenceIds:
+          type: array
+          items: { type: string, format: uuid }
+        resolution: { type: string }
+    IncidentList:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Incident" }
+        nextCursor: { type: string }
+    BaselineStatus:
+      type: string
+      enum: [CANDIDATE, APPROVED, REJECTED, RETIRED]
+    Baseline:
+      type: object
+      required: [id, assetId, version, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        assetId: { type: string, format: uuid }
+        version: { type: integer }
+        status: { $ref: "#/components/schemas/BaselineStatus" }
+        createdAt: { type: string, format: date-time }
+        approvedAt: { type: string, format: date-time }
+    BaselineList:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Baseline" }
+        nextCursor: { type: string }
+    Policy:
+      type: object
+      required: [id, assetId, version, httpIntervalSeconds, browserIntervalSeconds, timeoutSeconds, maxResponseBytes, ignoreSelectors, trustedDomains]
+      properties:
+        id: { type: string, format: uuid }
+        assetId: { type: string, format: uuid }
+        version: { type: integer }
+        httpIntervalSeconds: { type: integer }
+        browserIntervalSeconds: { type: integer }
+        timeoutSeconds: { type: integer }
+        maxResponseBytes: { type: integer, format: int64 }
+        ignoreSelectors:
+          type: array
+          items: { type: string }
+        trustedDomains:
+          type: array
+          items: { type: string }
+        maintenanceWindowStart: { type: string, format: date-time }
+        maintenanceWindowEnd: { type: string, format: date-time }
+    PolicyList:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Policy" }
+        nextCursor: { type: string }
+    DetectionJob:
+      type: object
+      required: [id, assetId, mode, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        assetId: { type: string, format: uuid }
+        mode: { type: string, enum: [HTTP, BROWSER] }
+        status: { type: string }
+        createdAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        errorMessage: { type: string }
+    DetectionJobList:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/DetectionJob" }
+        nextCursor: { type: string }
+    Evidence:
+      type: object
+      required: [id, assetId, jobId, kind, mediaType, size, sha256, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        assetId: { type: string, format: uuid }
+        jobId: { type: string, format: uuid }
+        kind: { type: string }
+        mediaType: { type: string }
+        size: { type: integer, format: int64 }
+        sha256: { type: string }
+        createdAt: { type: string, format: date-time }
+        retainUntil: { type: string, format: date-time }
+    EvidenceList:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Evidence" }
+        nextCursor: { type: string }
+    AlertChannelType:
+      type: string
+      enum: [WEBHOOK, WECHAT_WORK]
+    AlertChannel:
+      type: object
+      required: [id, name, type, url, enabled, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        type: { $ref: "#/components/schemas/AlertChannelType" }
+        url: { type: string }
+        enabled: { type: boolean }
+        createdAt: { type: string, format: date-time }
+    CreateAlertChannel:
+      type: object
+      required: [name, type, url, enabled]
+      properties:
+        name: { type: string }
+        type: { $ref: "#/components/schemas/AlertChannelType" }
+        url: { type: string, format: uri }
+        secret: { type: string, format: password }
+        enabled: { type: boolean }
+    AlertChannelList:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/AlertChannel" }
+        nextCursor: { type: string }
+    AuditEvent:
+      type: object
+      required: [id, actorId, action, resourceType, resourceId, result, traceId, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        actorId: { type: string, format: uuid }
+        action: { type: string }
+        resourceType: { type: string }
+        resourceId: { type: string }
+        result: { type: string }
+        traceId: { type: string }
+        details: { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+    AuditEventList:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEvent" }
+        nextCursor: { type: string }

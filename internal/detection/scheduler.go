@@ -1,0 +1,75 @@
+package detection
+
+import (
+	"context"
+	"log/slog"
+	"time"
+
+	"webmonitoring/internal/domain"
+	"webmonitoring/internal/store"
+)
+
+type Scheduler struct {
+	repository store.Repository
+	service    *Service
+	logger     *slog.Logger
+}
+
+func NewScheduler(repository store.Repository, service *Service, logger *slog.Logger) *Scheduler {
+	return &Scheduler{repository: repository, service: service, logger: logger}
+}
+
+func (s *Scheduler) Run(ctx context.Context, tenantID string) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	s.schedule(tenantID)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.schedule(tenantID)
+		}
+	}
+}
+
+func (s *Scheduler) schedule(tenantID string) {
+	now := time.Now().UTC()
+	jobs := s.repository.ListJobs(tenantID)
+	for _, asset := range s.repository.ListAssets(tenantID) {
+		if !asset.Enabled || asset.VerificationStatus != domain.VerificationVerified {
+			continue
+		}
+		policy, err := s.repository.GetPolicy(tenantID, asset.ID)
+		if err != nil || inMaintenanceWindow(policy, now) {
+			continue
+		}
+		if due(asset.ID, "HTTP", policy.HTTPIntervalSeconds, jobs, now) {
+			if _, err := s.service.Queue(tenantID, asset.ID, "HTTP"); err != nil {
+				s.logger.Warn("schedule HTTP check", "asset_id", asset.ID, "error", err)
+			}
+		}
+		if due(asset.ID, "BROWSER", policy.BrowserIntervalSeconds, jobs, now) {
+			if _, err := s.service.Queue(tenantID, asset.ID, "BROWSER"); err != nil {
+				s.logger.Warn("schedule browser check", "asset_id", asset.ID, "error", err)
+			}
+		}
+	}
+}
+
+func due(assetID, mode string, intervalSeconds int, jobs []domain.DetectionJob, now time.Time) bool {
+	if intervalSeconds <= 0 {
+		return false
+	}
+	var latest time.Time
+	for _, job := range jobs {
+		if job.AssetID == assetID && job.Mode == mode && job.CreatedAt.After(latest) {
+			latest = job.CreatedAt
+		}
+		if job.AssetID == assetID && job.Mode == mode &&
+			(job.Status == domain.JobQueued || job.Status == domain.JobRunning) {
+			return false
+		}
+	}
+	return latest.IsZero() || now.Sub(latest) >= time.Duration(intervalSeconds)*time.Second
+}

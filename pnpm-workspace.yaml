@@ -1,0 +1,6 @@
+packages:
+  - apps/console
+  - apps/browser-worker
+allowBuilds:
+  esbuild: true
+  vue-demi: false

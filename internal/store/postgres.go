@@ -1,0 +1,618 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"webmonitoring/internal/domain"
+	"webmonitoring/internal/security"
+)
+
+type PostgresRepository struct {
+	pool    *pgxpool.Pool
+	secrets *security.SecretCipher
+}
+
+func NewPostgresRepository(ctx context.Context, dsn, alertSecretKey string) (*PostgresRepository, error) {
+	secrets, err := security.NewSecretCipher(alertSecretKey)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("configure postgres: %w", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("connect postgres: %w", err)
+	}
+	return &PostgresRepository{pool: pool, secrets: secrets}, nil
+}
+
+func (p *PostgresRepository) Close() {
+	p.pool.Close()
+}
+
+func (p *PostgresRepository) CreateUser(user domain.User) error {
+	_, err := p.pool.Exec(context.Background(), `
+		INSERT INTO users (id, tenant_id, username, password_hash, role, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		user.ID, user.TenantID, user.Username, user.PasswordHash, user.Role, user.CreatedAt,
+	)
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) FindUserByUsername(tenantID, username string) (domain.User, error) {
+	var user domain.User
+	err := p.pool.QueryRow(context.Background(), `
+		SELECT id, tenant_id, username, password_hash, role, created_at
+		FROM users WHERE tenant_id = $1 AND lower(username) = lower($2)`,
+		tenantID, username,
+	).Scan(&user.ID, &user.TenantID, &user.Username, &user.PasswordHash, &user.Role, &user.CreatedAt)
+	return user, normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) GetUser(tenantID, id string) (domain.User, error) {
+	var user domain.User
+	err := p.pool.QueryRow(context.Background(), `
+		SELECT id, tenant_id, username, password_hash, role, created_at
+		FROM users WHERE tenant_id = $1 AND id = $2`, tenantID, id,
+	).Scan(&user.ID, &user.TenantID, &user.Username, &user.PasswordHash, &user.Role, &user.CreatedAt)
+	return user, normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) CreateAsset(asset domain.Asset) error {
+	_, err := p.pool.Exec(context.Background(), `
+		INSERT INTO assets (
+			id, tenant_id, site_id, name, url, asset_type, owner_id, enabled,
+			verification_status, verification_token, verification_issued_at, created_at, updated_at
+		) VALUES ($1, $2, NULLIF($3, '')::uuid, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), $11, $12, $13)`,
+		asset.ID, asset.TenantID, asset.SiteID, asset.Name, asset.URL, asset.Type, asset.OwnerID,
+		asset.Enabled, asset.VerificationStatus, asset.VerificationToken, asset.VerificationIssuedAt,
+		asset.CreatedAt, asset.UpdatedAt,
+	)
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) UpdateAsset(asset domain.Asset) error {
+	tag, err := p.pool.Exec(context.Background(), `
+		UPDATE assets SET name=$3, owner_id=$4, enabled=$5, verification_status=$6,
+			verification_token=NULLIF($7, ''), verification_issued_at=$8, updated_at=$9
+		WHERE tenant_id=$1 AND id=$2`,
+		asset.TenantID, asset.ID, asset.Name, asset.OwnerID, asset.Enabled,
+		asset.VerificationStatus, asset.VerificationToken, asset.VerificationIssuedAt, asset.UpdatedAt,
+	)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) GetAsset(tenantID, id string) (domain.Asset, error) {
+	row := p.pool.QueryRow(context.Background(), assetSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id)
+	return scanAsset(row)
+}
+
+func (p *PostgresRepository) ListAssets(tenantID string) []domain.Asset {
+	rows, err := p.pool.Query(context.Background(), assetSelect+` WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return []domain.Asset{}
+	}
+	defer rows.Close()
+	result := make([]domain.Asset, 0)
+	for rows.Next() {
+		item, scanErr := scanAsset(rows)
+		if scanErr == nil {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+const assetSelect = `
+	SELECT id, tenant_id, COALESCE(site_id::text, ''), name, url, asset_type, owner_id,
+		enabled, verification_status, COALESCE(verification_token, ''),
+		verification_issued_at, created_at, updated_at FROM assets`
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAsset(row rowScanner) (domain.Asset, error) {
+	var asset domain.Asset
+	err := row.Scan(
+		&asset.ID, &asset.TenantID, &asset.SiteID, &asset.Name, &asset.URL, &asset.Type,
+		&asset.OwnerID, &asset.Enabled, &asset.VerificationStatus, &asset.VerificationToken,
+		&asset.VerificationIssuedAt, &asset.CreatedAt, &asset.UpdatedAt,
+	)
+	return asset, normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) UpsertPolicy(policy domain.MonitorPolicy) error {
+	config, err := json.Marshal(policy)
+	if err != nil {
+		return err
+	}
+	_, err = p.pool.Exec(context.Background(), `
+		INSERT INTO monitor_policies (id, tenant_id, asset_id, version, config, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (tenant_id, asset_id) DO UPDATE
+		SET version=EXCLUDED.version, config=EXCLUDED.config, updated_at=EXCLUDED.updated_at`,
+		policy.ID, policy.TenantID, policy.AssetID, policy.Version, config, policy.CreatedAt, policy.UpdatedAt,
+	)
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) GetPolicy(tenantID, assetID string) (domain.MonitorPolicy, error) {
+	var raw []byte
+	err := p.pool.QueryRow(context.Background(), `
+		SELECT config FROM monitor_policies WHERE tenant_id=$1 AND asset_id=$2`, tenantID, assetID,
+	).Scan(&raw)
+	if err != nil {
+		return domain.MonitorPolicy{}, normalizePostgresError(err)
+	}
+	var policy domain.MonitorPolicy
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return domain.MonitorPolicy{}, err
+	}
+	return policy, nil
+}
+
+func (p *PostgresRepository) ListPolicies(tenantID string) []domain.MonitorPolicy {
+	rows, err := p.pool.Query(context.Background(), `
+		SELECT config FROM monitor_policies WHERE tenant_id=$1 ORDER BY updated_at DESC`, tenantID)
+	if err != nil {
+		return []domain.MonitorPolicy{}
+	}
+	defer rows.Close()
+	result := make([]domain.MonitorPolicy, 0)
+	for rows.Next() {
+		var raw []byte
+		var policy domain.MonitorPolicy
+		if rows.Scan(&raw) == nil && json.Unmarshal(raw, &policy) == nil {
+			result = append(result, policy)
+		}
+	}
+	return result
+}
+
+func (p *PostgresRepository) CreateBaseline(baseline domain.BaselineVersion) error {
+	snapshot, err := json.Marshal(baseline.Snapshot)
+	if err != nil {
+		return err
+	}
+	evidenceIDs, _ := json.Marshal(baseline.EvidenceIDs)
+	_, err = p.pool.Exec(context.Background(), `
+		INSERT INTO baseline_versions (
+			id,tenant_id,asset_id,version,status,snapshot,evidence_ids,created_by,
+			approved_by,created_at,approved_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,'')::uuid,$10,$11)`,
+		baseline.ID, baseline.TenantID, baseline.AssetID, baseline.Version, baseline.Status,
+		snapshot, evidenceIDs, baseline.CreatedBy, baseline.ApprovedBy, baseline.CreatedAt, baseline.ApprovedAt,
+	)
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) UpdateBaseline(baseline domain.BaselineVersion) error {
+	ctx := context.Background()
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if baseline.Status == domain.BaselineApproved {
+		if _, err := tx.Exec(ctx, `
+			UPDATE baseline_versions SET status='RETIRED'
+			WHERE tenant_id=$1 AND asset_id=$2 AND id<>$3 AND status='APPROVED'`,
+			baseline.TenantID, baseline.AssetID, baseline.ID); err != nil {
+			return err
+		}
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE baseline_versions SET status=$3, approved_by=NULLIF($4,'')::uuid, approved_at=$5
+		WHERE tenant_id=$1 AND id=$2`,
+		baseline.TenantID, baseline.ID, baseline.Status, baseline.ApprovedBy, baseline.ApprovedAt,
+	)
+	if err != nil {
+		return normalizePostgresError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit(ctx)
+}
+
+func (p *PostgresRepository) GetBaseline(tenantID, id string) (domain.BaselineVersion, error) {
+	return scanBaseline(p.pool.QueryRow(context.Background(), baselineSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
+}
+
+func (p *PostgresRepository) GetApprovedBaseline(tenantID, assetID string) (domain.BaselineVersion, error) {
+	return scanBaseline(p.pool.QueryRow(context.Background(), baselineSelect+`
+		WHERE tenant_id=$1 AND asset_id=$2 AND status='APPROVED' ORDER BY version DESC LIMIT 1`,
+		tenantID, assetID))
+}
+
+func (p *PostgresRepository) ListBaselines(tenantID, assetID string) []domain.BaselineVersion {
+	query := baselineSelect + ` WHERE tenant_id=$1`
+	args := []any{tenantID}
+	if assetID != "" {
+		query += ` AND asset_id=$2`
+		args = append(args, assetID)
+	}
+	query += ` ORDER BY created_at DESC`
+	rows, err := p.pool.Query(context.Background(), query, args...)
+	if err != nil {
+		return []domain.BaselineVersion{}
+	}
+	defer rows.Close()
+	result := make([]domain.BaselineVersion, 0)
+	for rows.Next() {
+		item, scanErr := scanBaseline(rows)
+		if scanErr == nil {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+const baselineSelect = `
+	SELECT id,tenant_id,asset_id,version,status,snapshot,evidence_ids,created_by,
+		COALESCE(approved_by::text,''),created_at,approved_at FROM baseline_versions`
+
+func scanBaseline(row rowScanner) (domain.BaselineVersion, error) {
+	var baseline domain.BaselineVersion
+	var snapshot, evidenceIDs []byte
+	err := row.Scan(
+		&baseline.ID, &baseline.TenantID, &baseline.AssetID, &baseline.Version, &baseline.Status,
+		&snapshot, &evidenceIDs, &baseline.CreatedBy, &baseline.ApprovedBy,
+		&baseline.CreatedAt, &baseline.ApprovedAt,
+	)
+	if err != nil {
+		return baseline, normalizePostgresError(err)
+	}
+	if err := json.Unmarshal(snapshot, &baseline.Snapshot); err != nil {
+		return baseline, err
+	}
+	if err := json.Unmarshal(evidenceIDs, &baseline.EvidenceIDs); err != nil {
+		return baseline, err
+	}
+	return baseline, nil
+}
+
+func (p *PostgresRepository) CreateJob(job domain.DetectionJob) error {
+	_, err := p.pool.Exec(context.Background(), `
+		INSERT INTO detection_jobs (
+			id,tenant_id,asset_id,mode,status,policy_version,baseline_version,error_code,
+			error_message,created_at,started_at,finished_at
+		) VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,0),NULLIF($8,''),NULLIF($9,''),$10,$11,$12)`,
+		job.ID, job.TenantID, job.AssetID, job.Mode, job.Status, job.PolicyVersion,
+		job.BaselineVersion, job.ErrorCode, job.ErrorMessage, job.CreatedAt, job.StartedAt, job.FinishedAt,
+	)
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) UpdateJob(job domain.DetectionJob) error {
+	tag, err := p.pool.Exec(context.Background(), `
+		UPDATE detection_jobs SET status=$3,baseline_version=NULLIF($4,0),error_code=NULLIF($5,''),
+			error_message=NULLIF($6,''),started_at=$7,finished_at=$8
+		WHERE tenant_id=$1 AND id=$2`,
+		job.TenantID, job.ID, job.Status, job.BaselineVersion, job.ErrorCode,
+		job.ErrorMessage, job.StartedAt, job.FinishedAt,
+	)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) GetJob(tenantID, id string) (domain.DetectionJob, error) {
+	return scanJob(p.pool.QueryRow(context.Background(), jobSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
+}
+
+func (p *PostgresRepository) ListJobs(tenantID string) []domain.DetectionJob {
+	rows, err := p.pool.Query(context.Background(), jobSelect+` WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 1000`, tenantID)
+	if err != nil {
+		return []domain.DetectionJob{}
+	}
+	defer rows.Close()
+	result := make([]domain.DetectionJob, 0)
+	for rows.Next() {
+		item, scanErr := scanJob(rows)
+		if scanErr == nil {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+const jobSelect = `
+	SELECT id,tenant_id,asset_id,mode,status,policy_version,COALESCE(baseline_version,0),
+		COALESCE(error_code,''),COALESCE(error_message,''),created_at,started_at,finished_at
+	FROM detection_jobs`
+
+func scanJob(row rowScanner) (domain.DetectionJob, error) {
+	var job domain.DetectionJob
+	err := row.Scan(
+		&job.ID, &job.TenantID, &job.AssetID, &job.Mode, &job.Status, &job.PolicyVersion,
+		&job.BaselineVersion, &job.ErrorCode, &job.ErrorMessage, &job.CreatedAt,
+		&job.StartedAt, &job.FinishedAt,
+	)
+	return job, normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) CreateEvidence(item domain.Evidence) error {
+	_, err := p.pool.Exec(context.Background(), `
+		INSERT INTO evidence (
+			id,tenant_id,asset_id,job_id,kind,media_type,size_bytes,sha256,object_key,created_at,retain_until
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		item.ID, item.TenantID, item.AssetID, item.JobID, item.Kind, item.MediaType,
+		item.Size, item.SHA256, item.ObjectKey, item.CreatedAt, item.RetainUntil,
+	)
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) GetEvidence(tenantID, id string) (domain.Evidence, error) {
+	return scanEvidence(p.pool.QueryRow(context.Background(), evidenceSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
+}
+
+func (p *PostgresRepository) ListEvidence(tenantID, assetID string) []domain.Evidence {
+	query := evidenceSelect + ` WHERE tenant_id=$1`
+	args := []any{tenantID}
+	if assetID != "" {
+		query += ` AND asset_id=$2`
+		args = append(args, assetID)
+	}
+	query += ` ORDER BY created_at DESC`
+	rows, err := p.pool.Query(context.Background(), query, args...)
+	if err != nil {
+		return []domain.Evidence{}
+	}
+	defer rows.Close()
+	result := make([]domain.Evidence, 0)
+	for rows.Next() {
+		item, scanErr := scanEvidence(rows)
+		if scanErr == nil {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+const evidenceSelect = `
+	SELECT id,tenant_id,asset_id,job_id,kind,media_type,size_bytes,sha256,object_key,
+		created_at,retain_until FROM evidence`
+
+func scanEvidence(row rowScanner) (domain.Evidence, error) {
+	var item domain.Evidence
+	err := row.Scan(
+		&item.ID, &item.TenantID, &item.AssetID, &item.JobID, &item.Kind, &item.MediaType,
+		&item.Size, &item.SHA256, &item.ObjectKey, &item.CreatedAt, &item.RetainUntil,
+	)
+	return item, normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.Incident, bool, error) {
+	signals, _ := json.Marshal(incident.Signals)
+	evidenceIDs, _ := json.Marshal(incident.EvidenceIDs)
+	row := p.pool.QueryRow(context.Background(), `
+		INSERT INTO incidents (
+			id,tenant_id,asset_id,baseline_id,baseline_version,fingerprint,severity,status,title,
+			signals,evidence_ids,occurrence_count,owner_id,resolution,created_at,first_seen_at,last_seen_at,resolved_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,'')::uuid,NULLIF($14,''),$15,$16,$17,$18)
+		ON CONFLICT (tenant_id,asset_id,baseline_version,fingerprint)
+			WHERE status NOT IN ('CLOSED','FALSE_POSITIVE')
+		DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at,
+			occurrence_count=incidents.occurrence_count+1,
+			signals=EXCLUDED.signals,evidence_ids=incidents.evidence_ids || EXCLUDED.evidence_ids,
+			severity=CASE
+				WHEN EXCLUDED.severity='CRITICAL' THEN EXCLUDED.severity
+				WHEN incidents.severity='CRITICAL' THEN incidents.severity
+				ELSE EXCLUDED.severity
+			END
+		RETURNING (xmax = 0)`,
+		incident.ID, incident.TenantID, incident.AssetID, incident.BaselineID, incident.BaselineVersion,
+		incident.Fingerprint, incident.Severity, incident.Status, incident.Title, signals, evidenceIDs,
+		incident.OccurrenceCount, incident.OwnerID, incident.Resolution, incident.CreatedAt,
+		incident.FirstSeenAt, incident.LastSeenAt, incident.ResolvedAt,
+	)
+	var created bool
+	if err := row.Scan(&created); err != nil {
+		return domain.Incident{}, false, normalizePostgresError(err)
+	}
+	for _, current := range p.ListIncidents(incident.TenantID) {
+		if current.AssetID == incident.AssetID && current.BaselineVersion == incident.BaselineVersion &&
+			current.Fingerprint == incident.Fingerprint &&
+			current.Status != domain.IncidentClosed && current.Status != domain.IncidentFalsePositive {
+			return current, created, nil
+		}
+	}
+	return incident, created, nil
+}
+
+func (p *PostgresRepository) UpdateIncident(incident domain.Incident) error {
+	signals, _ := json.Marshal(incident.Signals)
+	evidenceIDs, _ := json.Marshal(incident.EvidenceIDs)
+	tag, err := p.pool.Exec(context.Background(), `
+		UPDATE incidents SET severity=$3,status=$4,title=$5,signals=$6,evidence_ids=$7,
+			occurrence_count=$8,owner_id=NULLIF($9,'')::uuid,resolution=NULLIF($10,''),
+			last_seen_at=$11,resolved_at=$12
+		WHERE tenant_id=$1 AND id=$2`,
+		incident.TenantID, incident.ID, incident.Severity, incident.Status, incident.Title,
+		signals, evidenceIDs, incident.OccurrenceCount, incident.OwnerID, incident.Resolution,
+		incident.LastSeenAt, incident.ResolvedAt,
+	)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) GetIncident(tenantID, id string) (domain.Incident, error) {
+	return scanIncident(p.pool.QueryRow(context.Background(), incidentSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
+}
+
+func (p *PostgresRepository) ListIncidents(tenantID string) []domain.Incident {
+	rows, err := p.pool.Query(context.Background(), incidentSelect+` WHERE tenant_id=$1 ORDER BY last_seen_at DESC`, tenantID)
+	if err != nil {
+		return []domain.Incident{}
+	}
+	defer rows.Close()
+	result := make([]domain.Incident, 0)
+	for rows.Next() {
+		item, scanErr := scanIncident(rows)
+		if scanErr == nil {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+const incidentSelect = `
+	SELECT id,tenant_id,asset_id,baseline_id,baseline_version,fingerprint,severity,status,title,
+		signals,evidence_ids,occurrence_count,COALESCE(owner_id::text,''),COALESCE(resolution,''),
+		created_at,first_seen_at,last_seen_at,resolved_at FROM incidents`
+
+func scanIncident(row rowScanner) (domain.Incident, error) {
+	var incident domain.Incident
+	var signals, evidenceIDs []byte
+	err := row.Scan(
+		&incident.ID, &incident.TenantID, &incident.AssetID, &incident.BaselineID,
+		&incident.BaselineVersion, &incident.Fingerprint, &incident.Severity, &incident.Status,
+		&incident.Title, &signals, &evidenceIDs, &incident.OccurrenceCount, &incident.OwnerID,
+		&incident.Resolution, &incident.CreatedAt, &incident.FirstSeenAt, &incident.LastSeenAt,
+		&incident.ResolvedAt,
+	)
+	if err != nil {
+		return incident, normalizePostgresError(err)
+	}
+	if err := json.Unmarshal(signals, &incident.Signals); err != nil {
+		return incident, err
+	}
+	if err := json.Unmarshal(evidenceIDs, &incident.EvidenceIDs); err != nil {
+		return incident, err
+	}
+	return incident, nil
+}
+
+func (p *PostgresRepository) CreateAlertChannel(channel domain.AlertChannel) error {
+	associatedData := channel.TenantID + ":" + channel.ID
+	encryptedURL, err := p.secrets.Encrypt(channel.URL, associatedData+":url")
+	if err != nil {
+		return err
+	}
+	encryptedSecret, err := p.secrets.Encrypt(channel.Secret, associatedData+":secret")
+	if err != nil {
+		return err
+	}
+	_, err = p.pool.Exec(context.Background(), `
+		INSERT INTO alert_channels (
+			id,tenant_id,name,channel_type,url,secret_ciphertext,enabled,created_at,updated_at
+		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),$7,$8,$9)`,
+		channel.ID, channel.TenantID, channel.Name, channel.Type, encryptedURL,
+		encryptedSecret, channel.Enabled, channel.CreatedAt, channel.UpdatedAt,
+	)
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) ListAlertChannels(tenantID string) []domain.AlertChannel {
+	return p.listAlertChannels(tenantID, false)
+}
+
+func (p *PostgresRepository) ListAlertChannelsWithSecrets(tenantID string) []domain.AlertChannel {
+	return p.listAlertChannels(tenantID, true)
+}
+
+func (p *PostgresRepository) listAlertChannels(tenantID string, includeSecret bool) []domain.AlertChannel {
+	rows, err := p.pool.Query(context.Background(), `
+		SELECT id,tenant_id,name,channel_type,url,COALESCE(secret_ciphertext,''),enabled,created_at,updated_at
+		FROM alert_channels WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return []domain.AlertChannel{}
+	}
+	defer rows.Close()
+	result := make([]domain.AlertChannel, 0)
+	for rows.Next() {
+		var item domain.AlertChannel
+		var encryptedURL, encryptedSecret string
+		if rows.Scan(
+			&item.ID, &item.TenantID, &item.Name, &item.Type, &encryptedURL, &encryptedSecret,
+			&item.Enabled, &item.CreatedAt, &item.UpdatedAt,
+		) == nil {
+			associatedData := item.TenantID + ":" + item.ID
+			item.URL, err = p.secrets.Decrypt(encryptedURL, associatedData+":url")
+			if err != nil {
+				// Values written before encryption are retained for a controlled
+				// compatibility window and can be re-encrypted on next update.
+				item.URL = encryptedURL
+			}
+			if includeSecret {
+				item.Secret, err = p.secrets.Decrypt(encryptedSecret, associatedData+":secret")
+				if err != nil {
+					item.Secret = encryptedSecret
+				}
+			}
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func (p *PostgresRepository) AppendAudit(event domain.AuditEvent) error {
+	details, _ := json.Marshal(event.Details)
+	_, err := p.pool.Exec(context.Background(), `
+		INSERT INTO audit_events (
+			id,tenant_id,actor_id,action,resource_type,resource_id,result,trace_id,details,created_at
+		) VALUES ($1,$2,NULLIF($3,'')::uuid,$4,$5,$6,$7,$8,$9,$10)`,
+		event.ID, event.TenantID, event.ActorID, event.Action, event.ResourceType,
+		event.ResourceID, event.Result, event.TraceID, details, event.CreatedAt,
+	)
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) ListAudits(tenantID string) []domain.AuditEvent {
+	rows, err := p.pool.Query(context.Background(), `
+		SELECT id,tenant_id,COALESCE(actor_id::text,''),action,resource_type,resource_id,
+			result,trace_id,COALESCE(details,'{}'::jsonb),created_at
+		FROM audit_events WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 1000`, tenantID)
+	if err != nil {
+		return []domain.AuditEvent{}
+	}
+	defer rows.Close()
+	result := make([]domain.AuditEvent, 0)
+	for rows.Next() {
+		var item domain.AuditEvent
+		var details []byte
+		if rows.Scan(
+			&item.ID, &item.TenantID, &item.ActorID, &item.Action, &item.ResourceType,
+			&item.ResourceID, &item.Result, &item.TraceID, &details, &item.CreatedAt,
+		) == nil {
+			_ = json.Unmarshal(details, &item.Details)
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func normalizePostgresError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	var postgresError *pgconn.PgError
+	if errors.As(err, &postgresError) && postgresError.Code == "23505" {
+		return ErrConflict
+	}
+	return err
+}
+
+var _ Repository = (*PostgresRepository)(nil)
+var _ = time.Time{}
