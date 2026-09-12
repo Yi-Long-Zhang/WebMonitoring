@@ -89,19 +89,21 @@ type Site struct {
 }
 
 type Asset struct {
-	ID                   string             `json:"id"`
-	TenantID             string             `json:"tenantId"`
-	SiteID               string             `json:"siteId,omitempty"`
-	Name                 string             `json:"name"`
-	URL                  string             `json:"url"`
-	Type                 AssetType          `json:"type"`
-	OwnerID              string             `json:"ownerId"`
-	Enabled              bool               `json:"enabled"`
-	VerificationStatus   VerificationStatus `json:"verificationStatus"`
-	VerificationToken    string             `json:"-"`
-	VerificationIssuedAt *time.Time         `json:"verificationIssuedAt,omitempty"`
-	CreatedAt            time.Time          `json:"createdAt"`
-	UpdatedAt            time.Time          `json:"updatedAt"`
+	ID                    string             `json:"id"`
+	TenantID              string             `json:"tenantId"`
+	SiteID                string             `json:"siteId,omitempty"`
+	Name                  string             `json:"name"`
+	URL                   string             `json:"url"`
+	Type                  AssetType          `json:"type"`
+	OwnerID               string             `json:"ownerId"`
+	Enabled               bool               `json:"enabled"`
+	VerificationStatus    VerificationStatus `json:"verificationStatus"`
+	VerificationToken     string             `json:"-"`
+	VerificationTokenHash string             `json:"-"`
+	VerificationIssuedAt  *time.Time         `json:"verificationIssuedAt,omitempty"`
+	VerificationExpiresAt *time.Time         `json:"verificationExpiresAt,omitempty"`
+	CreatedAt             time.Time          `json:"createdAt"`
+	UpdatedAt             time.Time          `json:"updatedAt"`
 }
 
 type MonitorPolicy struct {
@@ -132,23 +134,28 @@ type FormRef struct {
 }
 
 type Snapshot struct {
-	URL             string              `json:"url"`
-	FinalURL        string              `json:"finalUrl"`
-	StatusCode      int                 `json:"statusCode"`
-	Title           string              `json:"title"`
-	ContentHash     string              `json:"contentHash"`
-	TextHash        string              `json:"textHash"`
-	ScreenshotHash  string              `json:"screenshotHash,omitempty"`
-	Scripts         []ResourceRef       `json:"scripts"`
-	Links           []string            `json:"links"`
-	IFrames         []string            `json:"iframes"`
-	Forms           []FormRef           `json:"forms"`
-	RedirectChain   []string            `json:"redirectChain"`
-	ResolvedIPs     []string            `json:"resolvedIps"`
-	TLSFingerprint  string              `json:"tlsFingerprint,omitempty"`
-	ResponseHeaders map[string][]string `json:"responseHeaders"`
-	DurationMillis  int64               `json:"durationMillis"`
-	CapturedAt      time.Time           `json:"capturedAt"`
+	URL              string              `json:"url"`
+	FinalURL         string              `json:"finalUrl"`
+	StatusCode       int                 `json:"statusCode"`
+	Title            string              `json:"title"`
+	ContentHash      string              `json:"contentHash"`
+	TextHash         string              `json:"textHash"`
+	ScreenshotHash   string              `json:"screenshotHash,omitempty"`
+	Scripts          []ResourceRef       `json:"scripts"`
+	Links            []string            `json:"links"`
+	IFrames          []string            `json:"iframes"`
+	Forms            []FormRef           `json:"forms"`
+	RedirectChain    []string            `json:"redirectChain"`
+	ResolvedIPs      []string            `json:"resolvedIps"`
+	TLSFingerprint   string              `json:"tlsFingerprint,omitempty"`
+	ResponseHeaders  map[string][]string `json:"responseHeaders"`
+	ResourceRequests []string            `json:"resourceRequests,omitempty"`
+	BlockedRequests  []string            `json:"blockedRequests,omitempty"`
+	Popups           []string            `json:"popups,omitempty"`
+	Dialogs          []string            `json:"dialogs,omitempty"`
+	Downloads        []string            `json:"downloads,omitempty"`
+	DurationMillis   int64               `json:"durationMillis"`
+	CapturedAt       time.Time           `json:"capturedAt"`
 }
 
 type BaselineVersion struct {
@@ -175,6 +182,8 @@ type DetectionJob struct {
 	BaselineVersion int        `json:"baselineVersion,omitempty"`
 	ErrorCode       string     `json:"errorCode,omitempty"`
 	ErrorMessage    string     `json:"errorMessage,omitempty"`
+	RetryCount      int        `json:"retryCount"`
+	MaxAttempts     int        `json:"maxAttempts"`
 	CreatedAt       time.Time  `json:"createdAt"`
 	StartedAt       *time.Time `json:"startedAt,omitempty"`
 	FinishedAt      *time.Time `json:"finishedAt,omitempty"`
@@ -224,6 +233,7 @@ type Incident struct {
 	CreatedAt       time.Time      `json:"createdAt"`
 	FirstSeenAt     time.Time      `json:"firstSeenAt"`
 	LastSeenAt      time.Time      `json:"lastSeenAt"`
+	AcknowledgedAt  *time.Time     `json:"acknowledgedAt,omitempty"`
 	ResolvedAt      *time.Time     `json:"resolvedAt,omitempty"`
 }
 
@@ -244,6 +254,7 @@ type AlertDelivery struct {
 	TenantID   string    `json:"tenantId"`
 	IncidentID string    `json:"incidentId"`
 	ChannelID  string    `json:"channelId"`
+	DedupKey   string    `json:"dedupKey"`
 	Status     string    `json:"status"`
 	Attempts   int       `json:"attempts"`
 	LastError  string    `json:"lastError,omitempty"`

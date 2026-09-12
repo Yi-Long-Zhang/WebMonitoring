@@ -206,6 +206,18 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Baseline" }
+  /baselines/{id}/retire:
+    post:
+      operationId: retireBaseline
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200":
+          description: 已废弃
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Baseline" }
   /detection-jobs:
     get:
       operationId: listDetectionJobs
@@ -322,6 +334,42 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AlertChannel" }
+  /alert-deliveries:
+    get:
+      operationId: listAlertDeliveries
+      parameters:
+        - name: incidentId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 告警投递列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AlertDeliveryList" }
+  /reports/summary:
+    get:
+      operationId: getReportSummary
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: assetId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: severity
+          in: query
+          schema: { $ref: "#/components/schemas/Severity" }
+      responses:
+        "200":
+          description: 运营统计汇总
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReportSummary" }
+        "400": { $ref: "#/components/responses/Error" }
   /audit-events:
     get:
       operationId: listAuditEvents
@@ -456,6 +504,9 @@ components:
       properties:
         id: { type: string, format: uuid }
         assetId: { type: string, format: uuid }
+        baselineId: { type: string, format: uuid }
+        baselineVersion: { type: integer }
+        fingerprint: { type: string }
         severity: { $ref: "#/components/schemas/Severity" }
         status: { $ref: "#/components/schemas/IncidentStatus" }
         title: { type: string }
@@ -469,6 +520,8 @@ components:
           type: array
           items: { type: string, format: uuid }
         resolution: { type: string }
+        acknowledgedAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time }
     IncidentList:
       type: object
       required: [items, nextCursor]
@@ -536,6 +589,8 @@ components:
         createdAt: { type: string, format: date-time }
         finishedAt: { type: string, format: date-time }
         errorMessage: { type: string }
+        retryCount: { type: integer }
+        maxAttempts: { type: integer }
     DetectionJobList:
       type: object
       required: [items, nextCursor]
@@ -587,6 +642,42 @@ components:
         url: { type: string, format: uri }
         secret: { type: string, format: password }
         enabled: { type: boolean }
+    AlertDelivery:
+      type: object
+      required: [id, incidentId, channelId, dedupKey, status, attempts, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        incidentId: { type: string, format: uuid }
+        channelId: { type: string, format: uuid }
+        dedupKey: { type: string }
+        status: { type: string, enum: [PENDING, DELIVERED, FAILED] }
+        attempts: { type: integer }
+        lastError: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AlertDeliveryList:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/AlertDelivery" }
+        nextCursor: { type: string }
+    ReportSummary:
+      type: object
+      required: [assets, verifiedAssets, detectionJobs, successfulJobs, failedJobs, incidents, alertDeliveries, severityCounts, mttdSeconds, mttaSeconds, mttrSeconds]
+      properties:
+        assets: { type: integer }
+        verifiedAssets: { type: integer }
+        detectionJobs: { type: integer }
+        successfulJobs: { type: integer }
+        failedJobs: { type: integer }
+        incidents: { type: integer }
+        alertDeliveries: { type: integer }
+        severityCounts: { type: object, additionalProperties: { type: integer } }
+        mttdSeconds: { type: number, format: double }
+        mttaSeconds: { type: number, format: double }
+        mttrSeconds: { type: number, format: double }
     AlertChannelList:
       type: object
       required: [items, nextCursor]

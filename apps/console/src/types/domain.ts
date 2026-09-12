@@ -15,7 +15,9 @@ export type Policy = components["schemas"]["Policy"];
 export type Evidence = components["schemas"]["Evidence"];
 export type AlertChannel = components["schemas"]["AlertChannel"];
 export type CreateAlertChannel = components["schemas"]["CreateAlertChannel"];
+export type AlertDelivery = components["schemas"]["AlertDelivery"];
 export type AuditEvent = components["schemas"]["AuditEvent"];
+export type ReportSummary = components["schemas"]["ReportSummary"];
 
 export type Dashboard = {
   assets: number;

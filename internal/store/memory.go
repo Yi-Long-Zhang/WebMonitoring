@@ -4,33 +4,36 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"webmonitoring/internal/domain"
 )
 
 type MemoryRepository struct {
-	mu        sync.RWMutex
-	users     map[string]domain.User
-	assets    map[string]domain.Asset
-	policies  map[string]domain.MonitorPolicy
-	baselines map[string]domain.BaselineVersion
-	jobs      map[string]domain.DetectionJob
-	evidence  map[string]domain.Evidence
-	incidents map[string]domain.Incident
-	channels  map[string]domain.AlertChannel
-	audits    []domain.AuditEvent
+	mu         sync.RWMutex
+	users      map[string]domain.User
+	assets     map[string]domain.Asset
+	policies   map[string]domain.MonitorPolicy
+	baselines  map[string]domain.BaselineVersion
+	jobs       map[string]domain.DetectionJob
+	evidence   map[string]domain.Evidence
+	incidents  map[string]domain.Incident
+	channels   map[string]domain.AlertChannel
+	deliveries map[string]domain.AlertDelivery
+	audits     []domain.AuditEvent
 }
 
 func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{
-		users:     make(map[string]domain.User),
-		assets:    make(map[string]domain.Asset),
-		policies:  make(map[string]domain.MonitorPolicy),
-		baselines: make(map[string]domain.BaselineVersion),
-		jobs:      make(map[string]domain.DetectionJob),
-		evidence:  make(map[string]domain.Evidence),
-		incidents: make(map[string]domain.Incident),
-		channels:  make(map[string]domain.AlertChannel),
+		users:      make(map[string]domain.User),
+		assets:     make(map[string]domain.Asset),
+		policies:   make(map[string]domain.MonitorPolicy),
+		baselines:  make(map[string]domain.BaselineVersion),
+		jobs:       make(map[string]domain.DetectionJob),
+		evidence:   make(map[string]domain.Evidence),
+		incidents:  make(map[string]domain.Incident),
+		channels:   make(map[string]domain.AlertChannel),
+		deliveries: make(map[string]domain.AlertDelivery),
 	}
 }
 
@@ -236,6 +239,23 @@ func (m *MemoryRepository) CreateJob(job domain.DetectionJob) error {
 	return nil
 }
 
+func (m *MemoryRepository) ClaimJob(tenantID, id string, startedAt time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := tenantKey(tenantID, id)
+	job, ok := m.jobs[key]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if job.Status != domain.JobQueued {
+		return false, nil
+	}
+	job.Status = domain.JobRunning
+	job.StartedAt = &startedAt
+	m.jobs[key] = job
+	return true, nil
+}
+
 func (m *MemoryRepository) UpdateJob(job domain.DetectionJob) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -392,6 +412,42 @@ func (m *MemoryRepository) ListAlertChannelsWithSecrets(tenantID string) []domai
 	return result
 }
 
+func (m *MemoryRepository) CreateAlertDelivery(delivery domain.AlertDelivery) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, existing := range m.deliveries {
+		if existing.TenantID == delivery.TenantID && existing.DedupKey == delivery.DedupKey {
+			return ErrConflict
+		}
+	}
+	m.deliveries[tenantKey(delivery.TenantID, delivery.ID)] = delivery
+	return nil
+}
+
+func (m *MemoryRepository) UpdateAlertDelivery(delivery domain.AlertDelivery) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := tenantKey(delivery.TenantID, delivery.ID)
+	if _, ok := m.deliveries[key]; !ok {
+		return ErrNotFound
+	}
+	m.deliveries[key] = delivery
+	return nil
+}
+
+func (m *MemoryRepository) ListAlertDeliveries(tenantID, incidentID string) []domain.AlertDelivery {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]domain.AlertDelivery, 0)
+	for _, delivery := range m.deliveries {
+		if delivery.TenantID == tenantID && (incidentID == "" || delivery.IncidentID == incidentID) {
+			result = append(result, delivery)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
+	return result
+}
+
 func (m *MemoryRepository) AppendAudit(event domain.AuditEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -426,6 +482,11 @@ func cloneBaseline(baseline domain.BaselineVersion) domain.BaselineVersion {
 	baseline.Snapshot.Forms = append([]domain.FormRef(nil), baseline.Snapshot.Forms...)
 	baseline.Snapshot.RedirectChain = append([]string(nil), baseline.Snapshot.RedirectChain...)
 	baseline.Snapshot.ResolvedIPs = append([]string(nil), baseline.Snapshot.ResolvedIPs...)
+	baseline.Snapshot.ResourceRequests = append([]string(nil), baseline.Snapshot.ResourceRequests...)
+	baseline.Snapshot.BlockedRequests = append([]string(nil), baseline.Snapshot.BlockedRequests...)
+	baseline.Snapshot.Popups = append([]string(nil), baseline.Snapshot.Popups...)
+	baseline.Snapshot.Dialogs = append([]string(nil), baseline.Snapshot.Dialogs...)
+	baseline.Snapshot.Downloads = append([]string(nil), baseline.Snapshot.Downloads...)
 	return baseline
 }
 

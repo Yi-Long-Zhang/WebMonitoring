@@ -168,6 +168,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/baselines/{id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["retireBaseline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/detection-jobs": {
         parameters: {
             query?: never;
@@ -274,6 +290,38 @@ export interface paths {
         get: operations["listAlertChannels"];
         put?: never;
         post: operations["createAlertChannel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/alert-deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAlertDeliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getReportSummary"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -405,6 +453,10 @@ export interface components {
             id: string;
             /** Format: uuid */
             assetId: string;
+            /** Format: uuid */
+            baselineId?: string;
+            baselineVersion?: number;
+            fingerprint?: string;
             severity: components["schemas"]["Severity"];
             status: components["schemas"]["IncidentStatus"];
             title: string;
@@ -416,6 +468,10 @@ export interface components {
             signals?: components["schemas"]["Signal"][];
             evidenceIds?: string[];
             resolution?: string;
+            /** Format: date-time */
+            acknowledgedAt?: string;
+            /** Format: date-time */
+            resolvedAt?: string;
         };
         IncidentList: {
             items: components["schemas"]["Incident"][];
@@ -474,6 +530,8 @@ export interface components {
             /** Format: date-time */
             finishedAt?: string;
             errorMessage?: string;
+            retryCount?: number;
+            maxAttempts?: number;
         };
         DetectionJobList: {
             items: components["schemas"]["DetectionJob"][];
@@ -520,6 +578,45 @@ export interface components {
             /** Format: password */
             secret?: string;
             enabled: boolean;
+        };
+        AlertDelivery: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            incidentId: string;
+            /** Format: uuid */
+            channelId: string;
+            dedupKey: string;
+            /** @enum {string} */
+            status: "PENDING" | "DELIVERED" | "FAILED";
+            attempts: number;
+            lastError?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        AlertDeliveryList: {
+            items: components["schemas"]["AlertDelivery"][];
+            nextCursor: string;
+        };
+        ReportSummary: {
+            assets: number;
+            verifiedAssets: number;
+            detectionJobs: number;
+            successfulJobs: number;
+            failedJobs: number;
+            incidents: number;
+            alertDeliveries: number;
+            severityCounts: {
+                [key: string]: number;
+            };
+            /** Format: double */
+            mttdSeconds: number;
+            /** Format: double */
+            mttaSeconds: number;
+            /** Format: double */
+            mttrSeconds: number;
         };
         AlertChannelList: {
             items: components["schemas"]["AlertChannel"][];
@@ -916,6 +1013,30 @@ export interface operations {
             };
         };
     };
+    retireBaseline: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已废弃 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Baseline"];
+                };
+            };
+        };
+    };
     listDetectionJobs: {
         parameters: {
             query?: never;
@@ -1128,6 +1249,54 @@ export interface operations {
                     "application/json": components["schemas"]["AlertChannel"];
                 };
             };
+        };
+    };
+    listAlertDeliveries: {
+        parameters: {
+            query?: {
+                incidentId?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 告警投递列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertDeliveryList"];
+                };
+            };
+        };
+    };
+    getReportSummary: {
+        parameters: {
+            query?: {
+                from?: string;
+                to?: string;
+                assetId?: string;
+                severity?: components["schemas"]["Severity"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 运营统计汇总 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportSummary"];
+                };
+            };
+            400: components["responses"]["Error"];
         };
     };
     listAuditEvents: {

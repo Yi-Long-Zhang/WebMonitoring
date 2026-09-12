@@ -1,5 +1,5 @@
 import type {
-  AlertChannel, Asset, AuditEvent, Baseline, Dashboard, DetectionJob, Evidence, Incident, IncidentStatus, ListResponse, Policy, Session,
+  AlertChannel, AlertDelivery, Asset, AuditEvent, Baseline, Dashboard, DetectionJob, Evidence, Incident, IncidentStatus, ListResponse, Policy, ReportSummary, Session,
 } from "../../types/domain";
 
 let csrfToken = "";
@@ -115,6 +115,9 @@ export function approveBaseline(id: string) {
 export function rejectBaseline(id: string) {
   return request<Baseline>(`/baselines/${id}/reject`, { method: "POST" });
 }
+export function retireBaseline(id: string) {
+  return request<Baseline>(`/baselines/${id}/retire`, { method: "POST" });
+}
 
 export function getJobs() {
   return request<ListResponse<DetectionJob>>("/detection-jobs");
@@ -137,6 +140,20 @@ export function getEvidence() {
 
 export function getAlertChannels() {
   return request<ListResponse<AlertChannel>>("/alert-channels");
+}
+
+export function getAlertDeliveries(incidentId?: string) {
+  const query = incidentId ? `?incidentId=${encodeURIComponent(incidentId)}` : "";
+  return request<ListResponse<AlertDelivery>>(`/alert-deliveries${query}`);
+}
+
+export function getReportSummary(params: { from?: string; to?: string; assetId?: string; severity?: string } = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value) query.set(key, value);
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<ReportSummary>(`/reports/summary${suffix}`);
 }
 
 export function createAlertChannel(input: {

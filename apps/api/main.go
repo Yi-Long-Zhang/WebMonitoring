@@ -43,7 +43,7 @@ func main() {
 	guard := security.NewURLGuard(allowPrivate)
 	broker := events.NewBroker()
 	httpChecker := detection.NewChecker(guard)
-	browserClient := browser.NewClient(os.Getenv("BROWSER_WORKER_URL"), os.Getenv("BROWSER_WORKER_TOKEN"))
+	browserClient := browser.NewClient(os.Getenv("BROWSER_WORKER_URL"), os.Getenv("BROWSER_WORKER_TOKEN"), allowPrivate)
 	var browserChecker detection.BrowserChecker
 	if browserClient.Available() {
 		browserChecker = browserClient

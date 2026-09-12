@@ -16,6 +16,15 @@ type CheckRequest = {
   allowPrivateTargets?: boolean;
 };
 
+type BrowserEvents = {
+  resourceRequests?: string[];
+  blockedRequests?: string[];
+  popups?: string[];
+  dialogs?: string[];
+  downloads?: string[];
+  responseHeaders?: Record<string, string[]>;
+};
+
 type Snapshot = {
   url: string;
   finalUrl: string;
@@ -30,7 +39,13 @@ type Snapshot = {
   forms: Array<{ action: string; method: string }>;
   redirectChain: string[];
   resolvedIps: string[];
+  tlsFingerprint?: string;
   responseHeaders: Record<string, string[]>;
+  resourceRequests?: string[];
+  blockedRequests?: string[];
+  popups?: string[];
+  dialogs?: string[];
+  downloads?: string[];
   durationMillis: number;
   capturedAt: string;
 };
@@ -81,18 +96,44 @@ export async function check(input: CheckRequest) {
       javaScriptEnabled: true,
       ignoreHTTPSErrors: false,
       serviceWorkers: "block",
-      acceptDownloads: false,
+      acceptDownloads: true,
     });
     const redirects: string[] = [];
     const requests: string[] = [];
+    const blockedRequests: string[] = [];
+    const popups: string[] = [];
+    const dialogs: string[] = [];
+    const downloads: string[] = [];
+    await guardContextRequests(context, input.allowPrivateTargets === true, requests, blockedRequests);
+
     const page = await context.newPage();
     page.setDefaultTimeout(timeout);
-    await guardPageRequests(page, input.allowPrivateTargets === true, requests);
-    page.on("framenavigated", (frame) => {
-      if (frame === page.mainFrame() && frame.url() !== input.url) {
-        redirects.push(frame.url());
-      }
-    });
+    const trackedPages = new Set<Page>();
+    const recordUnique = (values: string[], value: string) => {
+      if (value && !values.includes(value)) values.push(value);
+    };
+    const trackPage = (candidate: Page, main = false) => {
+      if (trackedPages.has(candidate)) return;
+      trackedPages.add(candidate);
+      if (!main) recordUnique(popups, candidate.url() || "about:blank");
+      candidate.on("framenavigated", (frame) => {
+        if (frame !== candidate.mainFrame()) return;
+        if (main && frame.url() !== input.url) recordUnique(redirects, frame.url());
+        if (!main) recordUnique(popups, frame.url());
+      });
+      candidate.on("dialog", (dialog) => {
+        recordUnique(dialogs, dialog.type());
+        void dialog.dismiss().catch(() => undefined);
+      });
+      candidate.on("download", (download) => {
+        recordUnique(downloads, download.suggestedFilename());
+        void download.cancel().catch(() => undefined);
+      });
+      candidate.on("popup", (popup) => trackPage(popup));
+    };
+    trackPage(page, true);
+    context.on("page", (popup) => trackPage(popup));
+
     const response = await page.goto(target.toString(), {
       waitUntil: "networkidle",
       timeout,
@@ -100,17 +141,27 @@ export async function check(input: CheckRequest) {
     if (!response) {
       throw new Error("page navigation returned no response");
     }
-    const body = await page.content();
-    if (Buffer.byteLength(body) > limit) {
-      throw new Error(`rendered page exceeds ${limit} bytes`);
-    }
     await page.evaluate((selectors) => {
       for (const selector of selectors) {
         document.querySelectorAll(selector).forEach((node) => node.remove());
       }
     }, input.ignoreSelectors ?? []);
+    const body = await page.content();
+    if (Buffer.byteLength(body) > limit) {
+      throw new Error(`rendered page exceeds ${limit} bytes`);
+    }
+    const responseHeaders = Object.fromEntries(
+      Object.entries(await response.allHeaders()).map(([name, value]) => [name, [value]]),
+    );
     const [snapshot, screenshot] = await Promise.all([
-      extractSnapshot(page, redirects, requests, response.status(), started, []),
+      extractSnapshot(page, redirects, requests, response.status(), started, input.ignoreSelectors ?? [], {
+        resourceRequests: requests,
+        blockedRequests,
+        popups,
+        dialogs,
+        downloads,
+        responseHeaders,
+      }),
       page.screenshot({ type: "png", fullPage: true }),
     ]);
     snapshot.screenshotHash = hash(screenshot);
@@ -125,18 +176,20 @@ export async function check(input: CheckRequest) {
   }
 }
 
-async function guardPageRequests(
-  page: Page,
+async function guardContextRequests(
+  context: BrowserContext,
   allowPrivate: boolean,
   requests: string[],
+  blockedRequests: string[],
 ) {
-  await page.route("**/*", async (route) => {
+  await context.route("**/*", async (route) => {
     const requestURL = route.request().url();
     requests.push(requestURL);
     try {
       await assertSafeTarget(requestURL, allowPrivate);
       await route.continue();
     } catch {
+      if (!blockedRequests.includes(requestURL)) blockedRequests.push(requestURL);
       await route.abort("blockedbyclient");
     }
   });
@@ -149,6 +202,7 @@ export async function extractSnapshot(
   statusCode: number,
   started: number,
   ignoreSelectors: string[],
+  events: BrowserEvents = {},
 ): Promise<Snapshot> {
   const data = await page.evaluate((selectors) => {
     for (const selector of selectors) {
@@ -197,9 +251,14 @@ export async function extractSnapshot(
     links: unique(data.links),
     iframes: unique(data.iframes),
     forms: data.forms,
-    redirectChain: redirects,
+    redirectChain: [...redirects],
     resolvedIps: [],
-    responseHeaders: {},
+    responseHeaders: events.responseHeaders ?? {},
+    resourceRequests: unique(events.resourceRequests ?? requests),
+    blockedRequests: unique(events.blockedRequests ?? []),
+    popups: unique(events.popups ?? []),
+    dialogs: unique(events.dialogs ?? []),
+    downloads: unique(events.downloads ?? []),
     durationMillis: Date.now() - started,
     capturedAt: new Date().toISOString(),
   };

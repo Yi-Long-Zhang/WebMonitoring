@@ -1,0 +1,17 @@
+ALTER TABLE audit_events DROP CONSTRAINT IF EXISTS audit_events_actor_same_tenant_fk;
+ALTER TABLE alert_deliveries DROP CONSTRAINT IF EXISTS alert_deliveries_channel_same_tenant_fk;
+ALTER TABLE alert_deliveries DROP CONSTRAINT IF EXISTS alert_deliveries_incident_same_tenant_fk;
+ALTER TABLE incidents DROP CONSTRAINT IF EXISTS incidents_baseline_same_tenant_fk;
+ALTER TABLE incidents DROP CONSTRAINT IF EXISTS incidents_asset_same_tenant_fk;
+ALTER TABLE evidence DROP CONSTRAINT IF EXISTS evidence_job_same_tenant_fk;
+ALTER TABLE evidence DROP CONSTRAINT IF EXISTS evidence_asset_same_tenant_fk;
+ALTER TABLE detection_jobs DROP CONSTRAINT IF EXISTS detection_jobs_asset_same_tenant_fk;
+ALTER TABLE baseline_versions DROP CONSTRAINT IF EXISTS baseline_versions_asset_same_tenant_fk;
+ALTER TABLE monitor_policies DROP CONSTRAINT IF EXISTS monitor_policies_asset_same_tenant_fk;
+ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_owner_same_tenant_fk;
+DROP INDEX IF EXISTS alert_channels_tenant_id_uidx;
+DROP INDEX IF EXISTS incidents_tenant_id_uidx;
+DROP INDEX IF EXISTS detection_jobs_tenant_id_uidx;
+DROP INDEX IF EXISTS baseline_versions_tenant_id_uidx;
+DROP INDEX IF EXISTS assets_tenant_id_uidx;
+DROP INDEX IF EXISTS users_tenant_id_uidx;

@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"webmonitoring/internal/domain"
+	"webmonitoring/internal/identity"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
 )
@@ -53,39 +55,69 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 		if !channel.Enabled {
 			continue
 		}
-		if err := d.sendWithRetry(ctx, channel, incident, asset); err != nil {
-			failures = append(failures, fmt.Errorf("channel %s: %w", channel.ID, err))
+		now := time.Now().UTC()
+		delivery := domain.AlertDelivery{
+			ID: identity.New(), TenantID: incident.TenantID, IncidentID: incident.ID,
+			ChannelID: channel.ID, DedupKey: incident.ID + ":" + channel.ID,
+			Status: "PENDING", CreatedAt: now, UpdatedAt: now,
+		}
+		if err := d.repository.CreateAlertDelivery(delivery); err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				continue
+			}
+			failures = append(failures, fmt.Errorf("channel %s delivery record: %w", channel.ID, err))
+			continue
+		}
+		var lastErr error
+		for attempt := 1; attempt <= 3; attempt++ {
+			if attempt > 1 {
+				timer := time.NewTimer(time.Duration(1<<attempt) * 250 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					lastErr = ctx.Err()
+				case <-timer.C:
+				}
+				if lastErr != nil {
+					break
+				}
+			}
+			delivery.Attempts = attempt
+			delivery.UpdatedAt = time.Now().UTC()
+			if err := d.send(ctx, channel, incident, asset); err == nil {
+				delivery.Status = "DELIVERED"
+				delivery.LastError = ""
+				if updateErr := d.repository.UpdateAlertDelivery(delivery); updateErr != nil {
+					failures = append(failures, fmt.Errorf("channel %s delivery update: %w", channel.ID, updateErr))
+				}
+				lastErr = nil
+				break
+			} else {
+				lastErr = err
+				delivery.LastError = safeDeliveryError(err)
+				_ = d.repository.UpdateAlertDelivery(delivery)
+			}
+		}
+		if lastErr != nil {
+			delivery.Status = "FAILED"
+			delivery.LastError = safeDeliveryError(lastErr)
+			delivery.UpdatedAt = time.Now().UTC()
+			if updateErr := d.repository.UpdateAlertDelivery(delivery); updateErr != nil {
+				failures = append(failures, fmt.Errorf("channel %s delivery update: %w", channel.ID, updateErr))
+			}
+			failures = append(failures, fmt.Errorf("channel %s: %w", channel.ID, lastErr))
 		}
 	}
 	return failures
 }
 
-func (d *Dispatcher) sendWithRetry(
-	ctx context.Context,
-	channel domain.AlertChannel,
-	incident domain.Incident,
-	asset domain.Asset,
-) error {
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			timer := time.NewTimer(time.Duration(1<<attempt) * 250 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return ctx.Err()
-			case <-timer.C:
-			}
-		}
-		if err := d.send(ctx, channel, incident, asset); err == nil {
-			return nil
-		} else {
-			lastErr = err
-		}
+func safeDeliveryError(err error) string {
+	message := err.Error()
+	if len(message) > 240 {
+		message = message[:240]
 	}
-	return lastErr
+	return message
 }
-
 func (d *Dispatcher) send(
 	ctx context.Context,
 	channel domain.AlertChannel,
@@ -129,8 +161,11 @@ func (d *Dispatcher) send(
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("User-Agent", "WebMonitoring-Notifier/0.1")
 	if channel.Type == "WEBHOOK" && channel.Secret != "" {
+		timestamp := strconv.FormatInt(time.Now().UTC().Unix(), 10)
 		mac := hmac.New(sha256.New, []byte(channel.Secret))
+		_, _ = mac.Write([]byte(timestamp + "\n"))
 		_, _ = mac.Write(body)
+		request.Header.Set("X-WebMonitoring-Timestamp", timestamp)
 		request.Header.Set("X-WebMonitoring-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	}
 	response, err := d.client.Do(request)

@@ -86,6 +86,7 @@ func (s *Service) Queue(tenantID, assetID, mode string) (domain.DetectionJob, er
 		Mode:          mode,
 		Status:        domain.JobQueued,
 		PolicyVersion: policy.Version,
+		MaxAttempts:   3,
 		CreatedAt:     time.Now().UTC(),
 	}
 	if err := s.repository.CreateJob(job); err != nil {
@@ -104,14 +105,17 @@ func (s *Service) Queue(tenantID, assetID, mode string) (domain.DetectionJob, er
 }
 
 func (s *Service) Process(ctx context.Context, job domain.DetectionJob) {
-	current, err := s.repository.GetJob(job.TenantID, job.ID)
-	if err == nil && (current.Status == domain.JobSucceeded || current.Status == domain.JobCancelled) {
+	started := time.Now().UTC()
+	claimed, err := s.repository.ClaimJob(job.TenantID, job.ID, started)
+	if err != nil {
+		s.logger.Error("claim detection job failed", "job_id", job.ID, "error", err)
 		return
 	}
-	started := time.Now().UTC()
+	if !claimed {
+		return
+	}
 	job.Status = domain.JobRunning
 	job.StartedAt = &started
-	_ = s.repository.UpdateJob(job)
 	s.broker.Publish("detection.job.running", job)
 
 	asset, err := s.repository.GetAsset(job.TenantID, job.AssetID)
@@ -140,7 +144,11 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) {
 		result, err = s.http.Check(ctx, asset, policy)
 	}
 	if err != nil {
-		s.failJob(job, "CHECK_FAILED", err)
+		code := "CHECK_FAILED"
+		if errors.Is(err, context.DeadlineExceeded) {
+			code = "CHECK_TIMEOUT"
+		}
+		s.failJob(job, code, err)
 		return
 	}
 
@@ -235,8 +243,10 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) {
 			}
 			if created {
 				s.broker.Publish("incident.created", saved)
-				for _, notifyErr := range s.notifier.SendIncident(ctx, saved, asset) {
-					s.logger.Warn("notification failed", "incident_id", saved.ID, "error", notifyErr)
+				if s.notifier != nil {
+					for _, notifyErr := range s.notifier.SendIncident(ctx, saved, asset) {
+						s.logger.Warn("notification failed", "incident_id", saved.ID, "error", notifyErr)
+					}
 				}
 			} else {
 				s.broker.Publish("incident.updated", saved)
@@ -252,14 +262,71 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) {
 }
 
 func (s *Service) failJob(job domain.DetectionJob, code string, err error) {
+	if isRetryable(code) {
+		maxAttempts := job.MaxAttempts
+		if maxAttempts <= 0 {
+			maxAttempts = 3
+		}
+		if job.RetryCount+1 < maxAttempts {
+			job.RetryCount++
+			job.MaxAttempts = maxAttempts
+			job.Status = domain.JobQueued
+			job.ErrorCode = "RETRY_SCHEDULED"
+			job.ErrorMessage = safeError(err)
+			job.StartedAt = nil
+			job.FinishedAt = nil
+			if updateErr := s.repository.UpdateJob(job); updateErr != nil {
+				s.logger.Error("persist detection retry failed", "job_id", job.ID, "error", updateErr)
+			} else {
+				s.broker.Publish("detection.job.retrying", job)
+				go s.enqueueRetry(job)
+				return
+			}
+		}
+	}
 	finished := time.Now().UTC()
 	job.Status = domain.JobFailed
 	job.ErrorCode = code
 	job.ErrorMessage = safeError(err)
 	job.FinishedAt = &finished
-	_ = s.repository.UpdateJob(job)
+	if updateErr := s.repository.UpdateJob(job); updateErr != nil {
+		s.logger.Error("persist detection failure failed", "job_id", job.ID, "error", updateErr)
+	}
 	s.logger.Warn("detection job failed", "job_id", job.ID, "code", code, "error", err)
 	s.broker.Publish("detection.job.failed", job)
+}
+
+func (s *Service) enqueueRetry(job domain.DetectionJob) {
+	delay := time.Duration(1<<job.RetryCount) * 500 * time.Millisecond
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	<-timer.C
+	if s.queue != nil {
+		if err := s.queue.Enqueue(context.Background(), job); err != nil {
+			s.logger.Error("enqueue detection retry failed", "job_id", job.ID, "error", err)
+			finished := time.Now().UTC()
+			job.Status = domain.JobFailed
+			job.ErrorCode = "RETRY_QUEUE_FAILED"
+			job.ErrorMessage = safeError(err)
+			job.FinishedAt = &finished
+			if updateErr := s.repository.UpdateJob(job); updateErr != nil {
+				s.logger.Error("persist retry queue failure failed", "job_id", job.ID, "error", updateErr)
+			}
+			s.broker.Publish("detection.job.failed", job)
+		}
+		return
+	}
+	s.Process(context.Background(), job)
+}
+
+func isRetryable(code string) bool {
+	switch code {
+	case "CHECK_FAILED", "CHECK_TIMEOUT", "EVIDENCE_WRITE_FAILED", "EVIDENCE_METADATA_FAILED",
+		"BASELINE_READ_FAILED", "BASELINE_CREATE_FAILED", "INCIDENT_WRITE_FAILED":
+		return true
+	default:
+		return false
+	}
 }
 
 func nextBaselineVersion(baselines []domain.BaselineVersion) int {

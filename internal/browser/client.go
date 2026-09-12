@@ -17,16 +17,18 @@ import (
 )
 
 type Client struct {
-	baseURL string
-	token   string
-	client  *http.Client
+	baseURL             string
+	token               string
+	client              *http.Client
+	allowPrivateTargets bool
 }
 
-func NewClient(baseURL, token string) *Client {
+func NewClient(baseURL, token string, allowPrivateTargets bool) *Client {
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		token:   token,
-		client:  &http.Client{Timeout: 90 * time.Second},
+		baseURL:             strings.TrimRight(baseURL, "/"),
+		token:               token,
+		client:              &http.Client{Timeout: 90 * time.Second},
+		allowPrivateTargets: allowPrivateTargets,
 	}
 }
 
@@ -43,7 +45,7 @@ func (c *Client) Check(ctx context.Context, asset domain.Asset, policy domain.Mo
 		"timeoutSeconds":      policy.TimeoutSeconds,
 		"maxResponseBytes":    policy.MaxResponseBytes,
 		"ignoreSelectors":     policy.IgnoreSelectors,
-		"allowPrivateTargets": false,
+		"allowPrivateTargets": c.allowPrivateTargets,
 	})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/check", bytes.NewReader(requestBody))
 	if err != nil {

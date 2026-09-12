@@ -124,3 +124,27 @@ button, input { font: inherit; }
   .view-content { padding-right: 14px; padding-left: 14px; }
   .panel-header { padding: 18px 16px 14px; }
 }
+.metrics-panel { margin-bottom: 22px; }
+.metric-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; background: var(--line); border-top: 1px solid var(--line); }
+.metric-row > div { min-width: 0; padding: 16px 20px; background: var(--panel); }
+.metric-row span, .metric-row strong { display: block; }
+.metric-row span { color: var(--muted); font-size: 11px; }
+.metric-row strong { margin-top: 8px; color: var(--ink); font-size: 19px; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+.form-grid .el-input-number { width: 100%; }
+.incident-detail-head { display: grid; gap: 8px; margin-bottom: 20px; }
+.incident-detail-head > strong { color: var(--ink); font-size: 18px; line-height: 1.4; }
+.incident-detail-head > small { color: var(--muted); overflow-wrap: anywhere; }
+.detail-status { margin-left: 8px; }
+.detail-heading { margin: 24px 0 10px; color: var(--ink); font-size: 14px; }
+.signal-row, .evidence-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.signal-row > div { display: flex; align-items: center; gap: 8px; }
+.signal-row p { flex: 1; margin: 0; color: var(--ink); font-size: 12px; line-height: 1.5; }
+.signal-row small, .evidence-row small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+.evidence-row > span:first-child { min-width: 0; }
+.evidence-row strong { color: var(--ink); font-size: 12px; }
+.detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+@media (max-width: 700px) {
+  .metric-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .form-grid { grid-template-columns: 1fr; }
+}

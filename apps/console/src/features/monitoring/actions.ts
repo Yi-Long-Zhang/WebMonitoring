@@ -5,6 +5,7 @@ import {
   createAsset,
   issueVerification,
   rejectBaseline,
+  retireBaseline as retireBaselineRequest,
   runDetection,
   transitionIncident,
   updateAsset,
@@ -69,29 +70,26 @@ export function useMonitoringActions() {
     ElMessage.success("事件状态已更新");
   }
 
-  async function editPolicy(asset: Asset) {
-    const current = consoleStore.policies.find((policy) => policy.assetId === asset.id);
-    if (!current) return;
-    try {
-      const result = await ElMessageBox.prompt("请输入需要忽略的 CSS Selector，多个选择器用换行分隔", `配置 ${asset.name}`, {
-        inputValue: current.ignoreSelectors.join("\n"),
-        inputType: "textarea",
-      });
-      await updatePolicy(asset.id, {
-        httpIntervalSeconds: current.httpIntervalSeconds,
-        browserIntervalSeconds: current.browserIntervalSeconds,
-        timeoutSeconds: current.timeoutSeconds,
-        maxResponseBytes: current.maxResponseBytes,
-        trustedDomains: current.trustedDomains,
-        ignoreSelectors: result.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
-      });
-      await consoleStore.refresh();
-      ElMessage.success("策略已更新");
-    } catch {
-      return;
-    }
+  async function retireBaseline(id: string) {
+    await retireBaselineRequest(id);
+    await consoleStore.refresh();
+    ElMessage.success("基线已废弃");
   }
 
+  async function savePolicy(asset: Asset, input: {
+    httpIntervalSeconds: number;
+    browserIntervalSeconds: number;
+    timeoutSeconds: number;
+    maxResponseBytes: number;
+    ignoreSelectors: string[];
+    trustedDomains: string[];
+    maintenanceWindowStart?: string;
+    maintenanceWindowEnd?: string;
+  }) {
+    await updatePolicy(asset.id, input);
+    await consoleStore.refresh();
+    ElMessage.success("策略已更新");
+  }
   async function createNewAlertChannel(input: {
     name: string;
     type: AlertChannel["type"];
@@ -111,7 +109,8 @@ export function useMonitoringActions() {
     startDetection,
     reviewBaseline,
     changeIncident,
-    editPolicy,
+    savePolicy,
+    retireBaseline,
     createNewAlertChannel,
   };
 }

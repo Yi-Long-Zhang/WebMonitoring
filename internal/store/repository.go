@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"time"
 
 	"webmonitoring/internal/domain"
 )
@@ -32,6 +33,7 @@ type Repository interface {
 	ListBaselines(tenantID, assetID string) []domain.BaselineVersion
 
 	CreateJob(domain.DetectionJob) error
+	ClaimJob(tenantID, id string, startedAt time.Time) (bool, error)
 	UpdateJob(domain.DetectionJob) error
 	GetJob(tenantID, id string) (domain.DetectionJob, error)
 	ListJobs(tenantID string) []domain.DetectionJob
@@ -48,6 +50,9 @@ type Repository interface {
 	CreateAlertChannel(domain.AlertChannel) error
 	ListAlertChannels(tenantID string) []domain.AlertChannel
 	ListAlertChannelsWithSecrets(tenantID string) []domain.AlertChannel
+	CreateAlertDelivery(domain.AlertDelivery) error
+	UpdateAlertDelivery(domain.AlertDelivery) error
+	ListAlertDeliveries(tenantID, incidentID string) []domain.AlertDelivery
 
 	AppendAudit(domain.AuditEvent) error
 	ListAudits(tenantID string) []domain.AuditEvent

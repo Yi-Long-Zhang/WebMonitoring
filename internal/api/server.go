@@ -4,11 +4,11 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -93,6 +93,7 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("GET /api/v1/baselines", s.listBaselines)
 	protected.HandleFunc("POST /api/v1/baselines/{id}/approve", s.requireRoles(s.approveBaseline, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("POST /api/v1/baselines/{id}/reject", s.requireRoles(s.rejectBaseline, domain.RoleAdmin, domain.RoleOperator))
+	protected.HandleFunc("POST /api/v1/baselines/{id}/retire", s.requireRoles(s.retireBaseline, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/detection-jobs", s.listJobs)
 	protected.HandleFunc("POST /api/v1/detection-jobs", s.requireRoles(s.createJob, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/incidents", s.listIncidents)
@@ -102,7 +103,9 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("GET /api/v1/evidence/{id}/download", s.downloadEvidence)
 	protected.HandleFunc("GET /api/v1/alert-channels", s.listAlertChannels)
 	protected.HandleFunc("POST /api/v1/alert-channels", s.requireRoles(s.createAlertChannel, domain.RoleAdmin))
+	protected.HandleFunc("GET /api/v1/alert-deliveries", s.listAlertDeliveries)
 	protected.HandleFunc("GET /api/v1/audit-events", s.listAudits)
+	protected.HandleFunc("GET /api/v1/reports/summary", s.reportSummary)
 	protected.HandleFunc("GET /api/v1/reports/{incidentId}", s.downloadReport)
 	protected.HandleFunc("GET /api/v1/events/stream", s.streamEvents)
 
@@ -235,13 +238,19 @@ func (s *Server) createAsset(writer http.ResponseWriter, request *http.Request) 
 	}
 	if asset.OwnerID == "" {
 		asset.OwnerID = session.User.ID
+	} else if _, err := s.repository.GetUser(session.User.TenantID, asset.OwnerID); err != nil {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_OWNER", "负责人不属于当前租户", nil)
+		return
 	}
 	if err := s.repository.CreateAsset(asset); err != nil {
 		writeError(writer, request, http.StatusConflict, "ASSET_EXISTS", "该 URL 已经登记", nil)
 		return
 	}
 	policy := defaultPolicy(asset)
-	_ = s.repository.UpsertPolicy(policy)
+	if err := s.repository.UpsertPolicy(policy); err != nil {
+		writeError(writer, request, http.StatusInternalServerError, "POLICY_CREATE_FAILED", "无法创建默认监测策略", nil)
+		return
+	}
 	s.appendAudit(request, session.User, "asset.create", "asset", asset.ID, "SUCCESS", map[string]any{"url": asset.URL})
 	writeJSON(writer, http.StatusCreated, asset)
 }
@@ -265,6 +274,10 @@ func (s *Server) updateAsset(writer http.ResponseWriter, request *http.Request) 
 		asset.Name = strings.TrimSpace(*input.Name)
 	}
 	if input.OwnerID != nil && *input.OwnerID != "" {
+		if _, err := s.repository.GetUser(session.User.TenantID, *input.OwnerID); err != nil {
+			writeError(writer, request, http.StatusBadRequest, "INVALID_OWNER", "负责人不属于当前租户", nil)
+			return
+		}
 		asset.OwnerID = *input.OwnerID
 	}
 	if input.Enabled != nil {
@@ -275,7 +288,10 @@ func (s *Server) updateAsset(writer http.ResponseWriter, request *http.Request) 
 		asset.Enabled = *input.Enabled
 	}
 	asset.UpdatedAt = time.Now().UTC()
-	_ = s.repository.UpdateAsset(asset)
+	if err := s.repository.UpdateAsset(asset); err != nil {
+		writeError(writer, request, http.StatusInternalServerError, "ASSET_UPDATE_FAILED", "无法更新资产", nil)
+		return
+	}
 	s.appendAudit(request, session.User, "asset.update", "asset", asset.ID, "SUCCESS", nil)
 	writeJSON(writer, http.StatusOK, asset)
 }
@@ -295,22 +311,46 @@ func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) 
 	}
 	if strings.ToUpper(input.Action) == "ISSUE" {
 		now := time.Now().UTC()
-		asset.VerificationToken = "webmonitoring-verification=" + identity.New()
+		token := "webmonitoring-verification=" + identity.New()
+		expires := now.Add(30 * time.Minute)
+		asset.VerificationToken = ""
+		asset.VerificationTokenHash = fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
 		asset.VerificationIssuedAt = &now
+		asset.VerificationExpiresAt = &expires
 		asset.VerificationStatus = domain.VerificationPending
 		asset.UpdatedAt = now
-		_ = s.repository.UpdateAsset(asset)
+		if err := s.repository.UpdateAsset(asset); err != nil {
+			writeError(writer, request, http.StatusInternalServerError, "ASSET_UPDATE_FAILED", "无法保存验证状态", nil)
+			return
+		}
 		s.appendAudit(request, session.User, "asset.verification.issue", "asset", asset.ID, "SUCCESS", nil)
 		writeJSON(writer, http.StatusOK, map[string]string{
-			"path": "/.well-known/webmonitoring-verification.txt", "content": asset.VerificationToken,
+			"path": "/.well-known/webmonitoring-verification.txt", "content": token,
 		})
 		return
 	}
-	if strings.ToUpper(input.Action) != "VERIFY" || asset.VerificationToken == "" {
+	if strings.ToUpper(input.Action) != "VERIFY" || (asset.VerificationToken == "" && asset.VerificationTokenHash == "") {
 		writeError(writer, request, http.StatusBadRequest, "INVALID_ACTION", "请先签发验证令牌", nil)
 		return
 	}
+	if asset.VerificationExpiresAt != nil && time.Now().UTC().After(*asset.VerificationExpiresAt) {
+		asset.VerificationStatus = domain.VerificationRejected
+		asset.Enabled = false
+		asset.UpdatedAt = time.Now().UTC()
+		if updateErr := s.repository.UpdateAsset(asset); updateErr != nil {
+			s.logger.Error("persist expired verification state", "asset_id", asset.ID, "error", updateErr)
+		}
+		s.appendAudit(request, session.User, "asset.verification.verify", "asset", asset.ID, "FAILED", map[string]any{"reason": "expired"})
+		writeError(writer, request, http.StatusUnprocessableEntity, "VERIFICATION_EXPIRED", "验证令牌已过期，请重新签发", nil)
+		return
+	}
 	if err := s.checkVerification(request.Context(), asset); err != nil {
+		asset.VerificationStatus = domain.VerificationRejected
+		asset.Enabled = false
+		asset.UpdatedAt = time.Now().UTC()
+		if updateErr := s.repository.UpdateAsset(asset); updateErr != nil {
+			s.logger.Error("persist failed verification state", "asset_id", asset.ID, "error", updateErr)
+		}
 		s.appendAudit(request, session.User, "asset.verification.verify", "asset", asset.ID, "FAILED", nil)
 		writeError(writer, request, http.StatusUnprocessableEntity, "VERIFICATION_FAILED", "未在目标站点找到有效令牌", nil)
 		return
@@ -318,6 +358,8 @@ func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) 
 	asset.VerificationStatus = domain.VerificationVerified
 	asset.Enabled = true
 	asset.VerificationToken = ""
+	asset.VerificationTokenHash = ""
+	asset.VerificationExpiresAt = nil
 	asset.UpdatedAt = time.Now().UTC()
 	_ = s.repository.UpdateAsset(asset)
 	s.appendAudit(request, session.User, "asset.verification.verify", "asset", asset.ID, "SUCCESS", nil)
@@ -394,6 +436,10 @@ func (s *Server) rejectBaseline(writer http.ResponseWriter, request *http.Reques
 	s.changeBaselineStatus(writer, request, domain.BaselineRejected)
 }
 
+func (s *Server) retireBaseline(writer http.ResponseWriter, request *http.Request) {
+	s.changeBaselineStatus(writer, request, domain.BaselineRetired)
+}
+
 func (s *Server) changeBaselineStatus(writer http.ResponseWriter, request *http.Request, status domain.BaselineStatus) {
 	session := principal(request)
 	baseline, err := s.repository.GetBaseline(session.User.TenantID, request.PathValue("id"))
@@ -401,7 +447,12 @@ func (s *Server) changeBaselineStatus(writer http.ResponseWriter, request *http.
 		s.notFound(writer, request)
 		return
 	}
-	if baseline.Status != domain.BaselineCandidate {
+	if status == domain.BaselineRetired {
+		if baseline.Status != domain.BaselineApproved {
+			writeError(writer, request, http.StatusConflict, "INVALID_BASELINE_STATE", "只能废弃已批准基线", nil)
+			return
+		}
+	} else if baseline.Status != domain.BaselineCandidate {
 		writeError(writer, request, http.StatusConflict, "INVALID_BASELINE_STATE", "只能处理候选基线", nil)
 		return
 	}
@@ -473,13 +524,17 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 		writeError(writer, request, http.StatusConflict, "INVALID_INCIDENT_TRANSITION", err.Error(), nil)
 		return
 	}
-	if (input.Status == domain.IncidentResolved || input.Status == domain.IncidentFalsePositive) &&
-		strings.TrimSpace(input.Resolution) == "" {
-		writeError(writer, request, http.StatusBadRequest, "RESOLUTION_REQUIRED", "解决或误报状态必须填写说明", nil)
+	if (input.Status == domain.IncidentResolved || input.Status == domain.IncidentFalsePositive || input.Status == domain.IncidentClosed) &&
+		strings.TrimSpace(input.Resolution) == "" && strings.TrimSpace(incident.Resolution) == "" {
+		writeError(writer, request, http.StatusBadRequest, "RESOLUTION_REQUIRED", "恢复、关闭或误报状态必须填写说明", nil)
 		return
 	}
 	incident.Status = input.Status
 	if input.OwnerID != "" {
+		if _, err := s.repository.GetUser(session.User.TenantID, input.OwnerID); err != nil {
+			writeError(writer, request, http.StatusBadRequest, "INVALID_OWNER", "负责人不属于当前租户", nil)
+			return
+		}
 		incident.OwnerID = input.OwnerID
 	} else if input.Status == domain.IncidentAcknowledged && incident.OwnerID == "" {
 		incident.OwnerID = session.User.ID
@@ -487,11 +542,21 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 	if input.Resolution != "" {
 		incident.Resolution = strings.TrimSpace(input.Resolution)
 	}
+	if input.Status == domain.IncidentAcknowledged && incident.AcknowledgedAt == nil {
+		now := time.Now().UTC()
+		incident.AcknowledgedAt = &now
+	}
 	if input.Status == domain.IncidentResolved || input.Status == domain.IncidentFalsePositive {
 		now := time.Now().UTC()
 		incident.ResolvedAt = &now
 	}
-	_ = s.repository.UpdateIncident(incident)
+	if input.Status == domain.IncidentInvestigating {
+		incident.ResolvedAt = nil
+	}
+	if err := s.repository.UpdateIncident(incident); err != nil {
+		writeError(writer, request, http.StatusInternalServerError, "INCIDENT_UPDATE_FAILED", "无法更新事件", nil)
+		return
+	}
 	s.appendAudit(request, session.User, "incident.transition", "incident", incident.ID, "SUCCESS", map[string]any{"status": input.Status})
 	s.broker.Publish("incident.updated", incident)
 	writeJSON(writer, http.StatusOK, incident)
@@ -503,21 +568,26 @@ func (s *Server) listEvidence(writer http.ResponseWriter, request *http.Request)
 }
 
 func (s *Server) downloadEvidence(writer http.ResponseWriter, request *http.Request) {
-	item, err := s.repository.GetEvidence(principal(request).User.TenantID, request.PathValue("id"))
+	session := principal(request)
+	evidenceID := request.PathValue("id")
+	item, err := s.repository.GetEvidence(session.User.TenantID, evidenceID)
 	if err != nil {
+		s.appendAudit(request, session.User, "evidence.download", "evidence", evidenceID, "FAILED", map[string]any{"reason": "not_found"})
 		s.notFound(writer, request)
 		return
 	}
-	file, err := s.evidence.Open(item.ObjectKey)
+	content, err := evidence.ReadVerified(s.evidence, item)
 	if err != nil {
+		s.appendAudit(request, session.User, "evidence.download", "evidence", item.ID, "FAILED", map[string]any{"reason": "integrity_check_failed"})
 		writeError(writer, request, http.StatusNotFound, "EVIDENCE_MISSING", "证据文件不存在", nil)
 		return
 	}
-	defer file.Close()
 	writer.Header().Set("Content-Type", item.MediaType)
+	writer.Header().Set("Content-Length", strconv.Itoa(len(content)))
 	writer.Header().Set("Content-Disposition", `attachment; filename="`+item.ID+safeExtension(item.Kind)+`"`)
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = io.Copy(writer, file)
+	_, _ = writer.Write(content)
+	s.appendAudit(request, session.User, "evidence.download", "evidence", item.ID, "SUCCESS", nil)
 }
 
 func (s *Server) listAlertChannels(writer http.ResponseWriter, request *http.Request) {
@@ -528,6 +598,146 @@ func (s *Server) listAlertChannels(writer http.ResponseWriter, request *http.Req
 	writeList(writer, items)
 }
 
+func (s *Server) listAlertDeliveries(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	incidentID := request.URL.Query().Get("incidentId")
+	if incidentID != "" {
+		if _, err := s.repository.GetIncident(session.User.TenantID, incidentID); err != nil {
+			s.notFound(writer, request)
+			return
+		}
+	}
+	writeList(writer, s.repository.ListAlertDeliveries(session.User.TenantID, incidentID))
+}
+
+func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	from, to, err := reportRange(request)
+	if err != nil {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_REPORT_RANGE", err.Error(), nil)
+		return
+	}
+	assetID := request.URL.Query().Get("assetId")
+	if assetID != "" {
+		if _, err := s.repository.GetAsset(session.User.TenantID, assetID); err != nil {
+			s.notFound(writer, request)
+			return
+		}
+	}
+	severityFilter := strings.ToUpper(strings.TrimSpace(request.URL.Query().Get("severity")))
+	if severityFilter != "" && !validSeverity(domain.Severity(severityFilter)) {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_SEVERITY", "风险等级无效", nil)
+		return
+	}
+	assets := s.repository.ListAssets(session.User.TenantID)
+	verifiedAssets := 0
+	assetIDs := make(map[string]struct{})
+	for _, asset := range assets {
+		if assetID != "" && asset.ID != assetID {
+			continue
+		}
+		if !withinRange(asset.CreatedAt, from, to) {
+			continue
+		}
+		assetIDs[asset.ID] = struct{}{}
+		if asset.VerificationStatus == domain.VerificationVerified {
+			verifiedAssets++
+		}
+	}
+	jobs := s.repository.ListJobs(session.User.TenantID)
+	jobCount, successfulJobs, failedJobs := 0, 0, 0
+	for _, job := range jobs {
+		if _, ok := assetIDs[job.AssetID]; !ok || !withinRange(job.CreatedAt, from, to) {
+			continue
+		}
+		jobCount++
+		if job.Status == domain.JobSucceeded {
+			successfulJobs++
+		}
+		if job.Status == domain.JobFailed || job.Status == domain.JobTimedOut {
+			failedJobs++
+		}
+	}
+	incidents := s.repository.ListIncidents(session.User.TenantID)
+	severityCounts := map[string]int{}
+	incidentIDs := make(map[string]struct{})
+	mttd, mtta, mttr := make([]float64, 0), make([]float64, 0), make([]float64, 0)
+	for _, incident := range incidents {
+		if _, ok := assetIDs[incident.AssetID]; !ok || !withinRange(incident.LastSeenAt, from, to) {
+			continue
+		}
+		if severityFilter != "" && string(incident.Severity) != severityFilter {
+			continue
+		}
+		severityCounts[string(incident.Severity)]++
+		incidentIDs[incident.ID] = struct{}{}
+		if value := incident.CreatedAt.Sub(incident.FirstSeenAt).Seconds(); value >= 0 {
+			mttd = append(mttd, value)
+		}
+		if incident.AcknowledgedAt != nil {
+			if value := incident.AcknowledgedAt.Sub(incident.FirstSeenAt).Seconds(); value >= 0 {
+				mtta = append(mtta, value)
+			}
+		}
+		if incident.ResolvedAt != nil {
+			if value := incident.ResolvedAt.Sub(incident.FirstSeenAt).Seconds(); value >= 0 {
+				mttr = append(mttr, value)
+			}
+		}
+	}
+	deliveries := s.repository.ListAlertDeliveries(session.User.TenantID, "")
+	alertDeliveries := 0
+	for _, delivery := range deliveries {
+		if _, ok := incidentIDs[delivery.IncidentID]; ok {
+			alertDeliveries++
+		}
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"assets": len(assetIDs), "verifiedAssets": verifiedAssets,
+		"detectionJobs": jobCount, "successfulJobs": successfulJobs, "failedJobs": failedJobs,
+		"incidents": len(incidentIDs), "severityCounts": severityCounts, "alertDeliveries": alertDeliveries,
+		"mttdSeconds": averageSeconds(mttd), "mttaSeconds": averageSeconds(mtta), "mttrSeconds": averageSeconds(mttr),
+	})
+}
+
+func reportRange(request *http.Request) (time.Time, time.Time, error) {
+	var from, to time.Time
+	for name, target := range map[string]*time.Time{"from": &from, "to": &to} {
+		value := strings.TrimSpace(request.URL.Query().Get(name))
+		if value == "" {
+			continue
+		}
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("%s must be RFC3339", name)
+		}
+		*target = parsed.UTC()
+	}
+	if !from.IsZero() && !to.IsZero() && from.After(to) {
+		return time.Time{}, time.Time{}, errors.New("from must not be after to")
+	}
+	return from, to, nil
+}
+
+func withinRange(value, from, to time.Time) bool {
+	return (from.IsZero() || !value.Before(from)) && (to.IsZero() || value.Before(to))
+}
+
+func averageSeconds(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	var total float64
+	for _, value := range values {
+		total += value
+	}
+	return total / float64(len(values))
+}
+
+func validSeverity(value domain.Severity) bool {
+	return value == domain.SeverityInfo || value == domain.SeverityLow || value == domain.SeverityMedium ||
+		value == domain.SeverityHigh || value == domain.SeverityCritical
+}
 func (s *Server) createAlertChannel(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
 	var input struct {
@@ -582,26 +792,55 @@ func (s *Server) downloadReport(writer http.ResponseWriter, request *http.Reques
 	}
 	var buffer bytes.Buffer
 	archive := zip.NewWriter(&buffer)
-	summary, _ := archive.Create("incident.json")
-	_ = json.NewEncoder(summary).Encode(incident)
+	summary, err := archive.Create("incident.json")
+	if err != nil {
+		s.appendAudit(request, session.User, "report.export", "incident", incident.ID, "FAILED", map[string]any{"reason": "archive_create_failed"})
+		writeError(writer, request, http.StatusInternalServerError, "REPORT_FAILED", "无法创建报告", nil)
+		return
+	}
+	if err := json.NewEncoder(summary).Encode(incident); err != nil {
+		_ = archive.Close()
+		s.appendAudit(request, session.User, "report.export", "incident", incident.ID, "FAILED", map[string]any{"reason": "summary_write_failed"})
+		writeError(writer, request, http.StatusInternalServerError, "REPORT_FAILED", "无法写入报告摘要", nil)
+		return
+	}
 	for _, evidenceID := range incident.EvidenceIDs {
 		item, getErr := s.repository.GetEvidence(session.User.TenantID, evidenceID)
 		if getErr != nil {
-			continue
+			_ = archive.Close()
+			s.appendAudit(request, session.User, "report.export", "incident", incident.ID, "FAILED", map[string]any{"reason": "evidence_metadata_missing", "evidenceId": evidenceID})
+			writeError(writer, request, http.StatusFailedDependency, "REPORT_INCOMPLETE", "报告所需证据元数据缺失", map[string]any{"evidenceId": evidenceID})
+			return
 		}
-		file, openErr := s.evidence.Open(item.ObjectKey)
+		content, openErr := evidence.ReadVerified(s.evidence, item)
 		if openErr != nil {
-			continue
+			_ = archive.Close()
+			s.appendAudit(request, session.User, "report.export", "incident", incident.ID, "FAILED", map[string]any{"reason": "evidence_integrity_failed", "evidenceId": evidenceID})
+			writeError(writer, request, http.StatusFailedDependency, "REPORT_INCOMPLETE", "报告所需证据文件缺失或完整性校验失败", map[string]any{"evidenceId": evidenceID})
+			return
 		}
 		entry, createErr := archive.Create("evidence/" + item.ID + safeExtension(item.Kind))
-		if createErr == nil {
-			_, _ = io.Copy(entry, file)
+		if createErr != nil {
+			_ = archive.Close()
+			s.appendAudit(request, session.User, "report.export", "incident", incident.ID, "FAILED", map[string]any{"reason": "archive_entry_failed", "evidenceId": evidenceID})
+			writeError(writer, request, http.StatusInternalServerError, "REPORT_FAILED", "无法创建报告证据条目", nil)
+			return
 		}
-		_ = file.Close()
+		if _, copyErr := entry.Write(content); copyErr != nil {
+			_ = archive.Close()
+			s.appendAudit(request, session.User, "report.export", "incident", incident.ID, "FAILED", map[string]any{"reason": "evidence_read_failed", "evidenceId": evidenceID})
+			writeError(writer, request, http.StatusFailedDependency, "REPORT_INCOMPLETE", "报告证据读取失败", map[string]any{"evidenceId": evidenceID})
+			return
+		}
 	}
-	_ = archive.Close()
+	if err := archive.Close(); err != nil {
+		s.appendAudit(request, session.User, "report.export", "incident", incident.ID, "FAILED", map[string]any{"reason": "archive_close_failed"})
+		writeError(writer, request, http.StatusInternalServerError, "REPORT_FAILED", "无法完成报告", nil)
+		return
+	}
 	s.appendAudit(request, session.User, "report.export", "incident", incident.ID, "SUCCESS", nil)
 	writer.Header().Set("Content-Type", "application/zip")
+	writer.Header().Set("Content-Length", strconv.Itoa(buffer.Len()))
 	writer.Header().Set("Content-Disposition", `attachment; filename="incident-`+incident.ID+`.zip"`)
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 	writer.WriteHeader(http.StatusOK)
@@ -654,8 +893,13 @@ func (s *Server) checkVerification(ctx context.Context, asset domain.Asset) erro
 	if err != nil {
 		return err
 	}
-	if result.Snapshot.StatusCode != http.StatusOK ||
-		subtle.ConstantTimeCompare([]byte(strings.TrimSpace(string(result.RawHTML))), []byte(asset.VerificationToken)) != 1 {
+	token := strings.TrimSpace(string(result.RawHTML))
+	hash := sha256.Sum256([]byte(token))
+	expected := asset.VerificationTokenHash
+	if expected == "" {
+		expected = fmt.Sprintf("%x", sha256.Sum256([]byte(asset.VerificationToken)))
+	}
+	if result.Snapshot.StatusCode != http.StatusOK || subtle.ConstantTimeCompare([]byte(fmt.Sprintf("%x", hash)), []byte(expected)) != 1 {
 		return errors.New("verification token mismatch")
 	}
 	return nil
@@ -728,11 +972,13 @@ func (s *Server) appendAudit(
 	action, resourceType, resourceID, result string,
 	details map[string]any,
 ) {
-	_ = s.repository.AppendAudit(domain.AuditEvent{
+	if err := s.repository.AppendAudit(domain.AuditEvent{
 		ID: identity.New(), TenantID: user.TenantID, ActorID: user.ID, Action: action,
 		ResourceType: resourceType, ResourceID: resourceID, Result: result,
 		TraceID: traceID(request), Details: details, CreatedAt: time.Now().UTC(),
-	})
+	}); err != nil {
+		s.logger.Error("persist audit event failed", "action", action, "resource_type", resourceType, "resource_id", resourceID, "error", err)
+	}
 }
 
 func (s *Server) notFound(writer http.ResponseWriter, request *http.Request) {

@@ -1,3 +1,4 @@
+DROP TABLE IF EXISTS alert_deliveries;
 DROP TABLE IF EXISTS audit_events;
 DROP TABLE IF EXISTS alert_channels;
 DROP TABLE IF EXISTS incidents;

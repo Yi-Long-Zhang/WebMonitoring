@@ -72,10 +72,10 @@ func (p *PostgresRepository) CreateAsset(asset domain.Asset) error {
 	_, err := p.pool.Exec(context.Background(), `
 		INSERT INTO assets (
 			id, tenant_id, site_id, name, url, asset_type, owner_id, enabled,
-			verification_status, verification_token, verification_issued_at, created_at, updated_at
-		) VALUES ($1, $2, NULLIF($3, '')::uuid, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), $11, $12, $13)`,
+			verification_status, verification_token, verification_token_hash, verification_issued_at, verification_expires_at, created_at, updated_at
+		) VALUES ($1, $2, NULLIF($3, '')::uuid, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), NULLIF($11, ''), $12, $13, $14, $15)`,
 		asset.ID, asset.TenantID, asset.SiteID, asset.Name, asset.URL, asset.Type, asset.OwnerID,
-		asset.Enabled, asset.VerificationStatus, asset.VerificationToken, asset.VerificationIssuedAt,
+		asset.Enabled, asset.VerificationStatus, asset.VerificationToken, asset.VerificationTokenHash, asset.VerificationIssuedAt, asset.VerificationExpiresAt,
 		asset.CreatedAt, asset.UpdatedAt,
 	)
 	return normalizePostgresError(err)
@@ -84,10 +84,11 @@ func (p *PostgresRepository) CreateAsset(asset domain.Asset) error {
 func (p *PostgresRepository) UpdateAsset(asset domain.Asset) error {
 	tag, err := p.pool.Exec(context.Background(), `
 		UPDATE assets SET name=$3, owner_id=$4, enabled=$5, verification_status=$6,
-			verification_token=NULLIF($7, ''), verification_issued_at=$8, updated_at=$9
+			verification_token=NULLIF($7, ''), verification_token_hash=NULLIF($8, ''),
+			verification_issued_at=$9, verification_expires_at=$10, updated_at=$11
 		WHERE tenant_id=$1 AND id=$2`,
 		asset.TenantID, asset.ID, asset.Name, asset.OwnerID, asset.Enabled,
-		asset.VerificationStatus, asset.VerificationToken, asset.VerificationIssuedAt, asset.UpdatedAt,
+		asset.VerificationStatus, asset.VerificationToken, asset.VerificationTokenHash, asset.VerificationIssuedAt, asset.VerificationExpiresAt, asset.UpdatedAt,
 	)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -118,8 +119,8 @@ func (p *PostgresRepository) ListAssets(tenantID string) []domain.Asset {
 
 const assetSelect = `
 	SELECT id, tenant_id, COALESCE(site_id::text, ''), name, url, asset_type, owner_id,
-		enabled, verification_status, COALESCE(verification_token, ''),
-		verification_issued_at, created_at, updated_at FROM assets`
+		enabled, verification_status, COALESCE(verification_token, ''), COALESCE(verification_token_hash, ''),
+		verification_issued_at, verification_expires_at, created_at, updated_at FROM assets`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -129,8 +130,8 @@ func scanAsset(row rowScanner) (domain.Asset, error) {
 	var asset domain.Asset
 	err := row.Scan(
 		&asset.ID, &asset.TenantID, &asset.SiteID, &asset.Name, &asset.URL, &asset.Type,
-		&asset.OwnerID, &asset.Enabled, &asset.VerificationStatus, &asset.VerificationToken,
-		&asset.VerificationIssuedAt, &asset.CreatedAt, &asset.UpdatedAt,
+		&asset.OwnerID, &asset.Enabled, &asset.VerificationStatus, &asset.VerificationToken, &asset.VerificationTokenHash,
+		&asset.VerificationIssuedAt, &asset.VerificationExpiresAt, &asset.CreatedAt, &asset.UpdatedAt,
 	)
 	return asset, normalizePostgresError(err)
 }
@@ -290,21 +291,31 @@ func (p *PostgresRepository) CreateJob(job domain.DetectionJob) error {
 	_, err := p.pool.Exec(context.Background(), `
 		INSERT INTO detection_jobs (
 			id,tenant_id,asset_id,mode,status,policy_version,baseline_version,error_code,
-			error_message,created_at,started_at,finished_at
-		) VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,0),NULLIF($8,''),NULLIF($9,''),$10,$11,$12)`,
+			error_message,retry_count,max_attempts,created_at,started_at,finished_at
+		) VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,0),NULLIF($8,''),NULLIF($9,''),$10,$11,$12,$13,$14)`,
 		job.ID, job.TenantID, job.AssetID, job.Mode, job.Status, job.PolicyVersion,
-		job.BaselineVersion, job.ErrorCode, job.ErrorMessage, job.CreatedAt, job.StartedAt, job.FinishedAt,
+		job.BaselineVersion, job.ErrorCode, job.ErrorMessage, job.RetryCount, job.MaxAttempts, job.CreatedAt, job.StartedAt, job.FinishedAt,
 	)
 	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) ClaimJob(tenantID, id string, startedAt time.Time) (bool, error) {
+	tag, err := p.pool.Exec(context.Background(), `
+		UPDATE detection_jobs SET status='RUNNING', started_at=$3
+		WHERE tenant_id=$1 AND id=$2 AND status='QUEUED'`, tenantID, id, startedAt)
+	if err != nil {
+		return false, normalizePostgresError(err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 func (p *PostgresRepository) UpdateJob(job domain.DetectionJob) error {
 	tag, err := p.pool.Exec(context.Background(), `
 		UPDATE detection_jobs SET status=$3,baseline_version=NULLIF($4,0),error_code=NULLIF($5,''),
-			error_message=NULLIF($6,''),started_at=$7,finished_at=$8
+			error_message=NULLIF($6,''),retry_count=$7,max_attempts=$8,started_at=$9,finished_at=$10
 		WHERE tenant_id=$1 AND id=$2`,
 		job.TenantID, job.ID, job.Status, job.BaselineVersion, job.ErrorCode,
-		job.ErrorMessage, job.StartedAt, job.FinishedAt,
+		job.ErrorMessage, job.RetryCount, job.MaxAttempts, job.StartedAt, job.FinishedAt,
 	)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -334,14 +345,14 @@ func (p *PostgresRepository) ListJobs(tenantID string) []domain.DetectionJob {
 
 const jobSelect = `
 	SELECT id,tenant_id,asset_id,mode,status,policy_version,COALESCE(baseline_version,0),
-		COALESCE(error_code,''),COALESCE(error_message,''),created_at,started_at,finished_at
+		COALESCE(error_code,''),COALESCE(error_message,''),retry_count,max_attempts,created_at,started_at,finished_at
 	FROM detection_jobs`
 
 func scanJob(row rowScanner) (domain.DetectionJob, error) {
 	var job domain.DetectionJob
 	err := row.Scan(
 		&job.ID, &job.TenantID, &job.AssetID, &job.Mode, &job.Status, &job.PolicyVersion,
-		&job.BaselineVersion, &job.ErrorCode, &job.ErrorMessage, &job.CreatedAt,
+		&job.BaselineVersion, &job.ErrorCode, &job.ErrorMessage, &job.RetryCount, &job.MaxAttempts, &job.CreatedAt,
 		&job.StartedAt, &job.FinishedAt,
 	)
 	return job, normalizePostgresError(err)
@@ -404,8 +415,8 @@ func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.In
 	row := p.pool.QueryRow(context.Background(), `
 		INSERT INTO incidents (
 			id,tenant_id,asset_id,baseline_id,baseline_version,fingerprint,severity,status,title,
-			signals,evidence_ids,occurrence_count,owner_id,resolution,created_at,first_seen_at,last_seen_at,resolved_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,'')::uuid,NULLIF($14,''),$15,$16,$17,$18)
+			signals,evidence_ids,occurrence_count,owner_id,resolution,created_at,first_seen_at,last_seen_at,acknowledged_at,resolved_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,'')::uuid,NULLIF($14,''),$15,$16,$17,$18,$19)
 		ON CONFLICT (tenant_id,asset_id,baseline_version,fingerprint)
 			WHERE status NOT IN ('CLOSED','FALSE_POSITIVE')
 		DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at,
@@ -420,7 +431,7 @@ func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.In
 		incident.ID, incident.TenantID, incident.AssetID, incident.BaselineID, incident.BaselineVersion,
 		incident.Fingerprint, incident.Severity, incident.Status, incident.Title, signals, evidenceIDs,
 		incident.OccurrenceCount, incident.OwnerID, incident.Resolution, incident.CreatedAt,
-		incident.FirstSeenAt, incident.LastSeenAt, incident.ResolvedAt,
+		incident.FirstSeenAt, incident.LastSeenAt, incident.AcknowledgedAt, incident.ResolvedAt,
 	)
 	var created bool
 	if err := row.Scan(&created); err != nil {
@@ -442,11 +453,11 @@ func (p *PostgresRepository) UpdateIncident(incident domain.Incident) error {
 	tag, err := p.pool.Exec(context.Background(), `
 		UPDATE incidents SET severity=$3,status=$4,title=$5,signals=$6,evidence_ids=$7,
 			occurrence_count=$8,owner_id=NULLIF($9,'')::uuid,resolution=NULLIF($10,''),
-			last_seen_at=$11,resolved_at=$12
+			last_seen_at=$11,acknowledged_at=$12,resolved_at=$13
 		WHERE tenant_id=$1 AND id=$2`,
 		incident.TenantID, incident.ID, incident.Severity, incident.Status, incident.Title,
 		signals, evidenceIDs, incident.OccurrenceCount, incident.OwnerID, incident.Resolution,
-		incident.LastSeenAt, incident.ResolvedAt,
+		incident.LastSeenAt, incident.AcknowledgedAt, incident.ResolvedAt,
 	)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -477,7 +488,7 @@ func (p *PostgresRepository) ListIncidents(tenantID string) []domain.Incident {
 const incidentSelect = `
 	SELECT id,tenant_id,asset_id,baseline_id,baseline_version,fingerprint,severity,status,title,
 		signals,evidence_ids,occurrence_count,COALESCE(owner_id::text,''),COALESCE(resolution,''),
-		created_at,first_seen_at,last_seen_at,resolved_at FROM incidents`
+		created_at,first_seen_at,last_seen_at,acknowledged_at,resolved_at FROM incidents`
 
 func scanIncident(row rowScanner) (domain.Incident, error) {
 	var incident domain.Incident
@@ -487,7 +498,7 @@ func scanIncident(row rowScanner) (domain.Incident, error) {
 		&incident.BaselineVersion, &incident.Fingerprint, &incident.Severity, &incident.Status,
 		&incident.Title, &signals, &evidenceIDs, &incident.OccurrenceCount, &incident.OwnerID,
 		&incident.Resolution, &incident.CreatedAt, &incident.FirstSeenAt, &incident.LastSeenAt,
-		&incident.ResolvedAt,
+		&incident.AcknowledgedAt, &incident.ResolvedAt,
 	)
 	if err != nil {
 		return incident, normalizePostgresError(err)
@@ -564,6 +575,51 @@ func (p *PostgresRepository) listAlertChannels(tenantID string, includeSecret bo
 	return result
 }
 
+func (p *PostgresRepository) CreateAlertDelivery(delivery domain.AlertDelivery) error {
+	_, err := p.pool.Exec(context.Background(), `
+		INSERT INTO alert_deliveries (
+			id,tenant_id,incident_id,channel_id,dedup_key,status,attempts,last_error,created_at,updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10)`,
+		delivery.ID, delivery.TenantID, delivery.IncidentID, delivery.ChannelID, delivery.DedupKey,
+		delivery.Status, delivery.Attempts, delivery.LastError, delivery.CreatedAt, delivery.UpdatedAt,
+	)
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) UpdateAlertDelivery(delivery domain.AlertDelivery) error {
+	tag, err := p.pool.Exec(context.Background(), `
+		UPDATE alert_deliveries SET status=$3,attempts=$4,last_error=NULLIF($5,''),updated_at=$6
+		WHERE tenant_id=$1 AND id=$2`, delivery.TenantID, delivery.ID, delivery.Status,
+		delivery.Attempts, delivery.LastError, delivery.UpdatedAt)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) ListAlertDeliveries(tenantID, incidentID string) []domain.AlertDelivery {
+	query := `SELECT id,tenant_id,incident_id,channel_id,dedup_key,status,attempts,COALESCE(last_error,''),created_at,updated_at FROM alert_deliveries WHERE tenant_id=$1`
+	args := []any{tenantID}
+	if incidentID != "" {
+		query += ` AND incident_id=$2`
+		args = append(args, incidentID)
+	}
+	query += ` ORDER BY created_at DESC LIMIT 1000`
+	rows, err := p.pool.Query(context.Background(), query, args...)
+	if err != nil {
+		return []domain.AlertDelivery{}
+	}
+	defer rows.Close()
+	result := make([]domain.AlertDelivery, 0)
+	for rows.Next() {
+		var item domain.AlertDelivery
+		if rows.Scan(&item.ID, &item.TenantID, &item.IncidentID, &item.ChannelID, &item.DedupKey,
+			&item.Status, &item.Attempts, &item.LastError, &item.CreatedAt, &item.UpdatedAt) == nil {
+			result = append(result, item)
+		}
+	}
+	return result
+}
 func (p *PostgresRepository) AppendAudit(event domain.AuditEvent) error {
 	details, _ := json.Marshal(event.Details)
 	_, err := p.pool.Exec(context.Background(), `

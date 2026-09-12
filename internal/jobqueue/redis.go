@@ -47,6 +47,19 @@ func (r *Redis) Enqueue(ctx context.Context, job domain.DetectionJob) error {
 
 func (r *Redis) Consume(ctx context.Context, consumer string, process func(context.Context, domain.DetectionJob)) error {
 	for {
+		claimed, _, err := r.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+			Stream: streamName, Group: r.group, Consumer: consumer,
+			MinIdle: 30 * time.Second, Start: "0-0", Count: 10,
+		}).Result()
+		if err != nil && !errors.Is(err, redis.Nil) {
+			return fmt.Errorf("claim pending detection jobs: %w", err)
+		}
+		for _, message := range claimed {
+			if err := r.processMessage(ctx, message, process); err != nil {
+				return err
+			}
+		}
+
 		streams, err := r.client.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group: r.group, Consumer: consumer, Streams: []string{streamName, ">"},
 			Count: 1, Block: 5 * time.Second,
@@ -59,21 +72,30 @@ func (r *Redis) Consume(ctx context.Context, consumer string, process func(conte
 		}
 		for _, stream := range streams {
 			for _, message := range stream.Messages {
-				raw, ok := message.Values["job"].(string)
-				if !ok {
-					_ = r.client.XAck(ctx, streamName, r.group, message.ID).Err()
-					continue
-				}
-				var job domain.DetectionJob
-				if json.Unmarshal([]byte(raw), &job) != nil {
-					_ = r.client.XAck(ctx, streamName, r.group, message.ID).Err()
-					continue
-				}
-				process(ctx, job)
-				if err := r.client.XAck(ctx, streamName, r.group, message.ID).Err(); err != nil {
+				if err := r.processMessage(ctx, message, process); err != nil {
 					return err
 				}
 			}
 		}
 	}
+}
+
+func (r *Redis) processMessage(ctx context.Context, message redis.XMessage, process func(context.Context, domain.DetectionJob)) error {
+	raw, ok := message.Values["job"].(string)
+	if !ok {
+		return r.ack(ctx, message.ID)
+	}
+	var job domain.DetectionJob
+	if err := json.Unmarshal([]byte(raw), &job); err != nil {
+		return r.ack(ctx, message.ID)
+	}
+	process(ctx, job)
+	return r.ack(ctx, message.ID)
+}
+
+func (r *Redis) ack(ctx context.Context, id string) error {
+	if err := r.client.XAck(ctx, streamName, r.group, id).Err(); err != nil {
+		return fmt.Errorf("ack detection job %s: %w", id, err)
+	}
+	return nil
 }

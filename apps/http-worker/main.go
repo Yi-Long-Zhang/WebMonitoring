@@ -39,7 +39,7 @@ func main() {
 	allowPrivate, _ := strconv.ParseBool(env("ALLOW_PRIVATE_TARGETS", "false"))
 	guard := security.NewURLGuard(allowPrivate)
 	broker := events.NewBroker()
-	browserClient := browser.NewClient(os.Getenv("BROWSER_WORKER_URL"), os.Getenv("BROWSER_WORKER_TOKEN"))
+	browserClient := browser.NewClient(os.Getenv("BROWSER_WORKER_URL"), os.Getenv("BROWSER_WORKER_TOKEN"), allowPrivate)
 	var browserChecker detection.BrowserChecker
 	if browserClient.Available() {
 		browserChecker = browserClient
