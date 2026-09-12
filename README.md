@@ -2,13 +2,28 @@
 
 WebMonitoring 是一个面向私有化部署的网页篡改监测与安全事件处置平台。
 
-## 当前实现
+## 当前阶段
 
-- Go 控制面和 HTTP 检测器
-- Vue 3 管理控制台
-- Playwright 浏览器检测 Worker
-- 资产授权、基线、差异、事件、证据、告警和审计
-- PostgreSQL、Redis、MinIO 的 Docker Compose 部署基线
+本项目处于 **MVP 可运行、安全边界收敛和部署路径验证阶段**。当前可运行的
+主流程是：在默认租户下登记资产，完成 HTTP 文件授权验证，启用 HTTP 或
+浏览器检测，审批候选基线，查看差异事件、证据、通知投递和审计记录。
+
+已具备：
+
+- Go 控制面、Go HTTP Worker、Playwright 浏览器 Worker 和 Vue 3 控制台。
+- URL 安全校验、重定向复核、检测超时和响应大小限制。
+- 候选基线、批准/拒绝/废弃、差异信号、事件聚合和处置状态。
+- HTML、快照和截图证据保存；下载和报告导出会校验大小及 SHA-256。
+- Webhook/企业微信通知、投递记录、重试和事件级去重。
+- 内存/本地证据开发模式，以及 PostgreSQL、Redis、MinIO Compose 路径。
+
+当前不应视为生产完成：
+
+- 完整租户/站点管理、细粒度权限、跨租户管理员和审批工作流。
+- DNS 或 HTML 元标签授权验证、登录态检测和 Secret Manager 集成。
+- 短时签名 URL、保留期管理、邮件/钉钉适配器和批量导入导出。
+- 游标分页、Prometheus/OpenTelemetry、容量测试和完整 PostgreSQL 集成测试。
+- Docker Compose 实测、Redis pending 消息恢复和生产升级演练。
 
 ## 本地嵌入模式
 
@@ -16,9 +31,9 @@ WebMonitoring 是一个面向私有化部署的网页篡改监测与安全事件
 数据，使用本地目录保存证据，API 退出后业务数据会丢失：
 
 ```powershell
-pnpm install
+corepack pnpm install
 go run ./apps/api
-pnpm dev:console
+corepack pnpm dev:console
 ```
 
 控制台位于 `http://localhost:5173`，Vite 将 `/api` 代理到
@@ -74,9 +89,9 @@ $bytes = New-Object byte[] 32
 ```powershell
 go test ./...
 go vet ./...
-pnpm typecheck
-pnpm test
-pnpm build
+corepack pnpm typecheck
+corepack pnpm test
+corepack pnpm build
 ```
 
 产品和工程约束参见 [docs/README.md](docs/README.md)。

@@ -17,15 +17,17 @@ Tenant
 
 ### Tenant
 
-租户隔离边界。除平台级资源外，所有业务资源必须携带 `tenant_id`。
+租户隔离边界。除平台级资源外，所有业务资源必须携带 `tenant_id`。当前代码
+使用固定的默认租户上下文，租户创建、切换和平台级管理员尚未实现。
 
 ### Site
 
-同一域名或业务系统的归属集合。用于站点级负责人和报告聚合。
+同一域名或业务系统的归属集合，是目标数据模型的一部分；当前数据库和 API
+尚未提供完整的站点管理流程，资产可暂时直接归属于租户。
 
 ### Asset
 
-一个已授权的检测目标。至少包含：
+一个已登记并完成授权验证后才允许检测的目标。当前实现的最低字段为：
 
 ```text
 id
@@ -33,7 +35,7 @@ tenant_id
 site_id
 url
 asset_type
-authorization_status
+verification_status
 owner_id
 enabled
 created_at
@@ -42,7 +44,8 @@ updated_at
 
 ### MonitorPolicy
 
-检测频率、超时、节点、浏览器模式、动态忽略、可信域名、维护窗口和告警策略。
+检测频率、超时、动态忽略、可信域名、维护窗口和告警策略。检测节点和登录态
+凭据配置尚未形成可用的领域流程。
 
 ### BaselineVersion
 
@@ -50,7 +53,8 @@ updated_at
 
 ### DetectionJob
 
-一次检测执行及其状态、输入策略版本、Worker、开始和结束时间。
+一次检测执行及其状态、输入策略版本、重试次数、开始和结束时间。当前队列为
+Redis Streams，开发无 Redis 时可由 API 进程内执行。
 
 ### Signal
 
@@ -144,14 +148,15 @@ RESOLVED -> CLOSED
 
 ## 8. 事件去重
 
-建议使用以下字段构造稳定去重键：
+当前事件使用以下字段构造稳定去重键：
 
 ```text
 tenant_id
 asset_id
 baseline_version
 normalized_signal_fingerprint
-time_bucket
 ```
 
-去重策略必须可配置并有测试。不能用当前时间戳直接作为唯一事件键。
+告警投递使用 `incident_id:channel_id` 作为租户内幂等键。当前事件去重未引入
+时间桶，后续如需按时间窗口拆分事件必须新增规则和回归测试，不能直接改变
+现有 fingerprint 语义。

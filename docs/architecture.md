@@ -2,7 +2,7 @@
 
 ## 1. 总体决策
 
-采用“模块化单体控制面 + 独立检测 Worker”的架构。
+当前采用“模块化单体控制面 + 独立检测 Worker”的架构。
 
 原因：
 
@@ -35,9 +35,9 @@ Go HTTP Worker       Playwright Browser Worker
 - Element Plus：适合密集型安全运营后台。
 - Pinia：只保存跨页面客户端状态，不把所有服务端数据塞入全局 Store。
 - TanStack Query for Vue：请求缓存、重试、失效和加载状态。
-- ECharts：总览统计和趋势。
-- Monaco Diff Editor：源码、HTML 和文本差异。
-- Playwright：前端 E2E。
+- ECharts 已作为依赖预留给总览统计；当前页面以摘要和列表为主。
+- 差异详情当前使用结构化信号和证据下载，Monaco Diff Editor 尚未接入。
+- 前端当前有 API client 和 Worker 测试；完整 Playwright E2E 尚未建立。
 
 ### 前端分层
 
@@ -64,12 +64,13 @@ src/
 - 采集 HTML 默认以转义文本展示。
 - 禁止无审查使用 `v-html`。
 - 必须预览时使用独立 origin 和严格 `sandbox` iframe。
-- 证据下载使用短期签名 URL。
+- 当前证据下载由已认证 API 直接返回，并校验对象大小和 SHA-256；
+  短期签名 URL 尚未接入。
 - 菜单隐藏不等于权限控制，后端必须鉴权。
 
 ## 3. Go 控制面
 
-建议模块：
+目标模块边界：
 
 ```text
 internal/
@@ -125,7 +126,8 @@ internal/
 | 结构化日志 | 运行排障，不保存敏感原文 |
 
 数据库保存证据元数据和摘要；对象存储保存原始文件。证据对象命名不得包含
-客户敏感信息，访问必须经过授权检查和短期签名。
+客户敏感信息。当前访问必须经过控制面认证、租户校验和完整性校验；生产阶段
+仍需补充短期签名或等价的短时访问凭证。
 
 ## 6. API 约定
 
