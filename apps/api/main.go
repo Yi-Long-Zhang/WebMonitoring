@@ -28,7 +28,11 @@ import (
 const defaultTenant = "00000000-0000-4000-8000-000000000001"
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
+		healthcheck(env("HEALTHCHECK_URL", "http://127.0.0.1:8080/readyz"))
+		return
+	}
+	logger := slog.New(security.NewRedactingHandler(slog.NewJSONHandler(os.Stdout, nil)))
 	ctx := context.Background()
 	repository, closeRepository := buildRepository(ctx, logger)
 	defer closeRepository()
@@ -49,17 +53,39 @@ func main() {
 		browserChecker = browserClient
 	}
 	notifier := notify.NewDispatcher(repository, guard)
+	notifier.SetRetryPolicy(
+		int(envInt64("ALERT_MAX_ATTEMPTS", 3)),
+		time.Duration(envInt64("ALERT_RETRY_BASE_MILLISECONDS", 250))*time.Millisecond,
+	)
 	detectionService := detection.NewService(
 		repository, evidenceStore, httpChecker, browserChecker, notifier, broker, logger,
 	)
+	detectionService.SetRetryBase(time.Duration(envInt64("QUEUE_RETRY_BASE_MILLISECONDS", 500)) * time.Millisecond)
 	var closeQueue func()
+	var queueReady interface{ Ready(context.Context) error }
+	var detectionQueue *jobqueue.Redis
+	var alertQueue *jobqueue.Redis
 	if redisAddress := os.Getenv("REDIS_ADDR"); redisAddress != "" {
 		queue, queueErr := jobqueue.NewRedis(ctx, redisAddress, "detection-workers")
 		if queueErr != nil {
 			log.Fatal(queueErr)
 		}
 		detectionService.SetQueue(queue)
-		closeQueue = func() { _ = queue.Close() }
+		detectionQueue = queue
+		queueReady = queue
+		alertQueue, queueErr = jobqueue.NewAlertRedis(ctx, redisAddress, "alert-workers")
+		if queueErr != nil {
+			log.Fatal(queueErr)
+		}
+		detectionService.SetAlertQueue(alertQueue)
+		queue.SetMaxDeliveries(envInt64("QUEUE_MAX_DELIVERIES", 5))
+		queue.SetMinIdle(time.Duration(envInt64("QUEUE_MIN_IDLE_SECONDS", 120)) * time.Second)
+		alertQueue.SetMaxDeliveries(envInt64("ALERT_QUEUE_MAX_DELIVERIES", 5))
+		alertQueue.SetMinIdle(time.Duration(envInt64("ALERT_QUEUE_MIN_IDLE_SECONDS", 120)) * time.Second)
+		closeQueue = func() {
+			_ = queue.Close()
+			_ = alertQueue.Close()
+		}
 	} else {
 		logger.Warn("using embedded job execution; configure REDIS_ADDR for independent workers")
 		closeQueue = func() {}
@@ -70,6 +96,43 @@ func main() {
 	server := api.NewServer(
 		repository, authService, detectionService, evidenceStore, guard, broker, logger, sessionSecure,
 	)
+	detectionService.SetMetrics(server.Metrics())
+	notifier.SetMetrics(server.Metrics())
+	if detectionQueue != nil {
+		detectionQueue.SetMetrics(server.Metrics())
+	}
+	if alertQueue != nil {
+		alertQueue.SetMetrics(server.Metrics())
+	}
+	server.SetReadiness(func(checkContext context.Context) map[string]error {
+		failures := make(map[string]error)
+		if checker, ok := repository.(interface{ Ready(context.Context) error }); ok {
+			if err := checker.Ready(checkContext); err != nil {
+				failures["postgres"] = err
+			}
+		}
+		if checker, ok := evidenceStore.(evidence.HealthChecker); ok {
+			if err := checker.Ready(checkContext); err != nil {
+				failures["evidence"] = err
+			}
+		}
+		if browserClient.Available() {
+			if err := browserClient.Ready(checkContext); err != nil {
+				failures["browser_worker"] = err
+			}
+		}
+		if queueReady != nil {
+			if err := queueReady.Ready(checkContext); err != nil {
+				failures["redis"] = err
+			}
+		}
+		if alertQueue != nil {
+			if err := alertQueue.Ready(checkContext); err != nil {
+				failures["alert_redis"] = err
+			}
+		}
+		return failures
+	})
 	scheduler := detection.NewScheduler(repository, detectionService, logger)
 	go scheduler.Run(ctx, defaultTenant)
 
@@ -85,6 +148,18 @@ func main() {
 	}
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
+	}
+}
+
+func healthcheck(target string) {
+	client := &http.Client{Timeout: 3 * time.Second}
+	response, err := client.Get(target)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		log.Fatalf("health check returned %d", response.StatusCode)
 	}
 }
 
@@ -142,4 +217,12 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envInt64(name string, fallback int64) int64 {
+	value, err := strconv.ParseInt(env(name, strconv.FormatInt(fallback, 10)), 10, 64)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
 }

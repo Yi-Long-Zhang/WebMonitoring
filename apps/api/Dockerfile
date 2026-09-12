@@ -10,4 +10,5 @@ FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app
 COPY --from=build /out/webmonitoring-api /app/webmonitoring-api
 EXPOSE 8080
+HEALTHCHECK --interval=10s --timeout=5s --retries=12 CMD ["/app/webmonitoring-api", "--healthcheck"]
 ENTRYPOINT ["/app/webmonitoring-api"]

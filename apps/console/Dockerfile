@@ -1,8 +1,9 @@
 FROM node:24-alpine AS build
 WORKDIR /app
 COPY package.json pnpm-workspace.yaml ./
+COPY pnpm-lock.yaml pnpm-lock.yaml
 COPY apps/console/package.json apps/console/package.json
-RUN corepack enable && pnpm install --filter @webmonitoring/console... --frozen-lockfile=false
+RUN corepack enable && pnpm install --filter @webmonitoring/console... --frozen-lockfile
 COPY apps/console apps/console
 RUN pnpm --filter @webmonitoring/console build
 

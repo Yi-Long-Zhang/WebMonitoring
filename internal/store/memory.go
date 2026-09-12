@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"sync"
@@ -35,6 +36,10 @@ func NewMemoryRepository() *MemoryRepository {
 		channels:   make(map[string]domain.AlertChannel),
 		deliveries: make(map[string]domain.AlertDelivery),
 	}
+}
+
+func (m *MemoryRepository) Ready(context.Context) error {
+	return nil
 }
 
 func tenantKey(tenantID, id string) string {
@@ -247,7 +252,9 @@ func (m *MemoryRepository) ClaimJob(tenantID, id string, startedAt time.Time) (b
 	if !ok {
 		return false, ErrNotFound
 	}
-	if job.Status != domain.JobQueued {
+	staleRunning := job.Status == domain.JobRunning &&
+		job.StartedAt != nil && job.StartedAt.Before(startedAt.Add(-5*time.Minute))
+	if job.Status != domain.JobQueued && !staleRunning {
 		return false, nil
 	}
 	job.Status = domain.JobRunning

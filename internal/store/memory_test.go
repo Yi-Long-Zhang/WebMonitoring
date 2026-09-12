@@ -49,6 +49,30 @@ func TestClaimJobOnlySucceedsOnce(t *testing.T) {
 	}
 }
 
+func TestClaimJobRecoversOnlyAfterLeaseExpires(t *testing.T) {
+	repository := NewMemoryRepository()
+	started := time.Now().UTC().Add(-6 * time.Minute)
+	job := domain.DetectionJob{
+		ID: "job", TenantID: "tenant", AssetID: "asset", Mode: "HTTP",
+		Status: domain.JobRunning, StartedAt: &started, CreatedAt: started,
+	}
+	if err := repository.CreateJob(job); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := repository.ClaimJob("tenant", "job", time.Now().UTC())
+	if err != nil || !claimed {
+		t.Fatalf("stale running job was not reclaimed: claimed=%v err=%v", claimed, err)
+	}
+
+	claimed, err = repository.ClaimJob("tenant", "job", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed {
+		t.Fatal("active running job was reclaimed before its lease expired")
+	}
+}
+
 func TestAlertDeliveryDeduplicatesByIncidentAndChannel(t *testing.T) {
 	repository := NewMemoryRepository()
 	first := domain.AlertDelivery{ID: "delivery-1", TenantID: "tenant", IncidentID: "incident", ChannelID: "channel", DedupKey: "incident:channel", Status: "PENDING", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}

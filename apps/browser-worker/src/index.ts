@@ -1,5 +1,6 @@
 import http from "node:http";
 import crypto from "node:crypto";
+import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import { assertSafeTarget } from "./security.js";
@@ -53,6 +54,15 @@ type Snapshot = {
 const server = http.createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/healthz") {
     writeJSON(response, 200, { status: "ok" });
+    return;
+  }
+  if (request.method === "GET" && request.url === "/readyz") {
+    try {
+      await access(chromium.executablePath());
+      writeJSON(response, 200, { status: "ready" });
+    } catch {
+      writeJSON(response, 503, { status: "not_ready" });
+    }
     return;
   }
   if (request.method !== "POST" || request.url !== "/check") {

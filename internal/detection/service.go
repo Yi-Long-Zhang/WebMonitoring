@@ -13,7 +13,9 @@ import (
 	"webmonitoring/internal/events"
 	"webmonitoring/internal/evidence"
 	"webmonitoring/internal/identity"
+	"webmonitoring/internal/metrics"
 	"webmonitoring/internal/notify"
+	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
 )
 
@@ -25,6 +27,10 @@ type JobQueue interface {
 	Enqueue(context.Context, domain.DetectionJob) error
 }
 
+type AlertQueue interface {
+	EnqueueAlert(context.Context, domain.AlertJob) error
+}
+
 type Service struct {
 	repository store.Repository
 	evidence   evidence.Store
@@ -34,6 +40,9 @@ type Service struct {
 	broker     *events.Broker
 	logger     *slog.Logger
 	queue      JobQueue
+	alertQueue AlertQueue
+	metrics    *metrics.Registry
+	retryBase  time.Duration
 }
 
 func NewService(
@@ -53,11 +62,26 @@ func NewService(
 		notifier:   notifier,
 		broker:     broker,
 		logger:     logger,
+		retryBase:  500 * time.Millisecond,
 	}
 }
 
 func (s *Service) SetQueue(queue JobQueue) {
 	s.queue = queue
+}
+
+func (s *Service) SetAlertQueue(queue AlertQueue) {
+	s.alertQueue = queue
+}
+
+func (s *Service) SetMetrics(registry *metrics.Registry) {
+	s.metrics = registry
+}
+
+func (s *Service) SetRetryBase(delay time.Duration) {
+	if delay > 0 {
+		s.retryBase = delay
+	}
 }
 
 func (s *Service) Queue(tenantID, assetID, mode string) (domain.DetectionJob, error) {
@@ -92,10 +116,13 @@ func (s *Service) Queue(tenantID, assetID, mode string) (domain.DetectionJob, er
 	if err := s.repository.CreateJob(job); err != nil {
 		return domain.DetectionJob{}, err
 	}
+	if s.metrics != nil {
+		s.metrics.Inc("webmonitoring_detection_jobs_total", map[string]string{"mode": mode, "status": "QUEUED"})
+	}
 	s.broker.Publish("detection.job.queued", job)
 	if s.queue != nil {
 		if err := s.queue.Enqueue(context.Background(), job); err != nil {
-			s.failJob(job, "QUEUE_FAILED", err)
+			_ = s.failJob(context.Background(), job, "QUEUE_FAILED", err)
 			return domain.DetectionJob{}, err
 		}
 	} else {
@@ -104,40 +131,53 @@ func (s *Service) Queue(tenantID, assetID, mode string) (domain.DetectionJob, er
 	return job, nil
 }
 
-func (s *Service) Process(ctx context.Context, job domain.DetectionJob) {
+func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 	started := time.Now().UTC()
 	claimed, err := s.repository.ClaimJob(job.TenantID, job.ID, started)
 	if err != nil {
 		s.logger.Error("claim detection job failed", "job_id", job.ID, "error", err)
-		return
+		return err
 	}
 	if !claimed {
-		return
+		current, getErr := s.repository.GetJob(job.TenantID, job.ID)
+		if getErr != nil {
+			return fmt.Errorf("inspect unclaimed detection job: %w", getErr)
+		}
+		switch current.Status {
+		case domain.JobSucceeded, domain.JobFailed, domain.JobTimedOut, domain.JobCancelled:
+			return nil
+		default:
+			return fmt.Errorf("detection job %s is still %s", job.ID, current.Status)
+		}
 	}
+	current, err := s.repository.GetJob(job.TenantID, job.ID)
+	if err != nil {
+		return fmt.Errorf("refresh claimed detection job: %w", err)
+	}
+	job = current
 	job.Status = domain.JobRunning
+	if s.metrics != nil {
+		s.metrics.Inc("webmonitoring_detection_jobs_total", map[string]string{"mode": job.Mode, "status": "RUNNING"})
+	}
 	job.StartedAt = &started
 	s.broker.Publish("detection.job.running", job)
 
 	asset, err := s.repository.GetAsset(job.TenantID, job.AssetID)
 	if err != nil {
-		s.failJob(job, "ASSET_NOT_FOUND", err)
-		return
+		return s.failJob(ctx, job, "ASSET_NOT_FOUND", err)
 	}
 	policy, err := s.repository.GetPolicy(job.TenantID, job.AssetID)
 	if err != nil {
-		s.failJob(job, "POLICY_NOT_FOUND", err)
-		return
+		return s.failJob(ctx, job, "POLICY_NOT_FOUND", err)
 	}
 	if inMaintenanceWindow(policy, time.Now().UTC()) {
-		s.failJob(job, "MAINTENANCE_WINDOW", errors.New("detection suppressed during maintenance window"))
-		return
+		return s.failJob(ctx, job, "MAINTENANCE_WINDOW", errors.New("detection suppressed during maintenance window"))
 	}
 
 	var result CheckResult
 	if job.Mode == "BROWSER" {
 		if s.browser == nil {
-			s.failJob(job, "BROWSER_UNAVAILABLE", errors.New("browser worker is not configured"))
-			return
+			return s.failJob(ctx, job, "BROWSER_UNAVAILABLE", errors.New("browser worker is not configured"))
 		}
 		result, err = s.browser.Check(ctx, asset, policy)
 	} else {
@@ -148,32 +188,29 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) {
 		if errors.Is(err, context.DeadlineExceeded) {
 			code = "CHECK_TIMEOUT"
 		}
-		s.failJob(job, code, err)
-		return
+		return s.failJob(ctx, job, code, err)
 	}
 
 	evidenceIDs := make([]string, 0, 3)
 	htmlEvidence, err := s.evidence.Put(asset.TenantID, asset.ID, job.ID, "page.html", "text/html", result.RawHTML)
 	if err != nil {
-		s.failJob(job, "EVIDENCE_WRITE_FAILED", err)
-		return
+		return s.failJob(ctx, job, "EVIDENCE_WRITE_FAILED", err)
 	}
 	if err := s.repository.CreateEvidence(htmlEvidence); err != nil {
-		s.failJob(job, "EVIDENCE_METADATA_FAILED", err)
-		return
+		return s.failJob(ctx, job, "EVIDENCE_METADATA_FAILED", err)
 	}
+	s.recordEvidenceWrite("page.html", "success")
 	evidenceIDs = append(evidenceIDs, htmlEvidence.ID)
 
 	snapshotJSON, _ := json.MarshalIndent(result.Snapshot, "", "  ")
 	snapshotEvidence, err := s.evidence.Put(asset.TenantID, asset.ID, job.ID, "snapshot.json", "application/json", snapshotJSON)
 	if err != nil {
-		s.failJob(job, "EVIDENCE_WRITE_FAILED", err)
-		return
+		return s.failJob(ctx, job, "EVIDENCE_WRITE_FAILED", err)
 	}
 	if err := s.repository.CreateEvidence(snapshotEvidence); err != nil {
-		s.failJob(job, "EVIDENCE_METADATA_FAILED", err)
-		return
+		return s.failJob(ctx, job, "EVIDENCE_METADATA_FAILED", err)
 	}
+	s.recordEvidenceWrite("snapshot.json", "success")
 	evidenceIDs = append(evidenceIDs, snapshotEvidence.ID)
 
 	if len(result.Screenshot) > 0 {
@@ -181,13 +218,12 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) {
 			asset.TenantID, asset.ID, job.ID, "screenshot.png", "image/png", result.Screenshot,
 		)
 		if putErr != nil {
-			s.failJob(job, "EVIDENCE_WRITE_FAILED", putErr)
-			return
+			return s.failJob(ctx, job, "EVIDENCE_WRITE_FAILED", putErr)
 		}
 		if createErr := s.repository.CreateEvidence(screenshotEvidence); createErr != nil {
-			s.failJob(job, "EVIDENCE_METADATA_FAILED", createErr)
-			return
+			return s.failJob(ctx, job, "EVIDENCE_METADATA_FAILED", createErr)
 		}
+		s.recordEvidenceWrite("screenshot.png", "success")
 		evidenceIDs = append(evidenceIDs, screenshotEvidence.ID)
 		result.Snapshot.ScreenshotHash = screenshotEvidence.SHA256
 	}
@@ -206,13 +242,11 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) {
 			CreatedAt:   time.Now().UTC(),
 		}
 		if err := s.repository.CreateBaseline(candidate); err != nil {
-			s.failJob(job, "BASELINE_CREATE_FAILED", err)
-			return
+			return s.failJob(ctx, job, "BASELINE_CREATE_FAILED", err)
 		}
 		s.broker.Publish("baseline.candidate.created", candidate)
 	} else if baselineErr != nil {
-		s.failJob(job, "BASELINE_READ_FAILED", baselineErr)
-		return
+		return s.failJob(ctx, job, "BASELINE_READ_FAILED", baselineErr)
 	} else {
 		job.BaselineVersion = baseline.Version
 		signals := Compare(baseline.Snapshot, result.Snapshot, policy.TrustedDomains, evidenceIDs)
@@ -238,18 +272,25 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) {
 			}
 			saved, created, upsertErr := s.repository.UpsertIncident(incident)
 			if upsertErr != nil {
-				s.failJob(job, "INCIDENT_WRITE_FAILED", upsertErr)
-				return
+				return s.failJob(ctx, job, "INCIDENT_WRITE_FAILED", upsertErr)
 			}
 			if created {
 				s.broker.Publish("incident.created", saved)
-				if s.notifier != nil {
+			} else {
+				s.broker.Publish("incident.updated", saved)
+			}
+			if s.notifier != nil {
+				if s.alertQueue != nil {
+					if err := s.alertQueue.EnqueueAlert(ctx, domain.AlertJob{
+						TenantID: saved.TenantID, IncidentID: saved.ID, AssetID: saved.AssetID,
+					}); err != nil {
+						return s.failJob(ctx, job, "ALERT_QUEUE_FAILED", err)
+					}
+				} else if created {
 					for _, notifyErr := range s.notifier.SendIncident(ctx, saved, asset) {
 						s.logger.Warn("notification failed", "incident_id", saved.ID, "error", notifyErr)
 					}
 				}
-			} else {
-				s.broker.Publish("incident.updated", saved)
 			}
 		}
 	}
@@ -257,11 +298,17 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) {
 	finished := time.Now().UTC()
 	job.Status = domain.JobSucceeded
 	job.FinishedAt = &finished
-	_ = s.repository.UpdateJob(job)
+	if err := s.repository.UpdateJob(job); err != nil {
+		return fmt.Errorf("persist successful detection job: %w", err)
+	}
 	s.broker.Publish("detection.job.succeeded", job)
+	if s.metrics != nil {
+		s.metrics.Inc("webmonitoring_detection_jobs_total", map[string]string{"mode": job.Mode, "status": string(job.Status)})
+	}
+	return nil
 }
 
-func (s *Service) failJob(job domain.DetectionJob, code string, err error) {
+func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code string, err error) error {
 	if isRetryable(code) {
 		maxAttempts := job.MaxAttempts
 		if maxAttempts <= 0 {
@@ -277,10 +324,20 @@ func (s *Service) failJob(job domain.DetectionJob, code string, err error) {
 			job.FinishedAt = nil
 			if updateErr := s.repository.UpdateJob(job); updateErr != nil {
 				s.logger.Error("persist detection retry failed", "job_id", job.ID, "error", updateErr)
+				return updateErr
 			} else {
 				s.broker.Publish("detection.job.retrying", job)
-				go s.enqueueRetry(job)
-				return
+				if s.metrics != nil {
+					s.metrics.Inc("webmonitoring_detection_jobs_total", map[string]string{"mode": job.Mode, "status": "RETRYING", "error_code": code})
+				}
+				if s.queue != nil {
+					if enqueueErr := s.enqueueRetry(ctx, job); enqueueErr != nil {
+						return enqueueErr
+					}
+				} else {
+					go s.enqueueRetry(context.Background(), job)
+				}
+				return nil
 			}
 		}
 	}
@@ -291,38 +348,55 @@ func (s *Service) failJob(job domain.DetectionJob, code string, err error) {
 	job.FinishedAt = &finished
 	if updateErr := s.repository.UpdateJob(job); updateErr != nil {
 		s.logger.Error("persist detection failure failed", "job_id", job.ID, "error", updateErr)
+		return updateErr
 	}
 	s.logger.Warn("detection job failed", "job_id", job.ID, "code", code, "error", err)
 	s.broker.Publish("detection.job.failed", job)
+	if s.metrics != nil {
+		s.metrics.Inc("webmonitoring_detection_jobs_total", map[string]string{"mode": job.Mode, "status": string(job.Status), "error_code": code})
+		if strings.HasPrefix(code, "EVIDENCE_") {
+			s.metrics.Inc("webmonitoring_evidence_failures_total", map[string]string{"error_code": code})
+			s.metrics.Inc("webmonitoring_evidence_writes_total", map[string]string{"status": "failed"})
+		}
+	}
+	return nil
 }
 
-func (s *Service) enqueueRetry(job domain.DetectionJob) {
-	delay := time.Duration(1<<job.RetryCount) * 500 * time.Millisecond
+func (s *Service) enqueueRetry(ctx context.Context, job domain.DetectionJob) error {
+	delay := time.Duration(1<<job.RetryCount) * s.retryBase
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
-	<-timer.C
-	if s.queue != nil {
-		if err := s.queue.Enqueue(context.Background(), job); err != nil {
-			s.logger.Error("enqueue detection retry failed", "job_id", job.ID, "error", err)
-			finished := time.Now().UTC()
-			job.Status = domain.JobFailed
-			job.ErrorCode = "RETRY_QUEUE_FAILED"
-			job.ErrorMessage = safeError(err)
-			job.FinishedAt = &finished
-			if updateErr := s.repository.UpdateJob(job); updateErr != nil {
-				s.logger.Error("persist retry queue failure failed", "job_id", job.ID, "error", updateErr)
-			}
-			s.broker.Publish("detection.job.failed", job)
-		}
-		return
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
 	}
-	s.Process(context.Background(), job)
+	if s.queue != nil {
+		if err := s.queue.Enqueue(ctx, job); err != nil {
+			return fmt.Errorf("enqueue detection retry: %w", err)
+		}
+		return nil
+	}
+	go func() {
+		if err := s.Process(context.Background(), job); err != nil {
+			s.logger.Error("process embedded detection retry failed", "job_id", job.ID, "error", err)
+		}
+	}()
+	return nil
+}
+
+func (s *Service) recordEvidenceWrite(kind, status string) {
+	if s.metrics != nil {
+		s.metrics.Inc("webmonitoring_evidence_writes_total", map[string]string{
+			"kind": kind, "status": status,
+		})
+	}
 }
 
 func isRetryable(code string) bool {
 	switch code {
 	case "CHECK_FAILED", "CHECK_TIMEOUT", "EVIDENCE_WRITE_FAILED", "EVIDENCE_METADATA_FAILED",
-		"BASELINE_READ_FAILED", "BASELINE_CREATE_FAILED", "INCIDENT_WRITE_FAILED":
+		"BASELINE_READ_FAILED", "BASELINE_CREATE_FAILED", "INCIDENT_WRITE_FAILED", "ALERT_QUEUE_FAILED":
 		return true
 	default:
 		return false
@@ -349,7 +423,7 @@ func incidentTitle(asset domain.Asset, severity domain.Severity, signals []domai
 }
 
 func safeError(err error) string {
-	message := err.Error()
+	message := security.RedactString(err.Error())
 	if len(message) > 240 {
 		message = message[:240]
 	}

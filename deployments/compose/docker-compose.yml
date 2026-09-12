@@ -7,9 +7,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-webmonitoring}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ../../db/migrations/000001_initial.up.sql:/docker-entrypoint-initdb.d/001-initial.sql:ro
-      - ../../db/migrations/000002_mvp_reliability.up.sql:/docker-entrypoint-initdb.d/002-mvp-reliability.sql:ro
-      - ../../db/migrations/000003_tenant_integrity.up.sql:/docker-entrypoint-initdb.d/003-tenant-integrity.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U webmonitoring"]
       interval: 5s
@@ -27,8 +24,19 @@ services:
       timeout: 3s
       retries: 20
 
+  migrate:
+    build:
+      context: ../..
+      dockerfile: apps/migrate/Dockerfile
+    command: ["up"]
+    environment:
+      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:-webmonitoring}@postgres:5432/webmonitoring?sslmode=disable
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
   minio:
-    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    image: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY:-webmonitoring}
@@ -36,6 +44,7 @@ services:
     volumes:
       - minio-data:/data
     ports:
+      - "9000:9000"
       - "9001:9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
@@ -78,6 +87,9 @@ services:
       BROWSER_WORKER_URL: http://browser-worker:8081
       BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:-replace-with-a-random-token}
       ALERT_SECRET_KEY: ${ALERT_SECRET_KEY:?set ALERT_SECRET_KEY to a base64-encoded 32-byte key}
+      QUEUE_RETRY_BASE_MILLISECONDS: ${QUEUE_RETRY_BASE_MILLISECONDS:-500}
+      ALERT_MAX_ATTEMPTS: ${ALERT_MAX_ATTEMPTS:-3}
+      ALERT_RETRY_BASE_MILLISECONDS: ${ALERT_RETRY_BASE_MILLISECONDS:-250}
       POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:-webmonitoring}@postgres:5432/webmonitoring?sslmode=disable
       REDIS_ADDR: redis:6379
       S3_ENDPOINT: http://minio:9000
@@ -89,8 +101,10 @@ services:
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
       browser-worker: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
     ports:
       - "8080:8080"
+    restart: unless-stopped
 
   http-worker:
     build:
@@ -108,20 +122,34 @@ services:
       BROWSER_WORKER_URL: http://browser-worker:8081
       BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:-replace-with-a-random-token}
       ALERT_SECRET_KEY: ${ALERT_SECRET_KEY:?set ALERT_SECRET_KEY to a base64-encoded 32-byte key}
+      QUEUE_MAX_DELIVERIES: ${QUEUE_MAX_DELIVERIES:-5}
+      QUEUE_MIN_IDLE_SECONDS: ${QUEUE_MIN_IDLE_SECONDS:-120}
+      QUEUE_RETRY_BASE_MILLISECONDS: ${QUEUE_RETRY_BASE_MILLISECONDS:-500}
+      ALERT_QUEUE_MAX_DELIVERIES: ${ALERT_QUEUE_MAX_DELIVERIES:-5}
+      ALERT_QUEUE_MIN_IDLE_SECONDS: ${ALERT_QUEUE_MIN_IDLE_SECONDS:-120}
+      ALERT_MAX_ATTEMPTS: ${ALERT_MAX_ATTEMPTS:-3}
+      ALERT_RETRY_BASE_MILLISECONDS: ${ALERT_RETRY_BASE_MILLISECONDS:-250}
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
       browser-worker: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
 
   console:
     build:
       context: ../..
       dockerfile: apps/console/Dockerfile
     depends_on:
-      - api
+      api: { condition: service_healthy }
     ports:
       - "8088:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
 volumes:
   postgres-data:

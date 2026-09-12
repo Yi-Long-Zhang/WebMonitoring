@@ -250,16 +250,23 @@ type AlertChannel struct {
 }
 
 type AlertDelivery struct {
-	ID         string    `json:"id"`
-	TenantID   string    `json:"tenantId"`
-	IncidentID string    `json:"incidentId"`
-	ChannelID  string    `json:"channelId"`
-	DedupKey   string    `json:"dedupKey"`
-	Status     string    `json:"status"`
-	Attempts   int       `json:"attempts"`
-	LastError  string    `json:"lastError,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	ID            string     `json:"id"`
+	TenantID      string     `json:"tenantId"`
+	IncidentID    string     `json:"incidentId"`
+	ChannelID     string     `json:"channelId"`
+	DedupKey      string     `json:"dedupKey"`
+	Status        string     `json:"status"`
+	Attempts      int        `json:"attempts"`
+	LastError     string     `json:"lastError,omitempty"`
+	NextAttemptAt *time.Time `json:"nextAttemptAt,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
+}
+
+type AlertJob struct {
+	TenantID   string `json:"tenantId"`
+	IncidentID string `json:"incidentId"`
+	AssetID    string `json:"assetId"`
 }
 
 type AuditEvent struct {

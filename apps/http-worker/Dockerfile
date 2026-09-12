@@ -9,4 +9,6 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/webmonitoring-work
 FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app
 COPY --from=build /out/webmonitoring-worker /app/webmonitoring-worker
+EXPOSE 8082
+HEALTHCHECK --interval=10s --timeout=5s --retries=12 CMD ["/app/webmonitoring-worker", "--healthcheck"]
 ENTRYPOINT ["/app/webmonitoring-worker"]

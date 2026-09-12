@@ -24,6 +24,11 @@ type S3Store struct {
 	bucket string
 }
 
+func (s *S3Store) Ready(ctx context.Context) error {
+	_, err := s.client.BucketExists(ctx, s.bucket)
+	return err
+}
+
 func NewS3Store(ctx context.Context, endpoint, accessKey, secretKey, bucket string) (*S3Store, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Host == "" {

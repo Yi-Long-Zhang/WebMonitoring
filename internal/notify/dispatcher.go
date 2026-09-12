@@ -16,14 +16,70 @@ import (
 
 	"webmonitoring/internal/domain"
 	"webmonitoring/internal/identity"
+	"webmonitoring/internal/metrics"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
 )
 
 type Dispatcher struct {
-	repository store.Repository
-	guard      *security.URLGuard
-	client     *http.Client
+	repository  store.Repository
+	guard       *security.URLGuard
+	client      *http.Client
+	metrics     *metrics.Registry
+	maxAttempts int
+	baseBackoff time.Duration
+}
+
+type AlertQueue interface {
+	EnqueueAlert(context.Context, domain.AlertJob) error
+}
+
+func (d *Dispatcher) SetMetrics(registry *metrics.Registry) {
+	d.metrics = registry
+}
+
+func (d *Dispatcher) SetRetryPolicy(maxAttempts int, baseBackoff time.Duration) {
+	if maxAttempts > 0 {
+		d.maxAttempts = maxAttempts
+	}
+	if baseBackoff > 0 {
+		d.baseBackoff = baseBackoff
+	}
+}
+
+func (d *Dispatcher) ProcessAlert(ctx context.Context, job domain.AlertJob) error {
+	incident, err := d.repository.GetIncident(job.TenantID, job.IncidentID)
+	if err != nil {
+		return fmt.Errorf("load alert incident: %w", err)
+	}
+	asset, err := d.repository.GetAsset(job.TenantID, job.AssetID)
+	if err != nil {
+		return fmt.Errorf("load alert asset: %w", err)
+	}
+	failures := d.SendIncident(ctx, incident, asset)
+	if len(failures) > 0 {
+		return errors.Join(failures...)
+	}
+	return nil
+}
+
+func (d *Dispatcher) MarkDeadLetter(ctx context.Context, job domain.AlertJob) error {
+	deliveries := d.repository.ListAlertDeliveries(job.TenantID, job.IncidentID)
+	now := time.Now().UTC()
+	var failures []error
+	for _, delivery := range deliveries {
+		if delivery.Status == "DELIVERED" {
+			continue
+		}
+		delivery.Status = "FAILED"
+		delivery.LastError = "alert message exceeded the maximum delivery count"
+		delivery.NextAttemptAt = nil
+		delivery.UpdatedAt = now
+		if err := d.repository.UpdateAlertDelivery(delivery); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
 }
 
 func NewDispatcher(repository store.Repository, guard *security.URLGuard) *Dispatcher {
@@ -45,6 +101,8 @@ func NewDispatcher(repository store.Repository, guard *security.URLGuard) *Dispa
 				return err
 			},
 		},
+		maxAttempts: 3,
+		baseBackoff: 250 * time.Millisecond,
 	}
 }
 
@@ -63,26 +121,43 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 		}
 		if err := d.repository.CreateAlertDelivery(delivery); err != nil {
 			if errors.Is(err, store.ErrConflict) {
+				existing := d.findDelivery(incident.TenantID, incident.ID, channel.ID)
+				if existing.ID == "" {
+					failures = append(failures, fmt.Errorf("channel %s delivery conflict without existing record", channel.ID))
+					continue
+				}
+				if existing.Status == "DELIVERED" {
+					continue
+				}
+				delivery = existing
+			} else {
+				failures = append(failures, fmt.Errorf("channel %s delivery record: %w", channel.ID, err))
 				continue
 			}
-			failures = append(failures, fmt.Errorf("channel %s delivery record: %w", channel.ID, err))
-			continue
 		}
 		var lastErr error
-		for attempt := 1; attempt <= 3; attempt++ {
+		startAttempt := delivery.Attempts + 1
+		if startAttempt < 1 {
+			startAttempt = 1
+		}
+		if startAttempt > d.maxAttempts {
+			continue
+		}
+		for attempt := startAttempt; attempt <= d.maxAttempts; attempt++ {
 			if attempt > 1 {
-				timer := time.NewTimer(time.Duration(1<<attempt) * 250 * time.Millisecond)
+				timer := time.NewTimer(time.Duration(1<<attempt) * d.baseBackoff)
 				select {
 				case <-ctx.Done():
 					timer.Stop()
 					lastErr = ctx.Err()
 				case <-timer.C:
 				}
-				if lastErr != nil {
+				if ctx.Err() != nil {
 					break
 				}
 			}
 			delivery.Attempts = attempt
+			delivery.NextAttemptAt = nil
 			delivery.UpdatedAt = time.Now().UTC()
 			if err := d.send(ctx, channel, incident, asset); err == nil {
 				delivery.Status = "DELIVERED"
@@ -90,29 +165,58 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 				if updateErr := d.repository.UpdateAlertDelivery(delivery); updateErr != nil {
 					failures = append(failures, fmt.Errorf("channel %s delivery update: %w", channel.ID, updateErr))
 				}
+				d.record(channel.Type, "DELIVERED")
 				lastErr = nil
 				break
 			} else {
 				lastErr = err
 				delivery.LastError = safeDeliveryError(err)
-				_ = d.repository.UpdateAlertDelivery(delivery)
+				delivery.NextAttemptAt = ptr(time.Now().UTC().Add(time.Duration(1<<attempt) * d.baseBackoff))
+				d.record(channel.Type, "RETRY")
+				if updateErr := d.repository.UpdateAlertDelivery(delivery); updateErr != nil {
+					lastErr = errors.Join(lastErr, updateErr)
+					break
+				}
 			}
 		}
 		if lastErr != nil {
 			delivery.Status = "FAILED"
 			delivery.LastError = safeDeliveryError(lastErr)
 			delivery.UpdatedAt = time.Now().UTC()
+			delivery.NextAttemptAt = nil
 			if updateErr := d.repository.UpdateAlertDelivery(delivery); updateErr != nil {
 				failures = append(failures, fmt.Errorf("channel %s delivery update: %w", channel.ID, updateErr))
 			}
+			d.record(channel.Type, "FAILED")
 			failures = append(failures, fmt.Errorf("channel %s: %w", channel.ID, lastErr))
 		}
 	}
 	return failures
 }
 
+func (d *Dispatcher) record(channelType, status string) {
+	if d.metrics != nil {
+		d.metrics.Inc("webmonitoring_alert_deliveries_total", map[string]string{
+			"channel_type": channelType, "status": status,
+		})
+	}
+}
+
+func (d *Dispatcher) findDelivery(tenantID, incidentID, channelID string) domain.AlertDelivery {
+	for _, delivery := range d.repository.ListAlertDeliveries(tenantID, incidentID) {
+		if delivery.ChannelID == channelID {
+			return delivery
+		}
+	}
+	return domain.AlertDelivery{}
+}
+
+func ptr(value time.Time) *time.Time {
+	return &value
+}
+
 func safeDeliveryError(err error) string {
-	message := err.Error()
+	message := security.RedactString(err.Error())
 	if len(message) > 240 {
 		message = message[:240]
 	}

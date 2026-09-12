@@ -1,0 +1,37 @@
+services:
+  postgres:
+    volumes:
+      - ${SMOKE_DATA_ROOT}/postgres:/var/lib/postgresql/data
+
+  redis:
+    volumes:
+      - ${SMOKE_DATA_ROOT}/redis:/data
+
+  minio:
+    ports: !reset []
+    volumes:
+      - ${SMOKE_DATA_ROOT}/minio:/data
+
+  smoke-target:
+    image: nginx:1.29-alpine
+    volumes:
+      - ${SMOKE_DATA_ROOT}/target:/usr/share/nginx/html:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    ports: !override
+      - "18080:8080"
+    environment:
+      ALLOW_PRIVATE_TARGETS: "true"
+
+  http-worker:
+    environment:
+      ALLOW_PRIVATE_TARGETS: "true"
+
+  console:
+    ports: !override
+      - "18088:8080"

@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -18,6 +19,10 @@ import (
 
 type LocalStore struct {
 	root string
+}
+
+func (s *LocalStore) Ready(context.Context) error {
+	return nil
 }
 
 func NewLocalStore(root string) (*LocalStore, error) {

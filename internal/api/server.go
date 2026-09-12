@@ -22,6 +22,7 @@ import (
 	"webmonitoring/internal/events"
 	"webmonitoring/internal/evidence"
 	"webmonitoring/internal/identity"
+	"webmonitoring/internal/metrics"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
 )
@@ -43,6 +44,8 @@ type Server struct {
 	broker        *events.Broker
 	logger        *slog.Logger
 	sessionSecure bool
+	metrics       *metrics.Registry
+	readiness     func(context.Context) map[string]error
 	handler       http.Handler
 }
 
@@ -65,9 +68,18 @@ func NewServer(
 		broker:        broker,
 		logger:        logger,
 		sessionSecure: sessionSecure,
+		metrics:       metrics.New(),
 	}
 	server.handler = server.routes()
 	return server
+}
+
+func (s *Server) Metrics() *metrics.Registry {
+	return s.metrics
+}
+
+func (s *Server) SetReadiness(check func(context.Context) map[string]error) {
+	s.readiness = check
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -77,6 +89,8 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 func (s *Server) routes() http.Handler {
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", s.health)
+	root.HandleFunc("GET /readyz", s.ready)
+	root.Handle("GET /metrics", s.metrics.Handler())
 	root.HandleFunc("POST /api/v1/auth/session", s.login)
 
 	protected := http.NewServeMux()
@@ -115,6 +129,31 @@ func (s *Server) routes() http.Handler {
 
 func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) ready(writer http.ResponseWriter, request *http.Request) {
+	if s.readiness == nil {
+		writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 3*time.Second)
+	defer cancel()
+	failures := s.readiness(ctx)
+	if len(failures) == 0 {
+		writeJSON(writer, http.StatusOK, map[string]string{"status": "ready"})
+		return
+	}
+	result := make(map[string]string, len(failures))
+	for name, err := range failures {
+		if err == nil {
+			continue
+		}
+		result[name] = "unavailable"
+		s.logger.Warn("readiness check failed", "dependency", name, "error", err)
+	}
+	writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
+		"status": "not_ready", "dependencies": result,
+	})
 }
 
 func (s *Server) login(writer http.ResponseWriter, request *http.Request) {
@@ -181,6 +220,7 @@ func (s *Server) dashboard(writer http.ResponseWriter, request *http.Request) {
 			}
 		}
 	}
+	s.updateIncidentMetrics(incidents)
 	for _, job := range jobs {
 		if job.Status == domain.JobFailed || job.Status == domain.JobTimedOut {
 			summary["failedJobs"]++
@@ -493,7 +533,28 @@ func (s *Server) createJob(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) listIncidents(writer http.ResponseWriter, request *http.Request) {
-	writeList(writer, s.repository.ListIncidents(principal(request).User.TenantID))
+	incidents := s.repository.ListIncidents(principal(request).User.TenantID)
+	s.updateIncidentMetrics(incidents)
+	writeList(writer, incidents)
+}
+
+func (s *Server) updateIncidentMetrics(incidents []domain.Incident) {
+	open, highRisk, critical := 0, 0, 0
+	for _, incident := range incidents {
+		if incident.Status == domain.IncidentClosed || incident.Status == domain.IncidentFalsePositive {
+			continue
+		}
+		open++
+		if incident.Severity == domain.SeverityHigh || incident.Severity == domain.SeverityCritical {
+			highRisk++
+		}
+		if incident.Severity == domain.SeverityCritical {
+			critical++
+		}
+	}
+	s.metrics.Set("webmonitoring_open_incidents", float64(open), nil)
+	s.metrics.Set("webmonitoring_high_risk_incidents", float64(highRisk), nil)
+	s.metrics.Set("webmonitoring_critical_incidents", float64(critical), nil)
 }
 
 func (s *Server) getIncident(writer http.ResponseWriter, request *http.Request) {
@@ -953,6 +1014,8 @@ func (s *Server) requireRoles(
 
 func (s *Server) trace(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		started := time.Now()
+		captured := &metricsResponseWriter{ResponseWriter: writer, status: http.StatusOK}
 		traceID := request.Header.Get("X-Request-ID")
 		if traceID == "" {
 			traceID = identity.New()
@@ -962,8 +1025,45 @@ func (s *Server) trace(next http.Handler) http.Handler {
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("X-Frame-Options", "DENY")
 		writer.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-		next.ServeHTTP(writer, request.WithContext(context.WithValue(request.Context(), traceKey{}, traceID)))
+		next.ServeHTTP(captured, request.WithContext(context.WithValue(request.Context(), traceKey{}, traceID)))
+		s.metrics.Inc("webmonitoring_http_requests_total", map[string]string{
+			"method": request.Method, "status": strconv.Itoa(captured.status),
+		})
+		s.metrics.ObserveDuration("webmonitoring_http_request_duration_seconds", time.Since(started), map[string]string{
+			"method": request.Method,
+		})
 	})
+}
+
+type metricsResponseWriter struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (w *metricsResponseWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.status = status
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *metricsResponseWriter) Write(value []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(value)
+}
+
+func (w *metricsResponseWriter) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func (s *Server) appendAudit(
@@ -1080,7 +1180,8 @@ func writeError(
 	details map[string]any,
 ) {
 	writeJSON(writer, status, map[string]any{
-		"code": code, "message": message, "traceId": traceID(request), "details": details,
+		"code": code, "message": security.RedactString(message), "traceId": traceID(request),
+		"details": security.RedactAny(details),
 	})
 }
 

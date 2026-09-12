@@ -40,6 +40,10 @@ func (p *PostgresRepository) Close() {
 	p.pool.Close()
 }
 
+func (p *PostgresRepository) Ready(ctx context.Context) error {
+	return p.pool.Ping(ctx)
+}
+
 func (p *PostgresRepository) CreateUser(user domain.User) error {
 	_, err := p.pool.Exec(context.Background(), `
 		INSERT INTO users (id, tenant_id, username, password_hash, role, created_at)
@@ -300,9 +304,14 @@ func (p *PostgresRepository) CreateJob(job domain.DetectionJob) error {
 }
 
 func (p *PostgresRepository) ClaimJob(tenantID, id string, startedAt time.Time) (bool, error) {
+	leaseCutoff := startedAt.Add(-5 * time.Minute)
 	tag, err := p.pool.Exec(context.Background(), `
 		UPDATE detection_jobs SET status='RUNNING', started_at=$3
-		WHERE tenant_id=$1 AND id=$2 AND status='QUEUED'`, tenantID, id, startedAt)
+		WHERE tenant_id=$1 AND id=$2
+			AND (
+				status='QUEUED'
+				OR (status='RUNNING' AND started_at < $4)
+			)`, tenantID, id, startedAt, leaseCutoff)
 	if err != nil {
 		return false, normalizePostgresError(err)
 	}
@@ -578,19 +587,19 @@ func (p *PostgresRepository) listAlertChannels(tenantID string, includeSecret bo
 func (p *PostgresRepository) CreateAlertDelivery(delivery domain.AlertDelivery) error {
 	_, err := p.pool.Exec(context.Background(), `
 		INSERT INTO alert_deliveries (
-			id,tenant_id,incident_id,channel_id,dedup_key,status,attempts,last_error,created_at,updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10)`,
+			id,tenant_id,incident_id,channel_id,dedup_key,status,attempts,last_error,next_attempt_at,created_at,updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11)`,
 		delivery.ID, delivery.TenantID, delivery.IncidentID, delivery.ChannelID, delivery.DedupKey,
-		delivery.Status, delivery.Attempts, delivery.LastError, delivery.CreatedAt, delivery.UpdatedAt,
+		delivery.Status, delivery.Attempts, delivery.LastError, delivery.NextAttemptAt, delivery.CreatedAt, delivery.UpdatedAt,
 	)
 	return normalizePostgresError(err)
 }
 
 func (p *PostgresRepository) UpdateAlertDelivery(delivery domain.AlertDelivery) error {
 	tag, err := p.pool.Exec(context.Background(), `
-		UPDATE alert_deliveries SET status=$3,attempts=$4,last_error=NULLIF($5,''),updated_at=$6
+		UPDATE alert_deliveries SET status=$3,attempts=$4,last_error=NULLIF($5,''),next_attempt_at=$6,updated_at=$7
 		WHERE tenant_id=$1 AND id=$2`, delivery.TenantID, delivery.ID, delivery.Status,
-		delivery.Attempts, delivery.LastError, delivery.UpdatedAt)
+		delivery.Attempts, delivery.LastError, delivery.NextAttemptAt, delivery.UpdatedAt)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
@@ -598,7 +607,7 @@ func (p *PostgresRepository) UpdateAlertDelivery(delivery domain.AlertDelivery) 
 }
 
 func (p *PostgresRepository) ListAlertDeliveries(tenantID, incidentID string) []domain.AlertDelivery {
-	query := `SELECT id,tenant_id,incident_id,channel_id,dedup_key,status,attempts,COALESCE(last_error,''),created_at,updated_at FROM alert_deliveries WHERE tenant_id=$1`
+	query := `SELECT id,tenant_id,incident_id,channel_id,dedup_key,status,attempts,COALESCE(last_error,''),next_attempt_at,created_at,updated_at FROM alert_deliveries WHERE tenant_id=$1`
 	args := []any{tenantID}
 	if incidentID != "" {
 		query += ` AND incident_id=$2`
@@ -614,7 +623,7 @@ func (p *PostgresRepository) ListAlertDeliveries(tenantID, incidentID string) []
 	for rows.Next() {
 		var item domain.AlertDelivery
 		if rows.Scan(&item.ID, &item.TenantID, &item.IncidentID, &item.ChannelID, &item.DedupKey,
-			&item.Status, &item.Attempts, &item.LastError, &item.CreatedAt, &item.UpdatedAt) == nil {
+			&item.Status, &item.Attempts, &item.LastError, &item.NextAttemptAt, &item.CreatedAt, &item.UpdatedAt) == nil {
 			result = append(result, item)
 		}
 	}

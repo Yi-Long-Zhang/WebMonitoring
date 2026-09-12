@@ -2,24 +2,34 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"webmonitoring/internal/browser"
 	"webmonitoring/internal/detection"
+	"webmonitoring/internal/domain"
 	"webmonitoring/internal/events"
 	"webmonitoring/internal/evidence"
+	"webmonitoring/internal/identity"
 	"webmonitoring/internal/jobqueue"
+	"webmonitoring/internal/metrics"
 	"webmonitoring/internal/notify"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
+		healthcheck(env("HEALTHCHECK_URL", "http://127.0.0.1:8082/readyz"))
+		return
+	}
 	ctx := context.Background()
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger := slog.New(security.NewRedactingHandler(slog.NewJSONHandler(os.Stdout, nil)))
 	dsn := required("POSTGRES_DSN")
 	repository, err := store.NewPostgresRepository(ctx, dsn, required("ALERT_SECRET_KEY"))
 	if err != nil {
@@ -39,29 +49,153 @@ func main() {
 	allowPrivate, _ := strconv.ParseBool(env("ALLOW_PRIVATE_TARGETS", "false"))
 	guard := security.NewURLGuard(allowPrivate)
 	broker := events.NewBroker()
+	workerMetrics := metrics.New()
 	browserClient := browser.NewClient(os.Getenv("BROWSER_WORKER_URL"), os.Getenv("BROWSER_WORKER_TOKEN"), allowPrivate)
 	var browserChecker detection.BrowserChecker
 	if browserClient.Available() {
 		browserChecker = browserClient
 	}
+	dispatcher := notify.NewDispatcher(repository, guard)
+	dispatcher.SetRetryPolicy(
+		int(envInt64("ALERT_MAX_ATTEMPTS", 3)),
+		time.Duration(envInt64("ALERT_RETRY_BASE_MILLISECONDS", 250))*time.Millisecond,
+	)
+	consumer := env("WORKER_ID", "worker-1")
 	service := detection.NewService(
 		repository,
 		evidenceStore,
 		detection.NewChecker(guard),
 		browserChecker,
-		notify.NewDispatcher(repository, guard),
+		dispatcher,
 		broker,
 		logger,
 	)
+	service.SetMetrics(workerMetrics)
+	service.SetRetryBase(time.Duration(envInt64("QUEUE_RETRY_BASE_MILLISECONDS", 500)) * time.Millisecond)
 	queue, err := jobqueue.NewRedis(ctx, required("REDIS_ADDR"), "detection-workers")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer func() { _ = queue.Close() }()
-	consumer := env("WORKER_ID", "worker-1")
-	logger.Info("detection worker started", "consumer", consumer)
-	if err := queue.Consume(ctx, consumer, service.Process); err != nil {
+	queue.SetMetrics(workerMetrics)
+	queue.SetMaxDeliveries(envInt64("QUEUE_MAX_DELIVERIES", 5))
+	queue.SetMinIdle(time.Duration(envInt64("QUEUE_MIN_IDLE_SECONDS", 120)) * time.Second)
+	queue.SetDeadLetterHandler(func(_ context.Context, payload []byte, cause error) error {
+		var job domain.DetectionJob
+		if err := json.Unmarshal(payload, &job); err != nil {
+			logger.Error("invalid detection dead-letter payload", "error", err)
+			return nil
+		}
+		now := time.Now().UTC()
+		job.Status = domain.JobFailed
+		job.ErrorCode = "DEAD_LETTER"
+		job.ErrorMessage = "message exceeded the maximum delivery count"
+		job.FinishedAt = &now
+		if err := repository.UpdateJob(job); err != nil {
+			return err
+		}
+		return repository.AppendAudit(domain.AuditEvent{
+			ID: identity.New(), TenantID: job.TenantID, Action: "detection.dead_letter",
+			ResourceType: "detection_job", ResourceID: job.ID, Result: "FAILED",
+			TraceID: "worker:" + consumer, Details: map[string]any{
+				"errorCode": "DEAD_LETTER", "cause": safeWorkerError(cause),
+			}, CreatedAt: now,
+		})
+	})
+	alertQueue, err := jobqueue.NewAlertRedis(ctx, required("REDIS_ADDR"), "alert-workers")
+	if err != nil {
 		log.Fatal(err)
+	}
+	defer func() { _ = alertQueue.Close() }()
+	alertQueue.SetMetrics(workerMetrics)
+	alertQueue.SetMaxDeliveries(envInt64("ALERT_QUEUE_MAX_DELIVERIES", 5))
+	alertQueue.SetMinIdle(time.Duration(envInt64("ALERT_QUEUE_MIN_IDLE_SECONDS", 120)) * time.Second)
+	alertQueue.SetDeadLetterHandler(func(ctx context.Context, payload []byte, cause error) error {
+		var job domain.AlertJob
+		if err := json.Unmarshal(payload, &job); err != nil {
+			logger.Error("invalid alert dead-letter payload", "error", err)
+			return nil
+		}
+		logger.Error("alert job moved to dead letter", "incident_id", job.IncidentID)
+		if err := dispatcher.MarkDeadLetter(ctx, job); err != nil {
+			return err
+		}
+		return repository.AppendAudit(domain.AuditEvent{
+			ID: identity.New(), TenantID: job.TenantID, Action: "alert.dead_letter",
+			ResourceType: "incident", ResourceID: job.IncidentID, Result: "FAILED",
+			TraceID: "worker:" + consumer, Details: map[string]any{
+				"errorCode": "DEAD_LETTER", "cause": safeWorkerError(cause),
+			}, CreatedAt: time.Now().UTC(),
+		})
+	})
+	service.SetAlertQueue(alertQueue)
+	healthServer := &http.Server{
+		Addr: env("WORKER_HTTP_ADDR", ":8082"),
+		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			if request.Method == http.MethodGet && request.URL.Path == "/healthz" {
+				writer.Header().Set("Content-Type", "application/json")
+				_, _ = writer.Write([]byte(`{"status":"ok"}`))
+				return
+			}
+			if request.Method == http.MethodGet && request.URL.Path == "/readyz" {
+				checkContext, cancel := context.WithTimeout(request.Context(), 3*time.Second)
+				defer cancel()
+				checks := []func(context.Context) error{
+					repository.Ready,
+					evidenceStore.Ready,
+					queue.Ready,
+					alertQueue.Ready,
+				}
+				if browserClient.Available() {
+					checks = append(checks, browserClient.Ready)
+				}
+				for _, check := range checks {
+					if err := check(checkContext); err != nil {
+						writer.Header().Set("Content-Type", "application/json")
+						writer.WriteHeader(http.StatusServiceUnavailable)
+						_, _ = writer.Write([]byte(`{"status":"not_ready"}`))
+						return
+					}
+				}
+				writer.Header().Set("Content-Type", "application/json")
+				_, _ = writer.Write([]byte(`{"status":"ready"}`))
+				return
+			}
+			if request.Method == http.MethodGet && request.URL.Path == "/metrics" {
+				workerMetrics.Handler().ServeHTTP(writer, request)
+				return
+			}
+			http.NotFound(writer, request)
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("worker health server stopped", "error", err)
+		}
+	}()
+	defer healthServer.Shutdown(context.Background())
+	logger.Info("detection worker started", "consumer", consumer)
+	errs := make(chan error, 2)
+	go func() { errs <- queue.Consume(ctx, consumer, service.Process) }()
+	dispatcher.SetMetrics(workerMetrics)
+	go func() {
+		errs <- alertQueue.ConsumeAlerts(ctx, consumer+"-alerts", dispatcher.ProcessAlert)
+	}()
+	if err := <-errs; err != nil {
+		log.Fatal(err)
+	}
+}
+
+func healthcheck(target string) {
+	client := &http.Client{Timeout: 3 * time.Second}
+	response, err := client.Get(target)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		log.Fatalf("health check returned %d", response.StatusCode)
 	}
 }
 
@@ -78,4 +212,23 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envInt64(name string, fallback int64) int64 {
+	value, err := strconv.ParseInt(env(name, strconv.FormatInt(fallback, 10)), 10, 64)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+func safeWorkerError(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := security.RedactString(err.Error())
+	if len(message) > 240 {
+		return message[:240]
+	}
+	return message
 }

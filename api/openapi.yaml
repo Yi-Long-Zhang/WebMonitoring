@@ -8,6 +8,25 @@ servers:
 security:
   - sessionCookie: []
 paths:
+  /healthz:
+    get:
+      security: []
+      operationId: health
+      responses:
+        "200": { description: 进程存活 }
+  /readyz:
+    get:
+      security: []
+      operationId: readiness
+      responses:
+        "200": { description: 依赖就绪 }
+        "503": { description: 依赖未就绪 }
+  /metrics:
+    get:
+      security: []
+      operationId: metrics
+      responses:
+        "200": { description: Prometheus 指标, content: { text/plain: { schema: { type: string } } } }
   /auth/session:
     post:
       security: []
@@ -653,6 +672,7 @@ components:
         status: { type: string, enum: [PENDING, DELIVERED, FAILED] }
         attempts: { type: integer }
         lastError: { type: string }
+        nextAttemptAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     AlertDeliveryList:

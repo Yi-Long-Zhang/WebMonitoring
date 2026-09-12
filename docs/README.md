@@ -9,6 +9,7 @@
 | [domain-model.md](domain-model.md) | 核心对象、状态机和数据契约 |
 | [security-model.md](security-model.md) | 威胁模型、权限、SSRF 和证据安全 |
 | [engineering.md](engineering.md) | 分支、提交、评审、测试、发布和回滚 |
+| [operations.md](operations.md) | Docker Compose 部署、迁移、备份、恢复和验收 |
 | [adr/](adr/) | 需要长期保留的架构决策记录 |
 
 ## 文档规则

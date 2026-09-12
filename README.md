@@ -67,6 +67,27 @@ docker compose -f deployments/compose/docker-compose.yml up --build
 | `ALLOW_PRIVATE_TARGETS` | 是否允许检测私网地址，默认 `false` |
 | `SESSION_SECURE` | 是否只通过 HTTPS 发送会话 Cookie |
 
+## Go 依赖
+
+本项目使用 Go Modules。首次拉取代码或 `go.mod` 发生变化后，使用以下命令
+同步依赖：
+
+```powershell
+go mod download
+go mod tidy
+```
+
+不要使用 `go get -u all` 作为项目初始化或 IDE 同步命令。该命令会尝试升级
+所有依赖，并可能把依赖模块中的内部目录当作独立包解析，产生诸如
+`minio-go/v7/internal/json` 或 `go-redis/v9/internal/rand` 不存在的错误。
+需要升级依赖时，应指定明确的模块，例如：
+
+```powershell
+go get github.com/minio/minio-go/v7@latest
+go get github.com/redis/go-redis/v9@latest
+go mod tidy
+```
+
 本机若需要代理下载依赖，可在当前 PowerShell 会话执行：
 
 ```powershell

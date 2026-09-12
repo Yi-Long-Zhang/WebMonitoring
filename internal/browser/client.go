@@ -36,6 +36,25 @@ func (c *Client) Available() bool {
 	return c.baseURL != "" && c.token != ""
 }
 
+func (c *Client) Ready(ctx context.Context) error {
+	if !c.Available() {
+		return errors.New("browser worker is not configured")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/readyz", nil)
+	if err != nil {
+		return err
+	}
+	response, err := c.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("browser worker returned %d", response.StatusCode)
+	}
+	return nil
+}
+
 func (c *Client) Check(ctx context.Context, asset domain.Asset, policy domain.MonitorPolicy) (detection.CheckResult, error) {
 	if !c.Available() {
 		return detection.CheckResult{}, errors.New("browser worker is not configured")
