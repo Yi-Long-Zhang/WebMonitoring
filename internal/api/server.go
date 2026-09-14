@@ -137,6 +137,14 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("GET /api/v1/reports/summary", s.reportSummary)
 	protected.HandleFunc("GET /api/v1/reports/{incidentId}", s.downloadReport)
 	protected.HandleFunc("GET /api/v1/events/stream", s.streamEvents)
+	protected.HandleFunc("GET /api/v1/sites", s.listSites)
+	protected.HandleFunc("POST /api/v1/sites", s.requireRoles(s.createSite, domain.RoleAdmin))
+	protected.HandleFunc("GET /api/v1/sites/{id}", s.getSite)
+	protected.HandleFunc("PATCH /api/v1/sites/{id}", s.requireRoles(s.updateSite, domain.RoleAdmin))
+	protected.HandleFunc("GET /api/v1/tenants", s.requireSuperAdmin(s.listTenants))
+	protected.HandleFunc("POST /api/v1/tenants", s.requireSuperAdmin(s.createTenant))
+	protected.HandleFunc("GET /api/v1/tenants/{id}", s.requireSuperAdmin(s.getTenant))
+	protected.HandleFunc("PATCH /api/v1/tenants/{id}", s.requireSuperAdmin(s.updateTenant))
 
 	root.Handle("/api/v1/", s.authenticate(s.csrf(protected)))
 	return s.trace(root)
@@ -173,13 +181,24 @@ func (s *Server) ready(writer http.ResponseWriter, request *http.Request) {
 
 func (s *Server) login(writer http.ResponseWriter, request *http.Request) {
 	var input struct {
+		Tenant   string `json:"tenant"`
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
 	if !decodeJSON(writer, request, &input) {
 		return
 	}
-	session, err := s.auth.Login(defaultTenant, strings.TrimSpace(input.Username), input.Password)
+	tenantID := defaultTenant
+	if slug := strings.TrimSpace(input.Tenant); slug != "" {
+		tenant, err := s.repository.GetTenantBySlug(slug)
+		if err != nil {
+			// Unified 401: do not reveal whether the tenant or the password was wrong.
+			writeError(writer, request, http.StatusUnauthorized, "INVALID_CREDENTIALS", "用户名或密码错误", nil)
+			return
+		}
+		tenantID = tenant.ID
+	}
+	session, err := s.auth.Login(tenantID, strings.TrimSpace(input.Username), input.Password)
 	if err != nil {
 		writeError(writer, request, http.StatusUnauthorized, "INVALID_CREDENTIALS", "用户名或密码错误", nil)
 		return
@@ -262,6 +281,15 @@ func (s *Server) listAssets(writer http.ResponseWriter, request *http.Request) {
 		s.repositoryFailure(writer, request, "list assets", err)
 		return
 	}
+	if siteID := request.URL.Query().Get("siteId"); siteID != "" {
+		filtered := make([]domain.Asset, 0, len(items))
+		for _, asset := range items {
+			if asset.SiteID == siteID {
+				filtered = append(filtered, asset)
+			}
+		}
+		items = filtered
+	}
 	writeList(writer, items)
 }
 
@@ -281,6 +309,7 @@ func (s *Server) createAsset(writer http.ResponseWriter, request *http.Request) 
 		URL     string           `json:"url"`
 		Type    domain.AssetType `json:"type"`
 		OwnerID string           `json:"ownerId"`
+		SiteID  string           `json:"siteId"`
 	}
 	if !decodeJSON(writer, request, &input) {
 		return
@@ -298,6 +327,7 @@ func (s *Server) createAsset(writer http.ResponseWriter, request *http.Request) 
 	asset := domain.Asset{
 		ID:                 identity.New(),
 		TenantID:           session.User.TenantID,
+		SiteID:             input.SiteID,
 		Name:               strings.TrimSpace(input.Name),
 		URL:                canonicalURL(parsed),
 		Type:               input.Type,
@@ -313,6 +343,12 @@ func (s *Server) createAsset(writer http.ResponseWriter, request *http.Request) 
 		writeError(writer, request, http.StatusBadRequest, "INVALID_OWNER", "负责人不属于当前租户", nil)
 		return
 	}
+	if asset.SiteID != "" {
+		if _, err := s.repository.GetSite(session.User.TenantID, asset.SiteID); err != nil {
+			writeError(writer, request, http.StatusBadRequest, "INVALID_SITE", "站点不属于当前租户", nil)
+			return
+		}
+	}
 	if err := s.repository.CreateAsset(asset); err != nil {
 		writeError(writer, request, http.StatusConflict, "ASSET_EXISTS", "该 URL 已经登记", nil)
 		return
@@ -322,7 +358,7 @@ func (s *Server) createAsset(writer http.ResponseWriter, request *http.Request) 
 		writeError(writer, request, http.StatusInternalServerError, "POLICY_CREATE_FAILED", "无法创建默认监测策略", nil)
 		return
 	}
-	s.appendAudit(request, session.User, "asset.create", "asset", asset.ID, "SUCCESS", map[string]any{"url": asset.URL})
+	s.appendAudit(request, session.User, "asset.create", "asset", asset.ID, "SUCCESS", map[string]any{"url": asset.URL, "siteId": asset.SiteID})
 	writeJSON(writer, http.StatusCreated, asset)
 }
 
@@ -336,6 +372,7 @@ func (s *Server) updateAsset(writer http.ResponseWriter, request *http.Request) 
 	var input struct {
 		Name    *string `json:"name"`
 		OwnerID *string `json:"ownerId"`
+		SiteID  *string `json:"siteId"`
 		Enabled *bool   `json:"enabled"`
 	}
 	if !decodeJSON(writer, request, &input) {
@@ -350,6 +387,17 @@ func (s *Server) updateAsset(writer http.ResponseWriter, request *http.Request) 
 			return
 		}
 		asset.OwnerID = *input.OwnerID
+	}
+	if input.SiteID != nil {
+		if *input.SiteID == "" {
+			asset.SiteID = ""
+		} else {
+			if _, err := s.repository.GetSite(session.User.TenantID, *input.SiteID); err != nil {
+				writeError(writer, request, http.StatusBadRequest, "INVALID_SITE", "站点不属于当前租户", nil)
+				return
+			}
+			asset.SiteID = *input.SiteID
+		}
 	}
 	if input.Enabled != nil {
 		if *input.Enabled && asset.VerificationStatus != domain.VerificationVerified {
@@ -435,6 +483,210 @@ func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) 
 	_ = s.repository.UpdateAsset(asset)
 	s.appendAudit(request, session.User, "asset.verification.verify", "asset", asset.ID, "SUCCESS", nil)
 	writeJSON(writer, http.StatusOK, asset)
+}
+
+func (s *Server) listSites(writer http.ResponseWriter, request *http.Request) {
+	items, err := s.repository.ListSites(principal(request).User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list sites", err)
+		return
+	}
+	writeList(writer, items)
+}
+
+func (s *Server) getSite(writer http.ResponseWriter, request *http.Request) {
+	item, err := s.repository.GetSite(principal(request).User.TenantID, request.PathValue("id"))
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	writeJSON(writer, http.StatusOK, item)
+}
+
+func (s *Server) createSite(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	var input struct {
+		Name    string `json:"name"`
+		Domain  string `json:"domain"`
+		OwnerID string `json:"ownerId"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Domain) == "" {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_SITE", "站点名称或域名无效", nil)
+		return
+	}
+	ownerID := input.OwnerID
+	if ownerID == "" {
+		ownerID = session.User.ID
+	} else if _, err := s.repository.GetUser(session.User.TenantID, ownerID); err != nil {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_OWNER", "负责人不属于当前租户", nil)
+		return
+	}
+	now := time.Now().UTC()
+	site := domain.Site{
+		ID: identity.New(), TenantID: session.User.TenantID,
+		Name: strings.TrimSpace(input.Name), Domain: strings.TrimSpace(input.Domain),
+		OwnerID: ownerID, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.repository.CreateSite(site); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(writer, request, http.StatusConflict, "SITE_EXISTS", "站点名称已存在", nil)
+			return
+		}
+		s.repositoryFailure(writer, request, "create site", err)
+		return
+	}
+	s.appendAudit(request, session.User, "site.create", "site", site.ID, "SUCCESS", map[string]any{"domain": site.Domain})
+	writeJSON(writer, http.StatusCreated, site)
+}
+
+func (s *Server) updateSite(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	site, err := s.repository.GetSite(session.User.TenantID, request.PathValue("id"))
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	var input struct {
+		Name    *string `json:"name"`
+		Domain  *string `json:"domain"`
+		OwnerID *string `json:"ownerId"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	if input.Name != nil && strings.TrimSpace(*input.Name) != "" {
+		site.Name = strings.TrimSpace(*input.Name)
+	}
+	if input.Domain != nil && strings.TrimSpace(*input.Domain) != "" {
+		site.Domain = strings.TrimSpace(*input.Domain)
+	}
+	if input.OwnerID != nil && *input.OwnerID != "" {
+		if _, err := s.repository.GetUser(session.User.TenantID, *input.OwnerID); err != nil {
+			writeError(writer, request, http.StatusBadRequest, "INVALID_OWNER", "负责人不属于当前租户", nil)
+			return
+		}
+		site.OwnerID = *input.OwnerID
+	}
+	site.UpdatedAt = time.Now().UTC()
+	if err := s.repository.UpdateSite(site); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(writer, request, http.StatusConflict, "SITE_EXISTS", "站点名称已存在", nil)
+			return
+		}
+		s.repositoryFailure(writer, request, "update site", err)
+		return
+	}
+	s.appendAudit(request, session.User, "site.update", "site", site.ID, "SUCCESS", nil)
+	writeJSON(writer, http.StatusOK, site)
+}
+
+func (s *Server) listTenants(writer http.ResponseWriter, request *http.Request) {
+	items, err := s.repository.ListTenants()
+	if err != nil {
+		s.repositoryFailure(writer, request, "list tenants", err)
+		return
+	}
+	writeList(writer, items)
+}
+
+func (s *Server) getTenant(writer http.ResponseWriter, request *http.Request) {
+	item, err := s.repository.GetTenant(request.PathValue("id"))
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	writeJSON(writer, http.StatusOK, item)
+}
+
+func (s *Server) createTenant(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	var input struct {
+		Name          string `json:"name"`
+		Slug          string `json:"slug"`
+		AdminUsername string `json:"adminUsername"`
+		AdminPassword string `json:"adminPassword"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	slug, ok := normalizeSlug(input.Slug)
+	if strings.TrimSpace(input.Name) == "" || !ok {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_TENANT", "租户名称或标识无效", nil)
+		return
+	}
+	if strings.TrimSpace(input.AdminUsername) == "" || len(input.AdminPassword) < 8 {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_ADMIN", "管理员用户名或密码不满足要求", nil)
+		return
+	}
+	now := time.Now().UTC()
+	tenant := domain.Tenant{
+		ID: identity.New(), Slug: slug, Name: strings.TrimSpace(input.Name), CreatedAt: now,
+	}
+	if err := s.repository.CreateTenant(tenant); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(writer, request, http.StatusConflict, "TENANT_EXISTS", "租户标识已存在", nil)
+			return
+		}
+		s.repositoryFailure(writer, request, "create tenant", err)
+		return
+	}
+	hash, err := security.HashPassword(input.AdminPassword)
+	if err != nil {
+		s.logger.Error("hash tenant admin password", "tenant", tenant.ID, "error", err)
+		writeError(writer, request, http.StatusInternalServerError, "TENANT_ADMIN_FAILED", "无法初始化租户管理员", nil)
+		return
+	}
+	admin := domain.User{
+		ID: identity.New(), TenantID: tenant.ID, Username: strings.TrimSpace(input.AdminUsername),
+		PasswordHash: hash, Role: domain.RoleAdmin, CreatedAt: now,
+	}
+	if err := s.repository.CreateUser(admin); err != nil {
+		s.logger.Error("seed tenant admin", "tenant", tenant.ID, "error", err)
+		writeError(writer, request, http.StatusInternalServerError, "TENANT_ADMIN_FAILED", "无法初始化租户管理员", nil)
+		return
+	}
+	s.appendAudit(request, session.User, "tenant.create", "tenant", tenant.ID, "SUCCESS", map[string]any{"slug": tenant.Slug})
+	writeJSON(writer, http.StatusCreated, tenant)
+}
+
+func (s *Server) updateTenant(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	tenant, err := s.repository.GetTenant(request.PathValue("id"))
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	var input struct {
+		Name *string `json:"name"`
+		Slug *string `json:"slug"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	if input.Name != nil && strings.TrimSpace(*input.Name) != "" {
+		tenant.Name = strings.TrimSpace(*input.Name)
+	}
+	if input.Slug != nil && strings.TrimSpace(*input.Slug) != "" {
+		slug, ok := normalizeSlug(*input.Slug)
+		if !ok {
+			writeError(writer, request, http.StatusBadRequest, "INVALID_TENANT", "租户标识无效", nil)
+			return
+		}
+		tenant.Slug = slug
+	}
+	if err := s.repository.UpdateTenant(tenant); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(writer, request, http.StatusConflict, "TENANT_EXISTS", "租户标识已存在", nil)
+			return
+		}
+		s.repositoryFailure(writer, request, "update tenant", err)
+		return
+	}
+	s.appendAudit(request, session.User, "tenant.update", "tenant", tenant.ID, "SUCCESS", nil)
+	writeJSON(writer, http.StatusOK, tenant)
 }
 
 func (s *Server) listPolicies(writer http.ResponseWriter, request *http.Request) {
@@ -1154,6 +1406,12 @@ func (s *Server) requireRoles(
 ) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		current := principal(request).User.Role
+		// SUPER_ADMIN is a superset within its own tenant: the bootstrap account
+		// must be able to administer the default tenant in addition to tenants.
+		if current == domain.RoleSuperAdmin {
+			handler(writer, request)
+			return
+		}
 		for _, role := range roles {
 			if current == role {
 				handler(writer, request)
@@ -1162,6 +1420,10 @@ func (s *Server) requireRoles(
 		}
 		writeError(writer, request, http.StatusForbidden, "FORBIDDEN", "当前角色无权执行该操作", nil)
 	}
+}
+
+func (s *Server) requireSuperAdmin(handler http.HandlerFunc) http.HandlerFunc {
+	return s.requireRoles(handler, domain.RoleSuperAdmin)
 }
 
 func (s *Server) trace(next http.Handler) http.Handler {
@@ -1254,7 +1516,7 @@ func traceID(request *http.Request) string {
 
 func sessionResponse(session auth.Session) map[string]any {
 	return map[string]any{
-		"user": session.User, "csrfToken": session.CSRFToken, "expiresAt": session.ExpiresAt,
+		"user": session.User, "tenant": session.Tenant, "csrfToken": session.CSRFToken, "expiresAt": session.ExpiresAt,
 	}
 }
 
@@ -1293,6 +1555,19 @@ func redactEndpoint(raw string) string {
 func validAssetType(value domain.AssetType) bool {
 	return value == domain.AssetOfficial || value == domain.AssetBusiness ||
 		value == domain.AssetLogin || value == domain.AssetOther
+}
+
+func normalizeSlug(value string) (string, bool) {
+	slug := strings.ToLower(strings.TrimSpace(value))
+	if slug == "" {
+		return "", false
+	}
+	for _, r := range slug {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-') {
+			return "", false
+		}
+	}
+	return slug, true
 }
 
 func safeExtension(kind string) string {

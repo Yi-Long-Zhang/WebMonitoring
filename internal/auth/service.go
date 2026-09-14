@@ -18,6 +18,7 @@ type Session struct {
 	ID        string
 	CSRFToken string
 	User      domain.User
+	Tenant    domain.Tenant
 	ExpiresAt time.Time
 }
 
@@ -37,10 +38,17 @@ func (s *Service) Login(tenantID, username, password string) (Session, error) {
 	if err != nil || !security.VerifyPassword(user.PasswordHash, password) {
 		return Session{}, ErrInvalidCredentials
 	}
+	tenant, err := s.repository.GetTenant(tenantID)
+	if err != nil {
+		// Fail closed: an unresolvable tenant is treated as invalid credentials
+		// so the caller cannot probe tenant existence through the login path.
+		return Session{}, ErrInvalidCredentials
+	}
 	session := Session{
 		ID:        randomToken(32),
 		CSRFToken: randomToken(32),
 		User:      user,
+		Tenant:    tenant,
 		ExpiresAt: time.Now().UTC().Add(s.ttl),
 	}
 	s.mu.Lock()
