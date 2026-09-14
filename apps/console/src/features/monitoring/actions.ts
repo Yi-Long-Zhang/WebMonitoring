@@ -3,6 +3,8 @@ import {
   approveBaseline,
   createAlertChannel,
   createAsset,
+  createSite,
+  createTenant,
   issueVerification,
   rejectBaseline,
   retireBaseline as retireBaselineRequest,
@@ -10,15 +12,17 @@ import {
   transitionIncident,
   updateAsset,
   updatePolicy,
+  updateSite,
+  updateTenant,
   verifyAsset,
 } from "../../services/api/client";
-import type { AlertChannel, Asset, AssetType, Incident } from "../../types/domain";
+import type { AlertChannel, Asset, AssetType, Incident, Site, Tenant } from "../../types/domain";
 import { useConsoleStore } from "../../stores/console";
 
 export function useMonitoringActions() {
   const consoleStore = useConsoleStore();
 
-  async function createNewAsset(input: { name: string; url: string; type: AssetType }) {
+  async function createNewAsset(input: { name: string; url: string; type: AssetType; siteId?: string }) {
     await createAsset(input);
     await consoleStore.refresh();
     ElMessage.success("资产已创建，请完成授权验证");
@@ -102,6 +106,30 @@ export function useMonitoringActions() {
     ElMessage.success("告警渠道已创建");
   }
 
+  async function createNewSite(input: { name: string; domain: string }) {
+    await createSite(input);
+    await consoleStore.refresh();
+    ElMessage.success("站点已创建");
+  }
+
+  async function saveSite(site: Site, input: { name: string; domain: string }) {
+    await updateSite(site.id, input);
+    await consoleStore.refresh();
+    ElMessage.success("站点已更新");
+  }
+
+  async function createNewTenant(input: { name: string; slug: string; adminUsername: string; adminPassword: string }) {
+    await createTenant(input);
+    await consoleStore.loadTenants();
+    ElMessage.success("租户已创建，管理员账号已播种");
+  }
+
+  async function saveTenant(tenant: Tenant, input: { name: string; slug: string }) {
+    await updateTenant(tenant.id, input);
+    await consoleStore.loadTenants();
+    ElMessage.success("租户已更新");
+  }
+
   return {
     createNewAsset,
     verifyAssetOwnership,
@@ -112,5 +140,9 @@ export function useMonitoringActions() {
     savePolicy,
     retireBaseline,
     createNewAlertChannel,
+    createNewSite,
+    saveSite,
+    createNewTenant,
+    saveTenant,
   };
 }

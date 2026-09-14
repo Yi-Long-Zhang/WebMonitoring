@@ -1,5 +1,5 @@
 import type {
-  AlertChannel, AlertDelivery, Asset, AuditEvent, Baseline, Dashboard, DetectionJob, Evidence, Incident, IncidentStatus, ListResponse, Policy, ReportSummary, Session,
+  AlertChannel, AlertDelivery, Asset, AuditEvent, Baseline, Dashboard, DetectionJob, Evidence, Incident, IncidentStatus, ListResponse, Policy, ReportSummary, Session, Site, Tenant,
 } from "../../types/domain";
 
 let csrfToken = "";
@@ -37,10 +37,10 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   return response.json() as Promise<T>;
 }
 
-export async function login(username: string, password: string) {
+export async function login(username: string, password: string, tenant = "") {
   const session = await request<Session>("/auth/session", {
     method: "POST",
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ tenant, username, password }),
   });
   setCsrfToken(session.csrfToken);
   return session;
@@ -64,14 +64,14 @@ export function getAssets() {
   return request<ListResponse<Asset>>("/assets");
 }
 
-export function createAsset(input: Pick<Asset, "name" | "url" | "type">) {
+export function createAsset(input: Pick<Asset, "name" | "url" | "type" | "siteId">) {
   return request<Asset>("/assets", {
     method: "POST",
     body: JSON.stringify(input),
   });
 }
 
-export function updateAsset(id: string, input: Partial<Pick<Asset, "name" | "ownerId" | "enabled">>) {
+export function updateAsset(id: string, input: Partial<Pick<Asset, "name" | "ownerId" | "siteId" | "enabled">>) {
   return request<Asset>(`/assets/${id}`, {
     method: "PATCH",
     body: JSON.stringify(input),
@@ -177,5 +177,41 @@ export function transitionIncident(id: string, status: IncidentStatus, resolutio
   return request<Incident>(`/incidents/${id}/transition`, {
     method: "POST",
     body: JSON.stringify({ status, resolution }),
+  });
+}
+
+export function getSites() {
+  return request<ListResponse<Site>>("/sites");
+}
+
+export function createSite(input: { name: string; domain: string; ownerId?: string }) {
+  return request<Site>("/sites", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateSite(id: string, input: Partial<Pick<Site, "name" | "domain" | "ownerId">>) {
+  return request<Site>(`/sites/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export function getTenants() {
+  return request<ListResponse<Tenant>>("/tenants");
+}
+
+export function createTenant(input: { name: string; slug: string; adminUsername: string; adminPassword: string }) {
+  return request<Tenant>("/tenants", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateTenant(id: string, input: Partial<Pick<Tenant, "name" | "slug">>) {
+  return request<Tenant>(`/tenants/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
   });
 }

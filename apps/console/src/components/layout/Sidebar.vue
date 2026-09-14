@@ -4,17 +4,22 @@ import {
   Bell,
   Checked,
   Collection,
+  Grid,
   House,
   List,
   Monitor,
+  OfficeBuilding,
   SwitchButton,
   WarningFilled,
 } from "@element-plus/icons-vue";
+import { canAdmin, canSuperAdmin } from "../../app/permissions";
+import type { Role } from "../../types/domain";
 import type { View } from "../../types/views";
 
 defineProps<{
   activeView: View;
   username: string;
+  role: Role;
   roleLabel: string;
   candidateCount: number;
   openIncidentCount: number;
@@ -36,12 +41,14 @@ const emit = defineEmits<{
     <nav class="nav-list">
       <button :class="{ active: activeView === 'overview' }" @click="emit('navigate', 'overview')"><el-icon class="nav-icon"><House /></el-icon> 总览</button>
       <button :class="{ active: activeView === 'assets' }" @click="emit('navigate', 'assets')"><el-icon class="nav-icon"><Monitor /></el-icon> 资产中心</button>
+      <button v-if="canAdmin(role)" :class="{ active: activeView === 'sites' }" @click="emit('navigate', 'sites')"><el-icon class="nav-icon"><Grid /></el-icon> 站点管理</button>
       <button :class="{ active: activeView === 'baselines' }" @click="emit('navigate', 'baselines')"><el-icon class="nav-icon"><Checked /></el-icon> 基线审批<span v-if="candidateCount" class="nav-count">{{ candidateCount }}</span></button>
       <button :class="{ active: activeView === 'incidents' }" @click="emit('navigate', 'incidents')"><el-icon class="nav-icon"><WarningFilled /></el-icon> 事件中心<span v-if="openIncidentCount" class="nav-count alert">{{ openIncidentCount }}</span></button>
       <button :class="{ active: activeView === 'jobs' }" @click="emit('navigate', 'jobs')"><el-icon class="nav-icon"><Aim /></el-icon> 检测任务</button>
       <button :class="{ active: activeView === 'evidence' }" @click="emit('navigate', 'evidence')"><el-icon class="nav-icon"><Collection /></el-icon> 证据中心</button>
       <button :class="{ active: activeView === 'channels' }" @click="emit('navigate', 'channels')"><el-icon class="nav-icon"><Bell /></el-icon> 告警渠道</button>
       <button :class="{ active: activeView === 'audits' }" @click="emit('navigate', 'audits')"><el-icon class="nav-icon"><List /></el-icon> 审计日志</button>
+      <button v-if="canSuperAdmin(role)" :class="{ active: activeView === 'tenants' }" @click="emit('navigate', 'tenants')"><el-icon class="nav-icon"><OfficeBuilding /></el-icon> 租户管理</button>
     </nav>
     <div class="sidebar-footer">
       <div class="status-dot"><span /> 检测服务运行中</div>

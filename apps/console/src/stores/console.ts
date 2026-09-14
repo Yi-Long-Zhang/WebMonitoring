@@ -12,6 +12,8 @@ import {
   getJobs,
   getPolicies,
   getReportSummary,
+  getSites,
+  getTenants,
 } from "../services/api/client";
 import type {
   AlertChannel,
@@ -25,11 +27,15 @@ import type {
   Incident,
   Policy,
   ReportSummary,
+  Site,
+  Tenant,
 } from "../types/domain";
 
 export const useConsoleStore = defineStore("console", () => {
   const dashboard = ref<Dashboard>();
   const assets = ref<Asset[]>([]);
+  const sites = ref<Site[]>([]);
+  const tenants = ref<Tenant[]>([]);
   const policies = ref<Policy[]>([]);
   const baselines = ref<Baseline[]>([]);
   const incidents = ref<Incident[]>([]);
@@ -44,11 +50,12 @@ export const useConsoleStore = defineStore("console", () => {
   async function refresh() {
     loading.value = true;
     try {
-      const [dashboardData, assetData, policyData, baselineData, incidentData, jobData, evidenceData, channelData, deliveryData, auditData, reportData] = await Promise.all([
-        getDashboard(), getAssets(), getPolicies(), getBaselines(), getIncidents(), getJobs(), getEvidence(), getAlertChannels(), getAlertDeliveries(), getAuditEvents(), getReportSummary(),
+      const [dashboardData, assetData, siteData, policyData, baselineData, incidentData, jobData, evidenceData, channelData, deliveryData, auditData, reportData] = await Promise.all([
+        getDashboard(), getAssets(), getSites(), getPolicies(), getBaselines(), getIncidents(), getJobs(), getEvidence(), getAlertChannels(), getAlertDeliveries(), getAuditEvents(), getReportSummary(),
       ]);
       dashboard.value = dashboardData;
       assets.value = assetData.items;
+      sites.value = siteData.items;
       policies.value = policyData.items;
       baselines.value = baselineData.items;
       incidents.value = incidentData.items;
@@ -63,5 +70,10 @@ export const useConsoleStore = defineStore("console", () => {
     }
   }
 
-  return { dashboard, assets, policies, baselines, incidents, jobs, evidence, alertChannels, alertDeliveries, audits, reportSummary, loading, refresh };
+  async function loadTenants() {
+    const tenantData = await getTenants();
+    tenants.value = tenantData.items;
+  }
+
+  return { dashboard, assets, sites, tenants, policies, baselines, incidents, jobs, evidence, alertChannels, alertDeliveries, audits, reportSummary, loading, refresh, loadTenants };
 });

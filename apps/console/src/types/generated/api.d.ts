@@ -440,6 +440,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSites"];
+        put?: never;
+        post: operations["createSite"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sites/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        get: operations["getSite"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["updateSite"];
+        trace?: never;
+    };
+    "/tenants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listTenants"];
+        put?: never;
+        post: operations["createTenant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenants/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        get: operations["getTenant"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["updateTenant"];
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -453,7 +521,7 @@ export interface components {
             };
         };
         /** @enum {string} */
-        Role: "ADMIN" | "OPERATOR" | "AUDITOR";
+        Role: "ADMIN" | "OPERATOR" | "AUDITOR" | "SUPER_ADMIN";
         User: {
             /** Format: uuid */
             id: string;
@@ -464,8 +532,21 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
         };
+        Tenant: {
+            /** Format: uuid */
+            id: string;
+            slug: string;
+            name: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        TenantList: {
+            items: components["schemas"]["Tenant"][];
+            nextCursor: string;
+        };
         Session: {
             user: components["schemas"]["User"];
+            tenant: components["schemas"]["Tenant"];
             csrfToken: string;
             /** Format: date-time */
             expiresAt: string;
@@ -479,6 +560,8 @@ export interface components {
             id: string;
             /** Format: uuid */
             tenantId: string;
+            /** Format: uuid */
+            siteId?: string;
             name: string;
             /** Format: uri */
             url: string;
@@ -494,6 +577,24 @@ export interface components {
         };
         AssetList: {
             items: components["schemas"]["Asset"][];
+            nextCursor: string;
+        };
+        Site: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            tenantId: string;
+            name: string;
+            domain: string;
+            /** Format: uuid */
+            ownerId: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        SiteList: {
+            items: components["schemas"]["Site"][];
             nextCursor: string;
         };
         /** @enum {string} */
@@ -833,6 +934,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    tenant?: string;
                     username: string;
                     /** Format: password */
                     password: string;
@@ -900,7 +1002,9 @@ export interface operations {
     };
     listAssets: {
         parameters: {
-            query?: never;
+            query?: {
+                siteId?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -936,6 +1040,8 @@ export interface operations {
                     type: components["schemas"]["AssetType"];
                     /** Format: uuid */
                     ownerId?: string;
+                    /** Format: uuid */
+                    siteId?: string;
                 };
             };
         };
@@ -992,6 +1098,8 @@ export interface operations {
                     name?: string;
                     /** Format: uuid */
                     ownerId?: string;
+                    /** Format: uuid */
+                    siteId?: string;
                     enabled?: boolean;
                 };
             };
@@ -1524,6 +1632,227 @@ export interface operations {
                     "text/event-stream": string;
                 };
             };
+        };
+    };
+    listSites: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 站点列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SiteList"];
+                };
+            };
+        };
+    };
+    createSite: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    domain: string;
+                    /** Format: uuid */
+                    ownerId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Site"];
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+        };
+    };
+    getSite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 站点详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Site"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    updateSite: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    name?: string;
+                    domain?: string;
+                    /** Format: uuid */
+                    ownerId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 已更新 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Site"];
+                };
+            };
+            403: components["responses"]["Error"];
+        };
+    };
+    listTenants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 租户列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantList"];
+                };
+            };
+            403: components["responses"]["Error"];
+        };
+    };
+    createTenant: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    slug: string;
+                    adminUsername: string;
+                    /** Format: password */
+                    adminPassword: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Tenant"];
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+        };
+    };
+    getTenant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 租户详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Tenant"];
+                };
+            };
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    updateTenant: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    name?: string;
+                    slug?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 已更新 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Tenant"];
+                };
+            };
+            403: components["responses"]["Error"];
         };
     };
 }

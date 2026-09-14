@@ -7,8 +7,9 @@ export const useSessionStore = defineStore("session", {
   getters: {
     user: (state) => state.session?.user,
     isAuthenticated: (state) => Boolean(state.session),
-    canOperate: (state) => ["ADMIN", "OPERATOR"].includes(state.session?.user.role || ""),
-    canAdmin: (state) => state.session?.user.role === "ADMIN",
+    canOperate: (state) => ["ADMIN", "OPERATOR", "SUPER_ADMIN"].includes(state.session?.user.role || ""),
+    canAdmin: (state) => ["ADMIN", "SUPER_ADMIN"].includes(state.session?.user.role || ""),
+    canSuperAdmin: (state) => state.session?.user.role === "SUPER_ADMIN",
   },
   actions: {
     async restore() {
@@ -20,10 +21,10 @@ export const useSessionStore = defineStore("session", {
         return false;
       }
     },
-    async signIn(username: string, password: string) {
+    async signIn(username: string, password: string, tenant = "") {
       this.loading = true;
       try {
-        this.session = await login(username, password);
+        this.session = await login(username, password, tenant);
       } finally {
         this.loading = false;
       }
