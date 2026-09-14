@@ -17,13 +17,18 @@ WebMonitoring 是一个面向私有化部署的网页篡改监测与安全事件
 - Webhook/企业微信通知、投递记录、重试和事件级去重。
 - 内存/本地证据开发模式，以及 PostgreSQL、Redis、MinIO Compose 路径。
 - 生产配置门禁、证据和审计保留策略、dry-run 清理以及备份恢复校验脚本。
+- 多租户：登录按租户 slug 进入对应租户、session 携带租户、调度器遍历所有租户，
+  复合外键在数据库层强制租户一致性。
+- 站点（Site）CRUD 与资产站点归属/按站点过滤。
+- 平台管理员（SUPER_ADMIN）：租户 CRUD，创建时播种该租户首个管理员账号。
 - PostgreSQL/Redis 集成测试、100 资产调度合成测试和 Compose smoke CI 门禁。
 
 当前不应视为生产完成：
 
-- 完整租户/站点管理、细粒度权限、跨租户管理员和审批工作流。
+- 细粒度权限、任意租户数据的跨租户可见与审批工作流（super-admin 当前仅限
+  租户 CRUD 与播种租户管理员）。
 - DNS 或 HTML 元标签授权验证、登录态检测和 Secret Manager 集成。
-- 短时签名 URL、邮件/钉钉适配器、批量导入导出和完整多租户管理。
+- 短时签名 URL、邮件/钉钉适配器、批量导入导出和租户硬删除。
 - 真实 100 资产 HTTP/Browser 压测和备份恢复实机演练；控制台 Playwright E2E
   已纳入 Compose smoke，待 CI 或验收主机执行。
 - 本机 Docker Compose 实测尚未完成，需在 CI 或验收主机执行。

@@ -52,7 +52,11 @@
 
 - 所有租户资源查询都必须带租户边界。
 - 从 URL、请求头或前端参数中取得的 `tenant_id` 不得直接信任。
-- 跨租户管理员权限必须显式建模和审计。
+- 跨租户管理员权限必须显式建模和审计：当前 `SUPER_ADMIN` 仅限租户 CRUD 与
+  播种租户管理员，不做任意租户资产/事件的跨租户可见；租户/站点 CRUD 全部记审计。
+- 站点与资产、负责人的租户一致性由复合外键 `(tenant_id, site_id)`、
+  `(tenant_id, owner_id)` 在数据库层强制，应用层同时用 `GetSite`/`GetUser` 校验
+  并失败关闭。
 - 证据对象的访问鉴权必须与业务资源一致。
 
 ### 证据篡改和不可抵赖
@@ -64,7 +68,9 @@
 
 ## 3. 权限模型
 
-推荐 RBAC，权限粒度至少包括：
+当前已实现角色：`SUPER_ADMIN`（平台级租户 CRUD 超集）、`ADMIN`（租户内管理）、
+`OPERATOR`（安全运营）、`AUDITOR`（只读审计）。`SUPER_ADMIN` 在其自身租户内
+视同管理员。推荐 RBAC，权限粒度至少包括：
 
 ```text
 asset:read / asset:write / asset:delete
