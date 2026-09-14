@@ -1,0 +1,128 @@
+package config
+
+import (
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
+)
+
+func PositiveInt(get func(string) string, name string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(get(name)))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+const (
+	EnvironmentProduction        = "production"
+	defaultAdminPassword         = "change-me-before-production"
+	defaultDatabasePass          = "webmonitoring"
+	defaultObjectSecret          = "replace-with-a-random-secret"
+	defaultWorkerToken           = "replace-with-a-random-token"
+	DefaultEvidenceRetentionDays = 90
+	DefaultAuditRetentionDays    = 365
+)
+
+func IsProduction(get func(string) string) bool {
+	return strings.EqualFold(strings.TrimSpace(get("APP_ENV")), EnvironmentProduction)
+}
+
+func ValidateProductionAPI(get func(string) string) error {
+	if !IsProduction(get) {
+		return nil
+	}
+	var failures []error
+	failures = append(failures, validateRequired(get,
+		"POSTGRES_DSN", "REDIS_ADDR", "S3_ENDPOINT", "S3_ACCESS_KEY",
+		"S3_SECRET_KEY", "BROWSER_WORKER_URL", "BROWSER_WORKER_TOKEN",
+		"ALERT_SECRET_KEY", "ADMIN_PASSWORD",
+	)...)
+	if get("ADMIN_PASSWORD") == defaultAdminPassword {
+		failures = append(failures, errors.New("ADMIN_PASSWORD must be changed in production"))
+	}
+	failures = append(failures, validateCommon(get)...)
+	failures = append(failures, validateDatabaseDSN(get("POSTGRES_DSN"))...)
+	return errors.Join(failures...)
+}
+
+func ValidateProductionWorker(get func(string) string) error {
+	if !IsProduction(get) {
+		return nil
+	}
+	var failures []error
+	failures = append(failures, validateRequired(get,
+		"POSTGRES_DSN", "REDIS_ADDR", "S3_ENDPOINT", "S3_ACCESS_KEY",
+		"S3_SECRET_KEY", "ALERT_SECRET_KEY", "WORKER_ID",
+		"BROWSER_WORKER_URL", "BROWSER_WORKER_TOKEN",
+	)...)
+	failures = append(failures, validateCommon(get)...)
+	failures = append(failures, validateDatabaseDSN(get("POSTGRES_DSN"))...)
+	return errors.Join(failures...)
+}
+
+func validateCommon(get func(string) string) []error {
+	var failures []error
+	if get("S3_ACCESS_KEY") == "webmonitoring" {
+		failures = append(failures, errors.New("S3_ACCESS_KEY must be changed in production"))
+	}
+	if get("S3_SECRET_KEY") == defaultObjectSecret {
+		failures = append(failures, errors.New("S3_SECRET_KEY must be changed in production"))
+	}
+	if get("BROWSER_WORKER_TOKEN") == defaultWorkerToken {
+		failures = append(failures, errors.New("BROWSER_WORKER_TOKEN must be changed in production"))
+	}
+	if !strings.EqualFold(strings.TrimSpace(get("SESSION_SECURE")), "true") {
+		failures = append(failures, errors.New("SESSION_SECURE must be true in production"))
+	}
+	if strings.EqualFold(strings.TrimSpace(get("ALLOW_PRIVATE_TARGETS")), "true") {
+		failures = append(failures, errors.New("ALLOW_PRIVATE_TARGETS must be false in production"))
+	}
+	failures = append(failures, validateMinLength(get, "S3_ACCESS_KEY", 8)...)
+	failures = append(failures, validateMinLength(get, "S3_SECRET_KEY", 16)...)
+	failures = append(failures, validateMinLength(get, "BROWSER_WORKER_TOKEN", 16)...)
+	failures = append(failures, validateMinLength(get, "ADMIN_PASSWORD", 12)...)
+	key, err := base64.StdEncoding.DecodeString(get("ALERT_SECRET_KEY"))
+	if err != nil || len(key) != 32 {
+		failures = append(failures, errors.New("ALERT_SECRET_KEY must be a base64-encoded 32-byte key"))
+	}
+	return failures
+}
+
+func validateMinLength(get func(string) string, name string, minimum int) []error {
+	if len([]byte(strings.TrimSpace(get(name)))) < minimum {
+		return []error{fmt.Errorf("%s must be at least %d bytes in production", name, minimum)}
+	}
+	return nil
+}
+
+func validateRequired(get func(string) string, names ...string) []error {
+	var failures []error
+	for _, name := range names {
+		if strings.TrimSpace(get(name)) == "" {
+			failures = append(failures, fmt.Errorf("%s is required in production", name))
+		}
+	}
+	return failures
+}
+
+func validateDatabaseDSN(raw string) []error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return []error{errors.New("POSTGRES_DSN must contain a valid database host")}
+	}
+	if password, ok := parsed.User.Password(); !ok || password == "" {
+		return []error{errors.New("POSTGRES_DSN must contain database credentials")}
+	} else if password == defaultDatabasePass {
+		return []error{errors.New("POSTGRES_DSN must not use the default database password")}
+	} else if len([]byte(password)) < 16 {
+		return []error{errors.New("POSTGRES_DSN password must be at least 16 bytes in production")}
+	}
+	return nil
+}
