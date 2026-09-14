@@ -12,6 +12,8 @@ import (
 
 type MemoryRepository struct {
 	mu         sync.RWMutex
+	tenants    map[string]domain.Tenant
+	sites      map[string]domain.Site
 	users      map[string]domain.User
 	assets     map[string]domain.Asset
 	policies   map[string]domain.MonitorPolicy
@@ -25,7 +27,9 @@ type MemoryRepository struct {
 }
 
 func NewMemoryRepository() *MemoryRepository {
-	return &MemoryRepository{
+	repo := &MemoryRepository{
+		tenants:    make(map[string]domain.Tenant),
+		sites:      make(map[string]domain.Site),
 		users:      make(map[string]domain.User),
 		assets:     make(map[string]domain.Asset),
 		policies:   make(map[string]domain.MonitorPolicy),
@@ -36,9 +40,72 @@ func NewMemoryRepository() *MemoryRepository {
 		channels:   make(map[string]domain.AlertChannel),
 		deliveries: make(map[string]domain.AlertDelivery),
 	}
+	repo.tenants[domain.DefaultTenantID] = domain.Tenant{
+		ID: domain.DefaultTenantID, Slug: "default", Name: "Default Tenant",
+	}
+	return repo
 }
 
 func (m *MemoryRepository) Ready(context.Context) error {
+	return nil
+}
+
+func (m *MemoryRepository) ListTenants() ([]domain.Tenant, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]domain.Tenant, 0, len(m.tenants))
+	for _, tenant := range m.tenants {
+		result = append(result, tenant)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.Before(result[j].CreatedAt) })
+	return result, nil
+}
+
+func (m *MemoryRepository) GetTenant(tenantID string) (domain.Tenant, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tenant, ok := m.tenants[tenantID]
+	if !ok {
+		return domain.Tenant{}, ErrNotFound
+	}
+	return tenant, nil
+}
+
+func (m *MemoryRepository) GetTenantBySlug(slug string) (domain.Tenant, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, tenant := range m.tenants {
+		if strings.EqualFold(tenant.Slug, slug) {
+			return tenant, nil
+		}
+	}
+	return domain.Tenant{}, ErrNotFound
+}
+
+func (m *MemoryRepository) CreateTenant(tenant domain.Tenant) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, existing := range m.tenants {
+		if strings.EqualFold(existing.Slug, tenant.Slug) {
+			return ErrConflict
+		}
+	}
+	m.tenants[tenant.ID] = tenant
+	return nil
+}
+
+func (m *MemoryRepository) UpdateTenant(tenant domain.Tenant) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenant.ID]; !ok {
+		return ErrNotFound
+	}
+	for _, existing := range m.tenants {
+		if existing.ID != tenant.ID && strings.EqualFold(existing.Slug, tenant.Slug) {
+			return ErrConflict
+		}
+	}
+	m.tenants[tenant.ID] = tenant
 	return nil
 }
 
@@ -119,6 +186,57 @@ func (m *MemoryRepository) ListAssets(tenantID string) ([]domain.Asset, error) {
 	for _, asset := range m.assets {
 		if asset.TenantID == tenantID {
 			result = append(result, asset)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
+	return result, nil
+}
+
+func (m *MemoryRepository) CreateSite(site domain.Site) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, existing := range m.sites {
+		if existing.TenantID == site.TenantID && strings.EqualFold(existing.Name, site.Name) {
+			return ErrConflict
+		}
+	}
+	m.sites[tenantKey(site.TenantID, site.ID)] = site
+	return nil
+}
+
+func (m *MemoryRepository) UpdateSite(site domain.Site) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := tenantKey(site.TenantID, site.ID)
+	if _, ok := m.sites[key]; !ok {
+		return ErrNotFound
+	}
+	for otherKey, existing := range m.sites {
+		if otherKey != key && existing.TenantID == site.TenantID && strings.EqualFold(existing.Name, site.Name) {
+			return ErrConflict
+		}
+	}
+	m.sites[key] = site
+	return nil
+}
+
+func (m *MemoryRepository) GetSite(tenantID, id string) (domain.Site, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	site, ok := m.sites[tenantKey(tenantID, id)]
+	if !ok {
+		return domain.Site{}, ErrNotFound
+	}
+	return site, nil
+}
+
+func (m *MemoryRepository) ListSites(tenantID string) ([]domain.Site, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]domain.Site, 0)
+	for _, site := range m.sites {
+		if site.TenantID == tenantID {
+			result = append(result, site)
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })

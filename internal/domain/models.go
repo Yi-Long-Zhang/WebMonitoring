@@ -5,10 +5,15 @@ import "time"
 type Role string
 
 const (
-	RoleAdmin    Role = "ADMIN"
-	RoleOperator Role = "OPERATOR"
-	RoleAuditor  Role = "AUDITOR"
+	RoleAdmin      Role = "ADMIN"
+	RoleOperator   Role = "OPERATOR"
+	RoleAuditor    Role = "AUDITOR"
+	RoleSuperAdmin Role = "SUPER_ADMIN"
 )
+
+// DefaultTenantID is the tenant seeded by the initial migration. It is the
+// fallback when a login request does not specify a tenant.
+const DefaultTenantID = "00000000-0000-4000-8000-000000000001"
 
 type AssetType string
 
@@ -68,6 +73,13 @@ const (
 	SeverityHigh     Severity = "HIGH"
 	SeverityCritical Severity = "CRITICAL"
 )
+
+type Tenant struct {
+	ID        string    `json:"id"`
+	Slug      string    `json:"slug"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"createdAt"`
+}
 
 type User struct {
 	ID           string    `json:"id"`

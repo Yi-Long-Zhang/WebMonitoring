@@ -44,6 +44,62 @@ func (p *PostgresRepository) Ready(ctx context.Context) error {
 	return p.pool.Ping(ctx)
 }
 
+func (p *PostgresRepository) ListTenants() ([]domain.Tenant, error) {
+	rows, err := p.pool.Query(context.Background(), tenantSelect+` ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, normalizePostgresError(err)
+	}
+	defer rows.Close()
+	result := make([]domain.Tenant, 0)
+	for rows.Next() {
+		item, scanErr := scanTenant(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, normalizePostgresError(err)
+	}
+	return result, nil
+}
+
+func (p *PostgresRepository) GetTenant(tenantID string) (domain.Tenant, error) {
+	return scanTenant(p.pool.QueryRow(context.Background(), tenantSelect+` WHERE id=$1`, tenantID))
+}
+
+func (p *PostgresRepository) GetTenantBySlug(slug string) (domain.Tenant, error) {
+	return scanTenant(p.pool.QueryRow(context.Background(), tenantSelect+` WHERE lower(slug)=lower($1)`, slug))
+}
+
+func (p *PostgresRepository) CreateTenant(tenant domain.Tenant) error {
+	_, err := p.pool.Exec(context.Background(), `
+		INSERT INTO tenants (id, slug, name, created_at)
+		VALUES ($1, $2, $3, $4)`,
+		tenant.ID, tenant.Slug, tenant.Name, tenant.CreatedAt,
+	)
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) UpdateTenant(tenant domain.Tenant) error {
+	tag, err := p.pool.Exec(context.Background(), `
+		UPDATE tenants SET slug=$2, name=$3 WHERE id=$1`,
+		tenant.ID, tenant.Slug, tenant.Name,
+	)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return normalizePostgresError(err)
+}
+
+const tenantSelect = `SELECT id, slug, name, created_at FROM tenants`
+
+func scanTenant(row rowScanner) (domain.Tenant, error) {
+	var tenant domain.Tenant
+	err := row.Scan(&tenant.ID, &tenant.Slug, &tenant.Name, &tenant.CreatedAt)
+	return tenant, normalizePostgresError(err)
+}
+
 func (p *PostgresRepository) CreateUser(user domain.User) error {
 	_, err := p.pool.Exec(context.Background(), `
 		INSERT INTO users (id, tenant_id, username, password_hash, role, created_at)
@@ -89,10 +145,10 @@ func (p *PostgresRepository) UpdateAsset(asset domain.Asset) error {
 	tag, err := p.pool.Exec(context.Background(), `
 		UPDATE assets SET name=$3, owner_id=$4, enabled=$5, verification_status=$6,
 			verification_token=NULLIF($7, ''), verification_token_hash=NULLIF($8, ''),
-			verification_issued_at=$9, verification_expires_at=$10, updated_at=$11
+			verification_issued_at=$9, verification_expires_at=$10, site_id=NULLIF($11, '')::uuid, updated_at=$12
 		WHERE tenant_id=$1 AND id=$2`,
 		asset.TenantID, asset.ID, asset.Name, asset.OwnerID, asset.Enabled,
-		asset.VerificationStatus, asset.VerificationToken, asset.VerificationTokenHash, asset.VerificationIssuedAt, asset.VerificationExpiresAt, asset.UpdatedAt,
+		asset.VerificationStatus, asset.VerificationToken, asset.VerificationTokenHash, asset.VerificationIssuedAt, asset.VerificationExpiresAt, asset.SiteID, asset.UpdatedAt,
 	)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -142,6 +198,59 @@ func scanAsset(row rowScanner) (domain.Asset, error) {
 		&asset.VerificationIssuedAt, &asset.VerificationExpiresAt, &asset.CreatedAt, &asset.UpdatedAt,
 	)
 	return asset, normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) CreateSite(site domain.Site) error {
+	_, err := p.pool.Exec(context.Background(), `
+		INSERT INTO sites (id, tenant_id, name, domain, owner_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		site.ID, site.TenantID, site.Name, site.Domain, site.OwnerID, site.CreatedAt, site.UpdatedAt,
+	)
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) UpdateSite(site domain.Site) error {
+	tag, err := p.pool.Exec(context.Background(), `
+		UPDATE sites SET name=$3, domain=$4, owner_id=$5, updated_at=$6
+		WHERE tenant_id=$1 AND id=$2`,
+		site.TenantID, site.ID, site.Name, site.Domain, site.OwnerID, site.UpdatedAt,
+	)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) GetSite(tenantID, id string) (domain.Site, error) {
+	return scanSite(p.pool.QueryRow(context.Background(), siteSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
+}
+
+func (p *PostgresRepository) ListSites(tenantID string) ([]domain.Site, error) {
+	rows, err := p.pool.Query(context.Background(), siteSelect+` WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, normalizePostgresError(err)
+	}
+	defer rows.Close()
+	result := make([]domain.Site, 0)
+	for rows.Next() {
+		item, scanErr := scanSite(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, normalizePostgresError(err)
+	}
+	return result, nil
+}
+
+const siteSelect = `SELECT id, tenant_id, name, domain, owner_id, created_at, updated_at FROM sites`
+
+func scanSite(row rowScanner) (domain.Site, error) {
+	var site domain.Site
+	err := row.Scan(&site.ID, &site.TenantID, &site.Name, &site.Domain, &site.OwnerID, &site.CreatedAt, &site.UpdatedAt)
+	return site, normalizePostgresError(err)
 }
 
 func (p *PostgresRepository) UpsertPolicy(policy domain.MonitorPolicy) error {

@@ -13,6 +13,12 @@ var (
 )
 
 type Repository interface {
+	ListTenants() ([]domain.Tenant, error)
+	GetTenant(tenantID string) (domain.Tenant, error)
+	GetTenantBySlug(slug string) (domain.Tenant, error)
+	CreateTenant(domain.Tenant) error
+	UpdateTenant(domain.Tenant) error
+
 	CreateUser(domain.User) error
 	FindUserByUsername(tenantID, username string) (domain.User, error)
 	GetUser(tenantID, id string) (domain.User, error)
@@ -21,6 +27,11 @@ type Repository interface {
 	UpdateAsset(domain.Asset) error
 	GetAsset(tenantID, id string) (domain.Asset, error)
 	ListAssets(tenantID string) ([]domain.Asset, error)
+
+	CreateSite(domain.Site) error
+	UpdateSite(domain.Site) error
+	GetSite(tenantID, id string) (domain.Site, error)
+	ListSites(tenantID string) ([]domain.Site, error)
 
 	UpsertPolicy(domain.MonitorPolicy) error
 	GetPolicy(tenantID, assetID string) (domain.MonitorPolicy, error)
