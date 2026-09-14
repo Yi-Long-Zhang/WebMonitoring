@@ -19,7 +19,7 @@ func TestRedisAcknowledgementReclaimAndDeadLetter(t *testing.T) {
 	ctx := context.Background()
 	client := redis.NewClient(&redis.Options{Addr: address})
 	if err := client.Ping(ctx).Err(); err != nil {
-		t.Skipf("Redis integration test unavailable: %v", err)
+		t.Fatalf("Redis integration test unavailable: %v", err)
 	}
 	defer client.Close()
 
@@ -29,10 +29,16 @@ func TestRedisAcknowledgementReclaimAndDeadLetter(t *testing.T) {
 	if err := ensureGroup(ctx, client, stream, group); err != nil {
 		t.Fatal(err)
 	}
+	var queue *Redis
 	t.Cleanup(func() {
-		_ = client.Del(context.Background(), stream, stream+deadLetterSuffix).Err()
+		if queue != nil {
+			_ = queue.Close()
+		}
+		cleanupClient := redis.NewClient(&redis.Options{Addr: address})
+		_ = cleanupClient.Del(context.Background(), stream, stream+deadLetterSuffix).Err()
+		_ = cleanupClient.Close()
 	})
-	queue := &Redis{
+	queue = &Redis{
 		client: client, stream: stream, group: group,
 		maxDeliveries: 2, minIdle: time.Millisecond,
 	}
@@ -56,6 +62,18 @@ func TestRedisAcknowledgementReclaimAndDeadLetter(t *testing.T) {
 	if pending := pendingCount(t, ctx, client, stream, group); pending != 1 {
 		t.Fatalf("failed message was acknowledged; pending=%d", pending)
 	}
+
+	if err := queue.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := newStream(ctx, address, stream, group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.maxDeliveries = 2
+	restarted.minIdle = time.Millisecond
+	queue = restarted
+	client = restarted.client
 
 	time.Sleep(5 * time.Millisecond)
 	claimed, _, err := client.XAutoClaim(ctx, &redis.XAutoClaimArgs{

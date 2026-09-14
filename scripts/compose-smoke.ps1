@@ -13,7 +13,7 @@ $compose = @(
     "-f", "deployments/compose/docker-compose.yml",
     "-f", "deployments/compose/docker-compose.smoke.yml"
 )
-$smokeRoot = Join-Path (Get-Location) ".data-smoke\runs\$PID"
+$smokeRoot = Join-Path (Join-Path (Join-Path (Get-Location) ".data-smoke") "runs") "$PID"
 $env:SMOKE_DATA_ROOT = $smokeRoot
 $apiBase = "http://localhost:18080"
 $targetRoot = Join-Path $smokeRoot "target"
@@ -162,8 +162,14 @@ try {
         -WebSession $session -ContentType "application/json" `
         -Body '{"username":"admin","password":"change-me-before-production"}' | Out-Null
     $persisted = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/assets" -WebSession $session
-    if (($persisted.items | Where-Object id -eq $asset.id).Count -ne 1) {
+    if (@($persisted.items | Where-Object id -eq $asset.id).Count -ne 1) {
         throw "asset did not persist after restart"
+    }
+    $env:CONSOLE_BASE_URL = "http://localhost:18088"
+    $env:ADMIN_PASSWORD = "change-me-before-production"
+    & pnpm --filter @webmonitoring/console e2e
+    if ($LASTEXITCODE -ne 0) {
+        throw "console E2E failed"
     }
     Write-Host "Compose smoke test passed"
 }

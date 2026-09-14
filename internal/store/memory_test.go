@@ -84,8 +84,65 @@ func TestAlertDeliveryDeduplicatesByIncidentAndChannel(t *testing.T) {
 	if err := repository.CreateAlertDelivery(second); err != ErrConflict {
 		t.Fatalf("expected delivery conflict, got %v", err)
 	}
-	items := repository.ListAlertDeliveries("tenant", "incident")
+	items, err := repository.ListAlertDeliveries("tenant", "incident")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(items) != 1 || items[0].ID != first.ID {
 		t.Fatalf("unexpected deliveries: %#v", items)
+	}
+}
+
+func TestEvidenceRetentionProtectsIncidentReferences(t *testing.T) {
+	repository := NewMemoryRepository()
+	expired := time.Now().UTC().Add(-time.Hour)
+	item := domain.Evidence{
+		ID: "evidence", TenantID: "tenant", AssetID: "asset", JobID: "job",
+		CreatedAt: time.Now().UTC().Add(-24 * time.Hour), RetainUntil: &expired,
+	}
+	if err := repository.CreateEvidence(item); err != nil {
+		t.Fatal(err)
+	}
+	items, err := repository.ListExpiredEvidence("tenant", time.Now().UTC())
+	if err != nil || len(items) != 1 {
+		t.Fatalf("unexpected expired evidence: %#v err=%v", items, err)
+	}
+	if _, _, err := repository.UpsertIncident(domain.Incident{
+		ID: "incident", TenantID: "tenant", AssetID: "asset", BaselineID: "baseline",
+		BaselineVersion: 1, Fingerprint: "fingerprint", Status: domain.IncidentOpen,
+		EvidenceIDs: []string{item.ID}, CreatedAt: time.Now().UTC(),
+		FirstSeenAt: time.Now().UTC(), LastSeenAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	referenced, err := repository.IsEvidenceReferenced("tenant", item.ID)
+	if err != nil || !referenced {
+		t.Fatalf("reference check=%v err=%v", referenced, err)
+	}
+	if err := repository.DeleteEvidence("tenant", item.ID); err != ErrConflict {
+		t.Fatalf("expected retention conflict, got %v", err)
+	}
+}
+
+func TestAuditRetentionDeletesOnlyExpiredTenantEvents(t *testing.T) {
+	repository := NewMemoryRepository()
+	cutoff := time.Now().UTC()
+	for _, event := range []domain.AuditEvent{
+		{ID: "expired", TenantID: "tenant", CreatedAt: cutoff.Add(-time.Hour)},
+		{ID: "current", TenantID: "tenant", CreatedAt: cutoff.Add(time.Hour)},
+		{ID: "other", TenantID: "other", CreatedAt: cutoff.Add(-time.Hour)},
+	} {
+		if err := repository.AppendAudit(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err := repository.DeleteAuditsBefore("tenant", cutoff)
+	if err != nil || deleted != 1 {
+		t.Fatalf("deleted=%d err=%v", deleted, err)
+	}
+	current, _ := repository.ListAudits("tenant")
+	other, _ := repository.ListAudits("other")
+	if len(current) != 1 || current[0].ID != "current" || len(other) != 1 {
+		t.Fatalf("unexpected retained audits: current=%#v other=%#v", current, other)
 	}
 }

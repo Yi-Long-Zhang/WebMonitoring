@@ -32,17 +32,18 @@ type AlertQueue interface {
 }
 
 type Service struct {
-	repository store.Repository
-	evidence   evidence.Store
-	http       *Checker
-	browser    BrowserChecker
-	notifier   *notify.Dispatcher
-	broker     *events.Broker
-	logger     *slog.Logger
-	queue      JobQueue
-	alertQueue AlertQueue
-	metrics    *metrics.Registry
-	retryBase  time.Duration
+	repository        store.Repository
+	evidence          evidence.Store
+	http              *Checker
+	browser           BrowserChecker
+	notifier          *notify.Dispatcher
+	broker            *events.Broker
+	logger            *slog.Logger
+	queue             JobQueue
+	alertQueue        AlertQueue
+	metrics           *metrics.Registry
+	retryBase         time.Duration
+	evidenceRetention time.Duration
 }
 
 func NewService(
@@ -55,14 +56,15 @@ func NewService(
 	logger *slog.Logger,
 ) *Service {
 	return &Service{
-		repository: repository,
-		evidence:   evidenceStore,
-		http:       httpChecker,
-		browser:    browserChecker,
-		notifier:   notifier,
-		broker:     broker,
-		logger:     logger,
-		retryBase:  500 * time.Millisecond,
+		repository:        repository,
+		evidence:          evidenceStore,
+		http:              httpChecker,
+		browser:           browserChecker,
+		notifier:          notifier,
+		broker:            broker,
+		logger:            logger,
+		retryBase:         500 * time.Millisecond,
+		evidenceRetention: 90 * 24 * time.Hour,
 	}
 }
 
@@ -81,6 +83,12 @@ func (s *Service) SetMetrics(registry *metrics.Registry) {
 func (s *Service) SetRetryBase(delay time.Duration) {
 	if delay > 0 {
 		s.retryBase = delay
+	}
+}
+
+func (s *Service) SetEvidenceRetention(delay time.Duration) {
+	if delay > 0 {
+		s.evidenceRetention = delay
 	}
 }
 
@@ -196,6 +204,8 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 	if err != nil {
 		return s.failJob(ctx, job, "EVIDENCE_WRITE_FAILED", err)
 	}
+	retainUntil := htmlEvidence.CreatedAt.Add(s.evidenceRetention)
+	htmlEvidence.RetainUntil = &retainUntil
 	if err := s.repository.CreateEvidence(htmlEvidence); err != nil {
 		return s.failJob(ctx, job, "EVIDENCE_METADATA_FAILED", err)
 	}
@@ -207,6 +217,8 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 	if err != nil {
 		return s.failJob(ctx, job, "EVIDENCE_WRITE_FAILED", err)
 	}
+	snapshotRetainUntil := snapshotEvidence.CreatedAt.Add(s.evidenceRetention)
+	snapshotEvidence.RetainUntil = &snapshotRetainUntil
 	if err := s.repository.CreateEvidence(snapshotEvidence); err != nil {
 		return s.failJob(ctx, job, "EVIDENCE_METADATA_FAILED", err)
 	}
@@ -220,6 +232,8 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 		if putErr != nil {
 			return s.failJob(ctx, job, "EVIDENCE_WRITE_FAILED", putErr)
 		}
+		screenshotRetainUntil := screenshotEvidence.CreatedAt.Add(s.evidenceRetention)
+		screenshotEvidence.RetainUntil = &screenshotRetainUntil
 		if createErr := s.repository.CreateEvidence(screenshotEvidence); createErr != nil {
 			return s.failJob(ctx, job, "EVIDENCE_METADATA_FAILED", createErr)
 		}
@@ -230,11 +244,15 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 
 	baseline, baselineErr := s.repository.GetApprovedBaseline(asset.TenantID, asset.ID)
 	if errors.Is(baselineErr, store.ErrNotFound) {
+		baselines, listErr := s.repository.ListBaselines(asset.TenantID, asset.ID)
+		if listErr != nil {
+			return s.failJob(ctx, job, "BASELINE_READ_FAILED", listErr)
+		}
 		candidate := domain.BaselineVersion{
 			ID:          identity.New(),
 			TenantID:    asset.TenantID,
 			AssetID:     asset.ID,
-			Version:     nextBaselineVersion(s.repository.ListBaselines(asset.TenantID, asset.ID)),
+			Version:     nextBaselineVersion(baselines),
 			Status:      domain.BaselineCandidate,
 			Snapshot:    result.Snapshot,
 			EvidenceIDs: evidenceIDs,

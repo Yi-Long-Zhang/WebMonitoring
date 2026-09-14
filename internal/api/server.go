@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"webmonitoring/internal/auth"
+	"webmonitoring/internal/config"
 	"webmonitoring/internal/detection"
 	"webmonitoring/internal/domain"
 	"webmonitoring/internal/events"
@@ -36,17 +37,19 @@ type principalKey struct{}
 type traceKey struct{}
 
 type Server struct {
-	repository    store.Repository
-	auth          *auth.Service
-	detection     *detection.Service
-	evidence      evidence.Store
-	guard         *security.URLGuard
-	broker        *events.Broker
-	logger        *slog.Logger
-	sessionSecure bool
-	metrics       *metrics.Registry
-	readiness     func(context.Context) map[string]error
-	handler       http.Handler
+	repository        store.Repository
+	auth              *auth.Service
+	detection         *detection.Service
+	evidence          evidence.Store
+	guard             *security.URLGuard
+	broker            *events.Broker
+	logger            *slog.Logger
+	sessionSecure     bool
+	metrics           *metrics.Registry
+	readiness         func(context.Context) map[string]error
+	evidenceRetention time.Duration
+	auditRetention    time.Duration
+	handler           http.Handler
 }
 
 func NewServer(
@@ -60,15 +63,17 @@ func NewServer(
 	sessionSecure bool,
 ) *Server {
 	server := &Server{
-		repository:    repository,
-		auth:          authService,
-		detection:     detectionService,
-		evidence:      evidenceStore,
-		guard:         guard,
-		broker:        broker,
-		logger:        logger,
-		sessionSecure: sessionSecure,
-		metrics:       metrics.New(),
+		repository:        repository,
+		auth:              authService,
+		detection:         detectionService,
+		evidence:          evidenceStore,
+		guard:             guard,
+		broker:            broker,
+		logger:            logger,
+		sessionSecure:     sessionSecure,
+		metrics:           metrics.New(),
+		evidenceRetention: time.Duration(config.DefaultEvidenceRetentionDays) * 24 * time.Hour,
+		auditRetention:    time.Duration(config.DefaultAuditRetentionDays) * 24 * time.Hour,
 	}
 	server.handler = server.routes()
 	return server
@@ -80,6 +85,15 @@ func (s *Server) Metrics() *metrics.Registry {
 
 func (s *Server) SetReadiness(check func(context.Context) map[string]error) {
 	s.readiness = check
+}
+
+func (s *Server) SetRetentionPolicy(evidenceDays, auditDays int) {
+	if evidenceDays > 0 {
+		s.evidenceRetention = time.Duration(evidenceDays) * 24 * time.Hour
+	}
+	if auditDays > 0 {
+		s.auditRetention = time.Duration(auditDays) * 24 * time.Hour
+	}
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -119,6 +133,7 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("POST /api/v1/alert-channels", s.requireRoles(s.createAlertChannel, domain.RoleAdmin))
 	protected.HandleFunc("GET /api/v1/alert-deliveries", s.listAlertDeliveries)
 	protected.HandleFunc("GET /api/v1/audit-events", s.listAudits)
+	protected.HandleFunc("POST /api/v1/maintenance/retention", s.requireRoles(s.runRetentionMaintenance, domain.RoleAdmin))
 	protected.HandleFunc("GET /api/v1/reports/summary", s.reportSummary)
 	protected.HandleFunc("GET /api/v1/reports/{incidentId}", s.downloadReport)
 	protected.HandleFunc("GET /api/v1/events/stream", s.streamEvents)
@@ -200,9 +215,21 @@ func (s *Server) logout(writer http.ResponseWriter, request *http.Request) {
 
 func (s *Server) dashboard(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	assets := s.repository.ListAssets(session.User.TenantID)
-	incidents := s.repository.ListIncidents(session.User.TenantID)
-	jobs := s.repository.ListJobs(session.User.TenantID)
+	assets, err := s.repository.ListAssets(session.User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list dashboard assets", err)
+		return
+	}
+	incidents, err := s.repository.ListIncidents(session.User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list dashboard incidents", err)
+		return
+	}
+	jobs, err := s.repository.ListJobs(session.User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list dashboard jobs", err)
+		return
+	}
 	summary := map[string]int{
 		"assets": len(assets), "verifiedAssets": 0, "openIncidents": 0,
 		"criticalIncidents": 0, "failedJobs": 0,
@@ -230,7 +257,11 @@ func (s *Server) dashboard(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) listAssets(writer http.ResponseWriter, request *http.Request) {
-	items := s.repository.ListAssets(principal(request).User.TenantID)
+	items, err := s.repository.ListAssets(principal(request).User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list assets", err)
+		return
+	}
 	writeList(writer, items)
 }
 
@@ -407,7 +438,12 @@ func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) 
 }
 
 func (s *Server) listPolicies(writer http.ResponseWriter, request *http.Request) {
-	writeList(writer, s.repository.ListPolicies(principal(request).User.TenantID))
+	items, err := s.repository.ListPolicies(principal(request).User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list policies", err)
+		return
+	}
+	writeList(writer, items)
 }
 
 func (s *Server) updatePolicy(writer http.ResponseWriter, request *http.Request) {
@@ -458,13 +494,20 @@ func (s *Server) updatePolicy(writer http.ResponseWriter, request *http.Request)
 	current.MaintenanceWindowStart = input.MaintenanceWindowStart
 	current.MaintenanceWindowEnd = input.MaintenanceWindowEnd
 	current.UpdatedAt = now
-	_ = s.repository.UpsertPolicy(current)
+	if err := s.repository.UpsertPolicy(current); err != nil {
+		s.repositoryFailure(writer, request, "update policy", err)
+		return
+	}
 	s.appendAudit(request, session.User, "policy.update", "policy", current.ID, "SUCCESS", map[string]any{"version": current.Version})
 	writeJSON(writer, http.StatusOK, current)
 }
 
 func (s *Server) listBaselines(writer http.ResponseWriter, request *http.Request) {
-	items := s.repository.ListBaselines(principal(request).User.TenantID, request.URL.Query().Get("assetId"))
+	items, err := s.repository.ListBaselines(principal(request).User.TenantID, request.URL.Query().Get("assetId"))
+	if err != nil {
+		s.repositoryFailure(writer, request, "list baselines", err)
+		return
+	}
 	writeList(writer, items)
 }
 
@@ -511,7 +554,12 @@ func (s *Server) changeBaselineStatus(writer http.ResponseWriter, request *http.
 }
 
 func (s *Server) listJobs(writer http.ResponseWriter, request *http.Request) {
-	writeList(writer, s.repository.ListJobs(principal(request).User.TenantID))
+	items, err := s.repository.ListJobs(principal(request).User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list jobs", err)
+		return
+	}
+	writeList(writer, items)
 }
 
 func (s *Server) createJob(writer http.ResponseWriter, request *http.Request) {
@@ -533,7 +581,11 @@ func (s *Server) createJob(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) listIncidents(writer http.ResponseWriter, request *http.Request) {
-	incidents := s.repository.ListIncidents(principal(request).User.TenantID)
+	incidents, err := s.repository.ListIncidents(principal(request).User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list incidents", err)
+		return
+	}
 	s.updateIncidentMetrics(incidents)
 	writeList(writer, incidents)
 }
@@ -624,7 +676,11 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 }
 
 func (s *Server) listEvidence(writer http.ResponseWriter, request *http.Request) {
-	items := s.repository.ListEvidence(principal(request).User.TenantID, request.URL.Query().Get("assetId"))
+	items, err := s.repository.ListEvidence(principal(request).User.TenantID, request.URL.Query().Get("assetId"))
+	if err != nil {
+		s.repositoryFailure(writer, request, "list evidence", err)
+		return
+	}
 	writeList(writer, items)
 }
 
@@ -652,7 +708,11 @@ func (s *Server) downloadEvidence(writer http.ResponseWriter, request *http.Requ
 }
 
 func (s *Server) listAlertChannels(writer http.ResponseWriter, request *http.Request) {
-	items := s.repository.ListAlertChannels(principal(request).User.TenantID)
+	items, err := s.repository.ListAlertChannels(principal(request).User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list alert channels", err)
+		return
+	}
 	for index := range items {
 		items[index].URL = redactEndpoint(items[index].URL)
 	}
@@ -668,7 +728,12 @@ func (s *Server) listAlertDeliveries(writer http.ResponseWriter, request *http.R
 			return
 		}
 	}
-	writeList(writer, s.repository.ListAlertDeliveries(session.User.TenantID, incidentID))
+	items, err := s.repository.ListAlertDeliveries(session.User.TenantID, incidentID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list alert deliveries", err)
+		return
+	}
+	writeList(writer, items)
 }
 
 func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request) {
@@ -690,7 +755,11 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 		writeError(writer, request, http.StatusBadRequest, "INVALID_SEVERITY", "风险等级无效", nil)
 		return
 	}
-	assets := s.repository.ListAssets(session.User.TenantID)
+	assets, err := s.repository.ListAssets(session.User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list report assets", err)
+		return
+	}
 	verifiedAssets := 0
 	assetIDs := make(map[string]struct{})
 	for _, asset := range assets {
@@ -705,7 +774,11 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 			verifiedAssets++
 		}
 	}
-	jobs := s.repository.ListJobs(session.User.TenantID)
+	jobs, err := s.repository.ListJobs(session.User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list report jobs", err)
+		return
+	}
 	jobCount, successfulJobs, failedJobs := 0, 0, 0
 	for _, job := range jobs {
 		if _, ok := assetIDs[job.AssetID]; !ok || !withinRange(job.CreatedAt, from, to) {
@@ -719,7 +792,11 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 			failedJobs++
 		}
 	}
-	incidents := s.repository.ListIncidents(session.User.TenantID)
+	incidents, err := s.repository.ListIncidents(session.User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list report incidents", err)
+		return
+	}
 	severityCounts := map[string]int{}
 	incidentIDs := make(map[string]struct{})
 	mttd, mtta, mttr := make([]float64, 0), make([]float64, 0), make([]float64, 0)
@@ -746,7 +823,11 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 			}
 		}
 	}
-	deliveries := s.repository.ListAlertDeliveries(session.User.TenantID, "")
+	deliveries, err := s.repository.ListAlertDeliveries(session.User.TenantID, "")
+	if err != nil {
+		s.repositoryFailure(writer, request, "list report deliveries", err)
+		return
+	}
 	alertDeliveries := 0
 	for _, delivery := range deliveries {
 		if _, ok := incidentIDs[delivery.IncidentID]; ok {
@@ -841,7 +922,78 @@ func (s *Server) createAlertChannel(writer http.ResponseWriter, request *http.Re
 }
 
 func (s *Server) listAudits(writer http.ResponseWriter, request *http.Request) {
-	writeList(writer, s.repository.ListAudits(principal(request).User.TenantID))
+	items, err := s.repository.ListAudits(principal(request).User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list audit events", err)
+		return
+	}
+	writeList(writer, items)
+}
+
+func (s *Server) runRetentionMaintenance(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	var input struct {
+		Execute bool `json:"execute"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	now := time.Now().UTC()
+	expiredEvidence, err := s.repository.ListExpiredEvidence(session.User.TenantID, now)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list expired evidence", err)
+		return
+	}
+	result := map[string]any{
+		"dryRun":             !input.Execute,
+		"expiredEvidence":    len(expiredEvidence),
+		"deletedEvidence":    0,
+		"protectedEvidence":  0,
+		"failedEvidence":     0,
+		"deletedAuditEvents": 0,
+		"failureReasons":     []string{},
+	}
+	if input.Execute {
+		failures := make([]string, 0)
+		for _, item := range expiredEvidence {
+			referenced, refErr := s.repository.IsEvidenceReferenced(session.User.TenantID, item.ID)
+			if refErr != nil {
+				result["failedEvidence"] = result["failedEvidence"].(int) + 1
+				failures = append(failures, "evidence reference check failed")
+				continue
+			}
+			if referenced {
+				result["protectedEvidence"] = result["protectedEvidence"].(int) + 1
+				continue
+			}
+			if deleteErr := s.evidence.Delete(item.ObjectKey); deleteErr != nil {
+				result["failedEvidence"] = result["failedEvidence"].(int) + 1
+				failures = append(failures, "evidence object deletion failed")
+				continue
+			}
+			if deleteErr := s.repository.DeleteEvidence(session.User.TenantID, item.ID); deleteErr != nil {
+				result["failedEvidence"] = result["failedEvidence"].(int) + 1
+				failures = append(failures, "evidence metadata deletion failed")
+				continue
+			}
+			result["deletedEvidence"] = result["deletedEvidence"].(int) + 1
+		}
+		deletedAudits, deleteErr := s.repository.DeleteAuditsBefore(
+			session.User.TenantID, now.Add(-s.auditRetention),
+		)
+		if deleteErr != nil {
+			failures = append(failures, "audit deletion failed")
+		} else {
+			result["deletedAuditEvents"] = deletedAudits
+		}
+		result["failureReasons"] = failures
+	}
+	action := "maintenance.retention.dry_run"
+	if input.Execute {
+		action = "maintenance.retention.execute"
+	}
+	s.appendAudit(request, session.User, action, "retention", session.User.TenantID, "SUCCESS", result)
+	writeJSON(writer, http.StatusOK, result)
 }
 
 func (s *Server) downloadReport(writer http.ResponseWriter, request *http.Request) {
@@ -1083,6 +1235,11 @@ func (s *Server) appendAudit(
 
 func (s *Server) notFound(writer http.ResponseWriter, request *http.Request) {
 	writeError(writer, request, http.StatusNotFound, "NOT_FOUND", "资源不存在", nil)
+}
+
+func (s *Server) repositoryFailure(writer http.ResponseWriter, request *http.Request, operation string, err error) {
+	s.logger.Error("repository operation failed", "operation", operation, "error", err)
+	writeError(writer, request, http.StatusInternalServerError, "STORAGE_UNAVAILABLE", "暂时无法读取业务数据", nil)
 }
 
 func principal(request *http.Request) auth.Session {

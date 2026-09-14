@@ -112,7 +112,7 @@ func (m *MemoryRepository) GetAsset(tenantID, id string) (domain.Asset, error) {
 	return asset, nil
 }
 
-func (m *MemoryRepository) ListAssets(tenantID string) []domain.Asset {
+func (m *MemoryRepository) ListAssets(tenantID string) ([]domain.Asset, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Asset, 0)
@@ -122,7 +122,7 @@ func (m *MemoryRepository) ListAssets(tenantID string) []domain.Asset {
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
-	return result
+	return result, nil
 }
 
 func (m *MemoryRepository) UpsertPolicy(policy domain.MonitorPolicy) error {
@@ -142,7 +142,7 @@ func (m *MemoryRepository) GetPolicy(tenantID, assetID string) (domain.MonitorPo
 	return clonePolicy(policy), nil
 }
 
-func (m *MemoryRepository) ListPolicies(tenantID string) []domain.MonitorPolicy {
+func (m *MemoryRepository) ListPolicies(tenantID string) ([]domain.MonitorPolicy, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.MonitorPolicy, 0)
@@ -152,7 +152,7 @@ func (m *MemoryRepository) ListPolicies(tenantID string) []domain.MonitorPolicy 
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].UpdatedAt.After(result[j].UpdatedAt) })
-	return result
+	return result, nil
 }
 
 func (m *MemoryRepository) CreateBaseline(baseline domain.BaselineVersion) error {
@@ -215,7 +215,7 @@ func (m *MemoryRepository) GetApprovedBaseline(tenantID, assetID string) (domain
 	return cloneBaseline(selected), nil
 }
 
-func (m *MemoryRepository) ListBaselines(tenantID, assetID string) []domain.BaselineVersion {
+func (m *MemoryRepository) ListBaselines(tenantID, assetID string) ([]domain.BaselineVersion, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.BaselineVersion, 0)
@@ -230,7 +230,7 @@ func (m *MemoryRepository) ListBaselines(tenantID, assetID string) []domain.Base
 		}
 		return result[i].CreatedAt.After(result[j].CreatedAt)
 	})
-	return result
+	return result, nil
 }
 
 func (m *MemoryRepository) CreateJob(job domain.DetectionJob) error {
@@ -284,7 +284,7 @@ func (m *MemoryRepository) GetJob(tenantID, id string) (domain.DetectionJob, err
 	return job, nil
 }
 
-func (m *MemoryRepository) ListJobs(tenantID string) []domain.DetectionJob {
+func (m *MemoryRepository) ListJobs(tenantID string) ([]domain.DetectionJob, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.DetectionJob, 0)
@@ -294,7 +294,7 @@ func (m *MemoryRepository) ListJobs(tenantID string) []domain.DetectionJob {
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
-	return result
+	return result, nil
 }
 
 func (m *MemoryRepository) CreateEvidence(evidence domain.Evidence) error {
@@ -318,7 +318,7 @@ func (m *MemoryRepository) GetEvidence(tenantID, id string) (domain.Evidence, er
 	return evidence, nil
 }
 
-func (m *MemoryRepository) ListEvidence(tenantID, assetID string) []domain.Evidence {
+func (m *MemoryRepository) ListEvidence(tenantID, assetID string) ([]domain.Evidence, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Evidence, 0)
@@ -328,7 +328,48 @@ func (m *MemoryRepository) ListEvidence(tenantID, assetID string) []domain.Evide
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
-	return result
+	return result, nil
+}
+
+func (m *MemoryRepository) ListExpiredEvidence(tenantID string, before time.Time) ([]domain.Evidence, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]domain.Evidence, 0)
+	for _, item := range m.evidence {
+		if item.TenantID == tenantID && item.RetainUntil != nil && !item.RetainUntil.After(before) {
+			result = append(result, item)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.Before(result[j].CreatedAt) })
+	return result, nil
+}
+
+func (m *MemoryRepository) IsEvidenceReferenced(tenantID, id string) (bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, incident := range m.incidents {
+		if incident.TenantID == tenantID && contains(incident.EvidenceIDs, id) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *MemoryRepository) DeleteEvidence(tenantID, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := tenantKey(tenantID, id)
+	item, ok := m.evidence[key]
+	if !ok {
+		return ErrNotFound
+	}
+	for _, incident := range m.incidents {
+		if incident.TenantID == tenantID && contains(incident.EvidenceIDs, item.ID) {
+			return ErrConflict
+		}
+	}
+	delete(m.evidence, key)
+	return nil
 }
 
 func (m *MemoryRepository) UpsertIncident(incident domain.Incident) (domain.Incident, bool, error) {
@@ -374,7 +415,7 @@ func (m *MemoryRepository) GetIncident(tenantID, id string) (domain.Incident, er
 	return cloneIncident(incident), nil
 }
 
-func (m *MemoryRepository) ListIncidents(tenantID string) []domain.Incident {
+func (m *MemoryRepository) ListIncidents(tenantID string) ([]domain.Incident, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Incident, 0)
@@ -384,7 +425,7 @@ func (m *MemoryRepository) ListIncidents(tenantID string) []domain.Incident {
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].LastSeenAt.After(result[j].LastSeenAt) })
-	return result
+	return result, nil
 }
 
 func (m *MemoryRepository) CreateAlertChannel(channel domain.AlertChannel) error {
@@ -398,15 +439,18 @@ func (m *MemoryRepository) CreateAlertChannel(channel domain.AlertChannel) error
 	return nil
 }
 
-func (m *MemoryRepository) ListAlertChannels(tenantID string) []domain.AlertChannel {
-	result := m.ListAlertChannelsWithSecrets(tenantID)
+func (m *MemoryRepository) ListAlertChannels(tenantID string) ([]domain.AlertChannel, error) {
+	result, err := m.ListAlertChannelsWithSecrets(tenantID)
+	if err != nil {
+		return nil, err
+	}
 	for index := range result {
 		result[index].Secret = ""
 	}
-	return result
+	return result, nil
 }
 
-func (m *MemoryRepository) ListAlertChannelsWithSecrets(tenantID string) []domain.AlertChannel {
+func (m *MemoryRepository) ListAlertChannelsWithSecrets(tenantID string) ([]domain.AlertChannel, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.AlertChannel, 0)
@@ -416,7 +460,7 @@ func (m *MemoryRepository) ListAlertChannelsWithSecrets(tenantID string) []domai
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
-	return result
+	return result, nil
 }
 
 func (m *MemoryRepository) CreateAlertDelivery(delivery domain.AlertDelivery) error {
@@ -442,7 +486,7 @@ func (m *MemoryRepository) UpdateAlertDelivery(delivery domain.AlertDelivery) er
 	return nil
 }
 
-func (m *MemoryRepository) ListAlertDeliveries(tenantID, incidentID string) []domain.AlertDelivery {
+func (m *MemoryRepository) ListAlertDeliveries(tenantID, incidentID string) ([]domain.AlertDelivery, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.AlertDelivery, 0)
@@ -452,7 +496,7 @@ func (m *MemoryRepository) ListAlertDeliveries(tenantID, incidentID string) []do
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
-	return result
+	return result, nil
 }
 
 func (m *MemoryRepository) AppendAudit(event domain.AuditEvent) error {
@@ -462,7 +506,7 @@ func (m *MemoryRepository) AppendAudit(event domain.AuditEvent) error {
 	return nil
 }
 
-func (m *MemoryRepository) ListAudits(tenantID string) []domain.AuditEvent {
+func (m *MemoryRepository) ListAudits(tenantID string) ([]domain.AuditEvent, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.AuditEvent, 0)
@@ -472,7 +516,32 @@ func (m *MemoryRepository) ListAudits(tenantID string) []domain.AuditEvent {
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
-	return result
+	return result, nil
+}
+
+func (m *MemoryRepository) DeleteAuditsBefore(tenantID string, before time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kept := make([]domain.AuditEvent, 0, len(m.audits))
+	deleted := 0
+	for _, event := range m.audits {
+		if event.TenantID == tenantID && event.CreatedAt.Before(before) {
+			deleted++
+			continue
+		}
+		kept = append(kept, event)
+	}
+	m.audits = kept
+	return deleted, nil
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func clonePolicy(policy domain.MonitorPolicy) domain.MonitorPolicy {

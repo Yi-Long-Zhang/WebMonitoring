@@ -84,6 +84,19 @@ func (s *LocalStore) Open(objectKey string) (io.ReadCloser, error) {
 	return os.Open(target)
 }
 
+func (s *LocalStore) Delete(objectKey string) error {
+	cleaned := filepath.Clean(objectKey)
+	target := filepath.Join(s.root, cleaned)
+	relative, err := filepath.Rel(s.root, target)
+	if err != nil || strings.HasPrefix(relative, "..") || filepath.IsAbs(relative) {
+		return errors.New("invalid evidence object key")
+	}
+	if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 var _ Store = (*LocalStore)(nil)
 
 func safeKind(value string) string {

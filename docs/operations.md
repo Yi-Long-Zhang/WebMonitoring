@@ -30,6 +30,16 @@ docker compose -f deployments/compose/docker-compose.yml run --rm migrate baseli
 
 备份前暂停会产生大量写入的升级或维护操作，并记录备份时间、版本和校验值。
 
+仓库提供备份脚本，会同时保存 PostgreSQL custom dump、evidence bucket 和
+逐文件 SHA-256 manifest。脚本不会把密码写入 manifest：
+
+```powershell
+$env:S3_ACCESS_KEY = "..."
+$env:S3_SECRET_KEY = "..."
+$env:S3_ENDPOINT = "http://localhost:9000"
+.\scripts\compose-backup.ps1 -OutputRoot .data-backups
+```
+
 ```powershell
 docker compose -f deployments/compose/docker-compose.yml exec -T postgres `
   pg_dump -U webmonitoring -d webmonitoring --format=custom `
@@ -58,6 +68,17 @@ docker compose -f deployments/compose/docker-compose.yml up -d api http-worker
 恢复后必须检查 `/readyz`、事件证据下载、SHA-256 校验和、队列 pending 数量
 以及最近任务状态。数据库恢复不能替代证据对象恢复。
 
+恢复脚本默认只校验备份文件和校验值，不执行任何修改。正式恢复必须显式确认：
+
+```powershell
+.\scripts\compose-restore.ps1 -BackupRoot .data-backups\20260914-120000
+.\scripts\compose-restore.ps1 -BackupRoot .data-backups\20260914-120000 `
+  -Execute -ConfirmText RESTORE
+```
+
+恢复脚本会停止 API/Worker、恢复数据库和 evidence bucket、执行迁移并重新启动
+API/Worker。生产环境执行前必须记录审批、备份版本、RPO/RTO 和回滚方案。
+
 ## 验收和故障处理
 
 本机安装 Docker 后执行可重复 smoke test：
@@ -67,7 +88,8 @@ docker compose -f deployments/compose/docker-compose.yml up -d api http-worker
 ```
 
 脚本会使用 Compose 内部的授权测试目标，不连接外部网站；它覆盖登录、资产
-验证、基线审批、HTTP/Browser 检测、事件、证据、报告和 API/Worker 重启。
+验证、基线审批、HTTP/Browser 检测、事件、证据、报告、控制台关键页面 E2E
+以及 API/Worker 重启。
 测试数据保存在 `.data-smoke`，该目录已被 Git 忽略。
 
 升级失败时保留日志和审计记录，回滚 API/Worker 镜像版本；不要回滚已经执行
@@ -83,3 +105,17 @@ docker compose -f deployments/compose/docker-compose.yml up -d api http-worker
 执行的消息可能被重复领取。可通过 `QUEUE_MAX_DELIVERIES`、
 `QUEUE_RETRY_BASE_MILLISECONDS`、`ALERT_QUEUE_MAX_DELIVERIES`、
 `ALERT_MAX_ATTEMPTS` 和 `ALERT_RETRY_BASE_MILLISECONDS` 调整重试策略。
+
+## 保留期维护
+
+默认证据保留 90 天、审计保留 365 天。管理员应先调用 dry-run，确认过期数量和
+事件引用，再显式执行：
+
+```powershell
+$headers = @{ "X-CSRF-Token" = $csrfToken }
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/v1/maintenance/retention `
+  -Headers $headers -WebSession $session -ContentType "application/json" `
+  -Body '{"execute":false}'
+```
+
+被事件引用的证据不会删除；对象删除、元数据删除、审计删除和失败原因都会记录。

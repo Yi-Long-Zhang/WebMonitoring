@@ -9,6 +9,7 @@
     "build": "pnpm --filter @webmonitoring/console --filter @webmonitoring/browser-worker build",
     "typecheck": "pnpm --filter @webmonitoring/console --filter @webmonitoring/browser-worker typecheck",
     "lint": "pnpm --filter @webmonitoring/console lint",
-    "test": "pnpm --filter @webmonitoring/console --filter @webmonitoring/browser-worker test"
+    "test": "pnpm --filter @webmonitoring/console --filter @webmonitoring/browser-worker test",
+    "e2e:console": "pnpm --filter @webmonitoring/console e2e"
   }
 }

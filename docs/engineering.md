@@ -273,7 +273,11 @@ commit -> review/merge -> release
 - 监控和告警确认。
 - 失败后的停止和回滚方案。
 
-当前仓库尚未把 Docker 实测、真实 PostgreSQL 集成、Redis pending 恢复和监控接入作为完成条件；这些项目完成前，`main` 只能视为开发/演示基线。未经验证的自动恢复、生产网站修改和基础设施变更不得作为普通发布步骤。
+当前仓库把 Docker Compose smoke、真实 PostgreSQL/Redis 集成、Redis pending
+恢复、备份恢复演练和监控检查作为正式交付门禁。代码门禁已由 CI 配置覆盖；
+在具备 Docker 和基础设施的验收主机执行并留存结果前，`main` 仍只能视为
+候选交付基线。未经验证的自动恢复、生产网站修改和基础设施变更不得作为普通
+发布步骤。
 
 ## 9. 变更分类
 

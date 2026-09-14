@@ -4,7 +4,7 @@ WebMonitoring 是一个面向私有化部署的网页篡改监测与安全事件
 
 ## 当前阶段
 
-本项目处于 **MVP 可运行、安全边界收敛和部署路径验证阶段**。当前可运行的
+本项目处于 **MVP 可运行、安全边界收敛和单机 Compose 正式验收加固阶段**。当前可运行的
 主流程是：在默认租户下登记资产，完成 HTTP 文件授权验证，启用 HTTP 或
 浏览器检测，审批候选基线，查看差异事件、证据、通知投递和审计记录。
 
@@ -16,14 +16,17 @@ WebMonitoring 是一个面向私有化部署的网页篡改监测与安全事件
 - HTML、快照和截图证据保存；下载和报告导出会校验大小及 SHA-256。
 - Webhook/企业微信通知、投递记录、重试和事件级去重。
 - 内存/本地证据开发模式，以及 PostgreSQL、Redis、MinIO Compose 路径。
+- 生产配置门禁、证据和审计保留策略、dry-run 清理以及备份恢复校验脚本。
+- PostgreSQL/Redis 集成测试、100 资产调度合成测试和 Compose smoke CI 门禁。
 
 当前不应视为生产完成：
 
 - 完整租户/站点管理、细粒度权限、跨租户管理员和审批工作流。
 - DNS 或 HTML 元标签授权验证、登录态检测和 Secret Manager 集成。
-- 短时签名 URL、保留期管理、邮件/钉钉适配器和批量导入导出。
-- 游标分页、Prometheus/OpenTelemetry、容量测试和完整 PostgreSQL 集成测试。
-- Docker Compose 实测、Redis pending 消息恢复和生产升级演练。
+- 短时签名 URL、邮件/钉钉适配器、批量导入导出和完整多租户管理。
+- 真实 100 资产 HTTP/Browser 压测和备份恢复实机演练；控制台 Playwright E2E
+  已纳入 Compose smoke，待 CI 或验收主机执行。
+- 本机 Docker Compose 实测尚未完成，需在 CI 或验收主机执行。
 
 ## 本地嵌入模式
 

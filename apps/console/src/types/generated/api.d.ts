@@ -392,6 +392,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/maintenance/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["runRetentionMaintenance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/reports/{incidentId}": {
         parameters: {
             query?: never;
@@ -691,6 +707,15 @@ export interface components {
         AuditEventList: {
             items: components["schemas"]["AuditEvent"][];
             nextCursor: string;
+        };
+        RetentionMaintenanceResult: {
+            dryRun: boolean;
+            expiredEvidence: number;
+            deletedEvidence: number;
+            protectedEvidence: number;
+            failedEvidence: number;
+            deletedAuditEvents: number;
+            failureReasons: string[];
         };
     };
     responses: {
@@ -1430,6 +1455,35 @@ export interface operations {
                     "application/json": components["schemas"]["AuditEventList"];
                 };
             };
+        };
+    };
+    runRetentionMaintenance: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    execute: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description 保留期维护结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionMaintenanceResult"];
+                };
+            };
+            403: components["responses"]["Error"];
         };
     };
     downloadIncidentReport: {

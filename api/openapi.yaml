@@ -398,6 +398,27 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AuditEventList" }
+  /maintenance/retention:
+    post:
+      operationId: runRetentionMaintenance
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [execute]
+              properties:
+                execute: { type: boolean }
+      responses:
+        "200":
+          description: 保留期维护结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RetentionMaintenanceResult" }
+        "403": { $ref: "#/components/responses/Error" }
   /reports/{incidentId}:
     get:
       operationId: downloadIncidentReport
@@ -727,3 +748,16 @@ components:
           type: array
           items: { $ref: "#/components/schemas/AuditEvent" }
         nextCursor: { type: string }
+    RetentionMaintenanceResult:
+      type: object
+      required: [dryRun, expiredEvidence, deletedEvidence, protectedEvidence, failedEvidence, deletedAuditEvents, failureReasons]
+      properties:
+        dryRun: { type: boolean }
+        expiredEvidence: { type: integer }
+        deletedEvidence: { type: integer }
+        protectedEvidence: { type: integer }
+        failedEvidence: { type: integer }
+        deletedAuditEvents: { type: integer }
+        failureReasons:
+          type: array
+          items: { type: string }

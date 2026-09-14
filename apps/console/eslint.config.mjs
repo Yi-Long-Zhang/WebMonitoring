@@ -30,4 +30,12 @@ export default tseslint.config(
       "vue/multi-word-component-names": "off",
     },
   },
+  {
+    files: ["e2e/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        process: "readonly",
+      },
+    },
+  },
 );

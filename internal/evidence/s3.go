@@ -91,4 +91,12 @@ func (s *S3Store) Open(objectKey string) (io.ReadCloser, error) {
 	return object, nil
 }
 
+func (s *S3Store) Delete(objectKey string) error {
+	cleaned := path.Clean("/" + objectKey)
+	if strings.Contains(cleaned, "..") {
+		return fmt.Errorf("invalid evidence object key")
+	}
+	return s.client.RemoveObject(context.Background(), s.bucket, strings.TrimPrefix(cleaned, "/"), minio.RemoveObjectOptions{})
+}
+
 var _ Store = (*S3Store)(nil)

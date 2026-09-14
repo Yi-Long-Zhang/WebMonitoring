@@ -35,8 +35,17 @@ func (s *Scheduler) Run(ctx context.Context, tenantID string) {
 
 func (s *Scheduler) schedule(tenantID string) {
 	now := time.Now().UTC()
-	jobs := s.repository.ListJobs(tenantID)
-	for _, asset := range s.repository.ListAssets(tenantID) {
+	jobs, err := s.repository.ListJobs(tenantID)
+	if err != nil {
+		s.logger.Error("list scheduled jobs", "error", err)
+		return
+	}
+	assets, err := s.repository.ListAssets(tenantID)
+	if err != nil {
+		s.logger.Error("list scheduled assets", "error", err)
+		return
+	}
+	for _, asset := range assets {
 		if !asset.Enabled || asset.VerificationStatus != domain.VerificationVerified {
 			continue
 		}

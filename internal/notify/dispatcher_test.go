@@ -49,7 +49,10 @@ func TestSendIncidentPersistsAndDeduplicatesDelivery(t *testing.T) {
 	if requests.Load() != 1 {
 		t.Fatalf("expected one webhook request, got %d", requests.Load())
 	}
-	deliveries := repository.ListAlertDeliveries("tenant", "incident")
+	deliveries, err := repository.ListAlertDeliveries("tenant", "incident")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(deliveries) != 1 || deliveries[0].Status != "DELIVERED" || deliveries[0].Attempts != 1 {
 		t.Fatalf("unexpected delivery record: %#v", deliveries)
 	}
@@ -84,7 +87,10 @@ func TestSendIncidentRetriesWithPersistedAttemptCount(t *testing.T) {
 	if failures := dispatcher.SendIncident(t.Context(), incident, asset); len(failures) != 0 {
 		t.Fatalf("delivery failed: %v", failures)
 	}
-	deliveries := repository.ListAlertDeliveries("tenant", "incident")
+	deliveries, err := repository.ListAlertDeliveries("tenant", "incident")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(deliveries) != 1 || deliveries[0].Status != "DELIVERED" || deliveries[0].Attempts != 3 {
 		t.Fatalf("unexpected delivery record: %#v", deliveries)
 	}
@@ -108,7 +114,10 @@ func TestMarkDeadLetterFinalizesPendingDeliveries(t *testing.T) {
 	if err := dispatcher.MarkDeadLetter(t.Context(), domain.AlertJob{TenantID: "tenant", IncidentID: "incident"}); err != nil {
 		t.Fatal(err)
 	}
-	deliveries := repository.ListAlertDeliveries("tenant", "incident")
+	deliveries, err := repository.ListAlertDeliveries("tenant", "incident")
+	if err != nil {
+		t.Fatal(err)
+	}
 	statuses := make(map[string]string, len(deliveries))
 	for _, delivery := range deliveries {
 		statuses[delivery.ID] = delivery.Status

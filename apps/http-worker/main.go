@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"webmonitoring/internal/browser"
+	"webmonitoring/internal/config"
 	"webmonitoring/internal/detection"
 	"webmonitoring/internal/domain"
 	"webmonitoring/internal/events"
@@ -30,6 +31,9 @@ func main() {
 	}
 	ctx := context.Background()
 	logger := slog.New(security.NewRedactingHandler(slog.NewJSONHandler(os.Stdout, nil)))
+	if err := config.ValidateProductionWorker(os.Getenv); err != nil {
+		log.Fatalf("invalid production configuration: %v", err)
+	}
 	dsn := required("POSTGRES_DSN")
 	repository, err := store.NewPostgresRepository(ctx, dsn, required("ALERT_SECRET_KEY"))
 	if err != nil {
@@ -69,6 +73,9 @@ func main() {
 		dispatcher,
 		broker,
 		logger,
+	)
+	service.SetEvidenceRetention(
+		time.Duration(config.PositiveInt(os.Getenv, "EVIDENCE_RETENTION_DAYS", config.DefaultEvidenceRetentionDays)) * 24 * time.Hour,
 	)
 	service.SetMetrics(workerMetrics)
 	service.SetRetryBase(time.Duration(envInt64("QUEUE_RETRY_BASE_MILLISECONDS", 500)) * time.Millisecond)

@@ -10,13 +10,40 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: webmonitoring
+          POSTGRES_USER: webmonitoring
+          POSTGRES_PASSWORD: webmonitoring
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U webmonitoring -d webmonitoring"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27.x"
           cache: true
-      - run: gofmt -l . | tee /tmp/gofmt.txt && test ! -s /tmp/gofmt.txt
+      - name: Configure integration test services
+        run: |
+          echo "POSTGRES_TEST_DSN=postgres://webmonitoring:webmonitoring@localhost:5432/webmonitoring?sslmode=disable" >> "$GITHUB_ENV"
+          echo "REDIS_TEST_ADDR=localhost:6379" >> "$GITHUB_ENV"
+      - run: git ls-files '*.go' -z | xargs -0 gofmt -l | tee /tmp/gofmt.txt && test ! -s /tmp/gofmt.txt
       - run: go vet ./...
       - run: go test ./...
 
@@ -37,3 +64,23 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+
+  compose-smoke:
+    runs-on: ubuntu-latest
+    needs: [backend, node]
+    env:
+      SMOKE_PROJECT_NAME: webmonitoring-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @webmonitoring/console exec playwright install --with-deps chromium
+      - name: Run Compose smoke test
+        shell: pwsh
+        run: ./scripts/compose-smoke.ps1

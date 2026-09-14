@@ -64,7 +64,10 @@ func (d *Dispatcher) ProcessAlert(ctx context.Context, job domain.AlertJob) erro
 }
 
 func (d *Dispatcher) MarkDeadLetter(ctx context.Context, job domain.AlertJob) error {
-	deliveries := d.repository.ListAlertDeliveries(job.TenantID, job.IncidentID)
+	deliveries, err := d.repository.ListAlertDeliveries(job.TenantID, job.IncidentID)
+	if err != nil {
+		return fmt.Errorf("load alert deliveries: %w", err)
+	}
 	now := time.Now().UTC()
 	var failures []error
 	for _, delivery := range deliveries {
@@ -107,8 +110,11 @@ func NewDispatcher(repository store.Repository, guard *security.URLGuard) *Dispa
 }
 
 func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident, asset domain.Asset) []error {
-	channels := d.repository.ListAlertChannelsWithSecrets(incident.TenantID)
 	failures := make([]error, 0)
+	channels, err := d.repository.ListAlertChannelsWithSecrets(incident.TenantID)
+	if err != nil {
+		return []error{fmt.Errorf("load alert channels: %w", err)}
+	}
 	for _, channel := range channels {
 		if !channel.Enabled {
 			continue
@@ -121,7 +127,11 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 		}
 		if err := d.repository.CreateAlertDelivery(delivery); err != nil {
 			if errors.Is(err, store.ErrConflict) {
-				existing := d.findDelivery(incident.TenantID, incident.ID, channel.ID)
+				existing, findErr := d.findDelivery(incident.TenantID, incident.ID, channel.ID)
+				if findErr != nil {
+					failures = append(failures, fmt.Errorf("channel %s delivery lookup: %w", channel.ID, findErr))
+					continue
+				}
 				if existing.ID == "" {
 					failures = append(failures, fmt.Errorf("channel %s delivery conflict without existing record", channel.ID))
 					continue
@@ -202,13 +212,17 @@ func (d *Dispatcher) record(channelType, status string) {
 	}
 }
 
-func (d *Dispatcher) findDelivery(tenantID, incidentID, channelID string) domain.AlertDelivery {
-	for _, delivery := range d.repository.ListAlertDeliveries(tenantID, incidentID) {
+func (d *Dispatcher) findDelivery(tenantID, incidentID, channelID string) (domain.AlertDelivery, error) {
+	deliveries, err := d.repository.ListAlertDeliveries(tenantID, incidentID)
+	if err != nil {
+		return domain.AlertDelivery{}, err
+	}
+	for _, delivery := range deliveries {
 		if delivery.ChannelID == channelID {
-			return delivery
+			return delivery, nil
 		}
 	}
-	return domain.AlertDelivery{}
+	return domain.AlertDelivery{}, nil
 }
 
 func ptr(value time.Time) *time.Time {

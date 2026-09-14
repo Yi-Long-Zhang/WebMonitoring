@@ -14,6 +14,7 @@ import (
 	"webmonitoring/internal/api"
 	"webmonitoring/internal/auth"
 	"webmonitoring/internal/browser"
+	"webmonitoring/internal/config"
 	"webmonitoring/internal/detection"
 	"webmonitoring/internal/domain"
 	"webmonitoring/internal/events"
@@ -33,6 +34,9 @@ func main() {
 		return
 	}
 	logger := slog.New(security.NewRedactingHandler(slog.NewJSONHandler(os.Stdout, nil)))
+	if err := config.ValidateProductionAPI(os.Getenv); err != nil {
+		log.Fatalf("invalid production configuration: %v", err)
+	}
 	ctx := context.Background()
 	repository, closeRepository := buildRepository(ctx, logger)
 	defer closeRepository()
@@ -59,6 +63,9 @@ func main() {
 	)
 	detectionService := detection.NewService(
 		repository, evidenceStore, httpChecker, browserChecker, notifier, broker, logger,
+	)
+	detectionService.SetEvidenceRetention(
+		time.Duration(config.PositiveInt(os.Getenv, "EVIDENCE_RETENTION_DAYS", config.DefaultEvidenceRetentionDays)) * 24 * time.Hour,
 	)
 	detectionService.SetRetryBase(time.Duration(envInt64("QUEUE_RETRY_BASE_MILLISECONDS", 500)) * time.Millisecond)
 	var closeQueue func()
@@ -95,6 +102,10 @@ func main() {
 	sessionSecure, _ := strconv.ParseBool(env("SESSION_SECURE", "false"))
 	server := api.NewServer(
 		repository, authService, detectionService, evidenceStore, guard, broker, logger, sessionSecure,
+	)
+	server.SetRetentionPolicy(
+		config.PositiveInt(os.Getenv, "EVIDENCE_RETENTION_DAYS", config.DefaultEvidenceRetentionDays),
+		config.PositiveInt(os.Getenv, "AUDIT_RETENTION_DAYS", config.DefaultAuditRetentionDays),
 	)
 	detectionService.SetMetrics(server.Metrics())
 	notifier.SetMetrics(server.Metrics())

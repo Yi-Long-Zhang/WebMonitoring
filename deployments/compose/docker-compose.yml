@@ -78,18 +78,21 @@ services:
       context: ../..
       dockerfile: apps/api/Dockerfile
     environment:
+      APP_ENV: ${APP_ENV:-development}
       HTTP_ADDR: ":8080"
       DATA_DIR: /data
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-before-production}
-      SESSION_SECURE: "false"
-      ALLOW_PRIVATE_TARGETS: "false"
+      SESSION_SECURE: ${SESSION_SECURE:-false}
+      ALLOW_PRIVATE_TARGETS: ${ALLOW_PRIVATE_TARGETS:-false}
       BROWSER_WORKER_URL: http://browser-worker:8081
       BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:-replace-with-a-random-token}
       ALERT_SECRET_KEY: ${ALERT_SECRET_KEY:?set ALERT_SECRET_KEY to a base64-encoded 32-byte key}
       QUEUE_RETRY_BASE_MILLISECONDS: ${QUEUE_RETRY_BASE_MILLISECONDS:-500}
       ALERT_MAX_ATTEMPTS: ${ALERT_MAX_ATTEMPTS:-3}
       ALERT_RETRY_BASE_MILLISECONDS: ${ALERT_RETRY_BASE_MILLISECONDS:-250}
+      EVIDENCE_RETENTION_DAYS: ${EVIDENCE_RETENTION_DAYS:-90}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
       POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:-webmonitoring}@postgres:5432/webmonitoring?sslmode=disable
       REDIS_ADDR: redis:6379
       S3_ENDPOINT: http://minio:9000
@@ -111,8 +114,10 @@ services:
       context: ../..
       dockerfile: apps/http-worker/Dockerfile
     environment:
+      APP_ENV: ${APP_ENV:-development}
       WORKER_ID: http-worker-1
-      ALLOW_PRIVATE_TARGETS: "false"
+      SESSION_SECURE: ${SESSION_SECURE:-false}
+      ALLOW_PRIVATE_TARGETS: ${ALLOW_PRIVATE_TARGETS:-false}
       POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:-webmonitoring}@postgres:5432/webmonitoring?sslmode=disable
       REDIS_ADDR: redis:6379
       S3_ENDPOINT: http://minio:9000
@@ -129,6 +134,8 @@ services:
       ALERT_QUEUE_MIN_IDLE_SECONDS: ${ALERT_QUEUE_MIN_IDLE_SECONDS:-120}
       ALERT_MAX_ATTEMPTS: ${ALERT_MAX_ATTEMPTS:-3}
       ALERT_RETRY_BASE_MILLISECONDS: ${ALERT_RETRY_BASE_MILLISECONDS:-250}
+      EVIDENCE_RETENTION_DAYS: ${EVIDENCE_RETENTION_DAYS:-90}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }

@@ -22,6 +22,10 @@ func (m memoryStore) Open(string) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(string(m.content))), nil
 }
 
+func (memoryStore) Delete(string) error {
+	return nil
+}
+
 func TestReadVerifiedRejectsTamperedContent(t *testing.T) {
 	content := []byte("original evidence")
 	sum := sha256.Sum256(content)

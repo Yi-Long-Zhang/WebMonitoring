@@ -10,6 +10,7 @@
 | [security-model.md](security-model.md) | 威胁模型、权限、SSRF 和证据安全 |
 | [engineering.md](engineering.md) | 分支、提交、评审、测试、发布和回滚 |
 | [operations.md](operations.md) | Docker Compose 部署、迁移、备份、恢复和验收 |
+| [backup-restore-rehearsal.md](backup-restore-rehearsal.md) | 备份恢复演练记录模板和验收门禁 |
 | [adr/](adr/) | 需要长期保留的架构决策记录 |
 
 ## 文档规则
@@ -30,7 +31,7 @@
 
 ## 当前状态
 
-当前仓库处于 **MVP 可运行和安全边界收敛阶段**。已实现或部分实现：
+当前仓库处于 **单机 Compose 正式验收加固阶段**。已实现或部分实现：
 
 - Go 控制面、Go HTTP 检测 Worker、Playwright 浏览器 Worker 和 Vue 控制台。
 - 资产登记、负责人、HTTP 文件授权验证、启停控制和监测策略。
@@ -39,22 +40,25 @@
 - HTML、快照和截图证据保存；下载和报告导出会校验证据大小及 SHA-256。
 - Webhook/企业微信通知、投递记录和事件级去重。
 - 内存/本地证据开发模式，以及 PostgreSQL、Redis、MinIO 的 Compose 路径。
+- 生产配置门禁、90 天证据/365 天审计保留策略、dry-run 清理和备份恢复校验脚本。
+- Repository 错误传播、真实 PostgreSQL/Redis 集成测试和 100 资产调度合成测试。
 
-当前明确不应描述为已完成：
+当前明确不应描述为已完成或尚未完成部署验收：
 
 - 租户和站点的完整管理界面；登录目前使用配置的默认租户。
 - 细粒度权限、跨租户管理员、二次确认和双人审批。
 - DNS/HTML 元标签授权验证、登录态检测和 Secret Manager 集成。
-- 批量导入导出、邮件/钉钉适配器、短时签名 URL 和保留期管理。
-- 游标分页、Prometheus/OpenTelemetry、容量测试和完整 PostgreSQL 集成测试。
-- Docker Compose 实测、Redis pending 消息恢复和生产升级演练。
+- 批量导入导出、邮件/钉钉适配器、短时签名 URL 和完整多租户管理。
+- 真实 100 资产 HTTP/Browser 压测和备份恢复实机演练；控制台 Playwright E2E
+  已纳入 Compose smoke，待 CI 或验收主机执行。
+- 当前开发环境尚未完成 Docker Compose 实测；CI 已配置 Compose smoke 和真实数据库/Redis 集成门禁。
 
 功能状态以代码、测试结果和部署验证记录为准。通过本地内存模式不能推出
 生产可用性；发布前必须单独完成 Compose、数据库迁移、队列恢复和安全验收。
 
 ## 当前验证基线
 
-截至 2026-09-12，以下检查已在本地通过：
+截至 2026-09-14，以下检查已在本地通过：
 
 - `go test ./...`
 - `go vet ./...`
@@ -63,6 +67,6 @@
 - `corepack pnpm --filter @webmonitoring/console lint`
 - `corepack pnpm --filter @webmonitoring/console --filter @webmonitoring/browser-worker build`
 
-前端构建存在 Element Plus 产物体积提示，但不是构建失败。上述结果只代表本地
-代码检查和自动化测试通过，不代表 Docker、PostgreSQL、Redis 或生产网络配置
-已经验收。
+前端构建存在 Element Plus 产物体积提示，但不是构建失败。当前机器没有 Docker、
+PostgreSQL 和 Redis CLI，因此 Compose、真实数据库/队列集成和恢复演练仍需在 CI
+或具备基础设施的验收主机执行。
