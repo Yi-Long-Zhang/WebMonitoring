@@ -145,7 +145,7 @@ func main() {
 		return failures
 	})
 	scheduler := detection.NewScheduler(repository, detectionService, logger)
-	go scheduler.Run(ctx, defaultTenant)
+	go scheduler.Run(ctx)
 
 	address := env("HTTP_ADDR", ":8080")
 	logger.Info("api listening", "address", address)
@@ -216,7 +216,7 @@ func seedAdmin(repository store.Repository) {
 	}
 	err = repository.CreateUser(domain.User{
 		ID: identity.New(), TenantID: defaultTenant, Username: username,
-		PasswordHash: hash, Role: domain.RoleAdmin, CreatedAt: time.Now().UTC(),
+		PasswordHash: hash, Role: domain.RoleSuperAdmin, CreatedAt: time.Now().UTC(),
 	})
 	if err != nil {
 		log.Fatal(err)

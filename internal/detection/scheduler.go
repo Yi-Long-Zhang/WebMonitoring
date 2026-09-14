@@ -19,17 +19,28 @@ func NewScheduler(repository store.Repository, service *Service, logger *slog.Lo
 	return &Scheduler{repository: repository, service: service, logger: logger}
 }
 
-func (s *Scheduler) Run(ctx context.Context, tenantID string) {
+func (s *Scheduler) Run(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-	s.schedule(tenantID)
+	s.scheduleAll()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.schedule(tenantID)
+			s.scheduleAll()
 		}
+	}
+}
+
+func (s *Scheduler) scheduleAll() {
+	tenants, err := s.repository.ListTenants()
+	if err != nil {
+		s.logger.Error("list tenants for scheduling", "error", err)
+		return
+	}
+	for _, tenant := range tenants {
+		s.schedule(tenant.ID)
 	}
 }
 
