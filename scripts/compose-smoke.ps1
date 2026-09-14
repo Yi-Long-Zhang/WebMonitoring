@@ -7,8 +7,9 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 if (-not $env:ALERT_SECRET_KEY) {
     $env:ALERT_SECRET_KEY = [Convert]::ToBase64String([byte[]](1..32))
 }
+$projectName = if ($env:SMOKE_PROJECT_NAME) { $env:SMOKE_PROJECT_NAME } else { "webmonitoring-smoke" }
 $compose = @(
-    "--project-name", "webmonitoring-smoke-$PID",
+    "--project-name", $projectName,
     "-f", "deployments/compose/docker-compose.yml",
     "-f", "deployments/compose/docker-compose.smoke.yml"
 )

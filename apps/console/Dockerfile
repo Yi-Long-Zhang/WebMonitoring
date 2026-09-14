@@ -3,7 +3,9 @@ WORKDIR /app
 COPY package.json pnpm-workspace.yaml ./
 COPY pnpm-lock.yaml pnpm-lock.yaml
 COPY apps/console/package.json apps/console/package.json
-RUN corepack enable && pnpm install --filter @webmonitoring/console... --frozen-lockfile
+RUN --mount=type=cache,id=webmonitoring-corepack,target=/root/.cache/node/corepack,sharing=locked \
+    --mount=type=cache,id=webmonitoring-pnpm-store,target=/root/.local/share/pnpm/store/v11,sharing=locked \
+    corepack enable && pnpm install --filter @webmonitoring/console... --frozen-lockfile
 COPY apps/console apps/console
 RUN pnpm --filter @webmonitoring/console build
 
