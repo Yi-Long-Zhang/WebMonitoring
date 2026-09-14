@@ -119,4 +119,94 @@ func TestPostgresMigrationJobClaimAndRestartRecovery(t *testing.T) {
 	}
 }
 
+func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN"))
+	if dsn == "" {
+		t.Skip("POSTGRES_TEST_DSN is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	runner, err := migrate.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("PostgreSQL integration test unavailable: %v", err)
+	}
+	defer runner.Close()
+	if err := runner.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey)
+	if err != nil {
+		t.Fatalf("PostgreSQL repository unavailable: %v", err)
+	}
+	defer repository.Close()
+
+	const defaultTenant = "00000000-0000-4000-8000-000000000001"
+	now := time.Now().UTC()
+
+	owner := domain.User{
+		ID: identity.New(), TenantID: defaultTenant, Username: "site-owner-" + identity.New(),
+		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
+	}
+	if err := repository.CreateUser(owner); err != nil {
+		t.Fatal(err)
+	}
+	site := domain.Site{
+		ID: identity.New(), TenantID: defaultTenant, Name: "scoped site",
+		Domain: "example-" + identity.New() + ".com", OwnerID: owner.ID, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := repository.CreateSite(site); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := repository.ListSites(defaultTenant)
+	if err != nil || len(listed) == 0 {
+		t.Fatalf("list sites: count=%d err=%v", len(listed), err)
+	}
+	if _, err := repository.GetSite(defaultTenant, site.ID); err != nil {
+		t.Fatalf("get site: %v", err)
+	}
+
+	otherTenant := domain.Tenant{ID: identity.New(), Slug: "integration-" + identity.New(), Name: "Other", CreatedAt: now}
+	if err := repository.CreateTenant(otherTenant); err != nil {
+		t.Fatal(err)
+	}
+	foreignOwner := domain.User{
+		ID: identity.New(), TenantID: otherTenant.ID, Username: "foreign-owner-" + identity.New(),
+		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
+	}
+	if err := repository.CreateUser(foreignOwner); err != nil {
+		t.Fatal(err)
+	}
+
+	// A site whose owner belongs to a different tenant must be rejected by the
+	// composite (tenant_id, owner_id) foreign key.
+	crossOwner := domain.Site{
+		ID: identity.New(), TenantID: defaultTenant, Name: "cross-owner site",
+		Domain: "example-" + identity.New() + ".com", OwnerID: foreignOwner.ID, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := repository.CreateSite(crossOwner); err == nil {
+		t.Fatal("cross-tenant site owner was accepted")
+	}
+
+	foreignSite := domain.Site{
+		ID: identity.New(), TenantID: otherTenant.ID, Name: "foreign site",
+		Domain: "example-" + identity.New() + ".com", OwnerID: foreignOwner.ID, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := repository.CreateSite(foreignSite); err != nil {
+		t.Fatal(err)
+	}
+
+	// An asset in the default tenant referencing a site from another tenant must
+	// be rejected by the composite (tenant_id, site_id) foreign key.
+	crossAsset := domain.Asset{
+		ID: identity.New(), TenantID: defaultTenant, SiteID: foreignSite.ID, Name: "cross-site asset",
+		URL: "https://example-" + identity.New() + ".com", Type: domain.AssetOfficial, OwnerID: owner.ID,
+		Enabled: true, VerificationStatus: domain.VerificationVerified, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := repository.CreateAsset(crossAsset); err == nil {
+		t.Fatal("cross-tenant site reference on asset was accepted")
+	}
+}
+
 const testAlertSecretKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="

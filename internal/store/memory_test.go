@@ -146,3 +146,57 @@ func TestAuditRetentionDeletesOnlyExpiredTenantEvents(t *testing.T) {
 		t.Fatalf("unexpected retained audits: current=%#v other=%#v", current, other)
 	}
 }
+
+func TestTenantsSeededDefaultAndResolvedCaseInsensitively(t *testing.T) {
+	repository := NewMemoryRepository()
+	tenants, err := repository.ListTenants()
+	if err != nil || len(tenants) != 1 {
+		t.Fatalf("list tenants: %#v err=%v", tenants, err)
+	}
+	if tenants[0].ID != domain.DefaultTenantID || tenants[0].Slug != "default" {
+		t.Fatalf("unexpected default tenant: %#v", tenants[0])
+	}
+	if _, err := repository.GetTenant(domain.DefaultTenantID); err != nil {
+		t.Fatalf("get default tenant: %v", err)
+	}
+	if _, err := repository.GetTenantBySlug("DEFAULT"); err != nil {
+		t.Fatalf("slug lookup should be case-insensitive: %v", err)
+	}
+	if _, err := repository.GetTenantBySlug("missing"); err != ErrNotFound {
+		t.Fatalf("missing slug err=%v", err)
+	}
+}
+
+func TestCreateTenantRejectsDuplicateSlug(t *testing.T) {
+	repository := NewMemoryRepository()
+	now := time.Now().UTC()
+	if err := repository.CreateTenant(domain.Tenant{ID: "tenant", Slug: "acme", Name: "Acme", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.CreateTenant(domain.Tenant{ID: "other", Slug: "ACME", Name: "Other", CreatedAt: now}); err != ErrConflict {
+		t.Fatalf("duplicate slug err=%v", err)
+	}
+}
+
+func TestCreateSiteRejectsDuplicateNameWithinTenant(t *testing.T) {
+	repository := NewMemoryRepository()
+	now := time.Now().UTC()
+	site := domain.Site{ID: "site-1", TenantID: "tenant", Name: "Main", Domain: "example.com", OwnerID: "owner", CreatedAt: now, UpdatedAt: now}
+	if err := repository.CreateSite(site); err != nil {
+		t.Fatal(err)
+	}
+	duplicate := site
+	duplicate.ID = "site-2"
+	if err := repository.CreateSite(duplicate); err != ErrConflict {
+		t.Fatalf("same-tenant duplicate name err=%v", err)
+	}
+	other := site
+	other.ID = "site-3"
+	other.TenantID = "other-tenant"
+	if err := repository.CreateSite(other); err != nil {
+		t.Fatalf("cross-tenant same name should succeed: %v", err)
+	}
+	if _, err := repository.GetSite("other-tenant", "site-3"); err != nil {
+		t.Fatalf("cross-tenant site not found: %v", err)
+	}
+}

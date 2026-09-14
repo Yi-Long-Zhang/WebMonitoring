@@ -116,6 +116,13 @@ try {
         -WebSession $session -ContentType "application/json" `
         -Body '{"username":"admin","password":"change-me-before-production"}'
     $csrf = @{ "X-CSRF-Token" = $login.csrfToken }
+    $site = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/sites" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" `
+        -Body '{"name":"Compose smoke site","domain":"smoke-target"}'
+    $sites = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/sites" -WebSession $session
+    if (@($sites.items | Where-Object id -eq $site.id).Count -ne 1) {
+        throw "created site did not appear in site listing"
+    }
     $asset = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/assets" `
         -WebSession $session -Headers $csrf -ContentType "application/json" `
         -Body '{"name":"Compose smoke target","url":"http://smoke-target","type":"OFFICIAL"}'
@@ -164,6 +171,10 @@ try {
     $persisted = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/assets" -WebSession $session
     if (@($persisted.items | Where-Object id -eq $asset.id).Count -ne 1) {
         throw "asset did not persist after restart"
+    }
+    $persistedSites = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/sites" -WebSession $session
+    if (@($persistedSites.items | Where-Object id -eq $site.id).Count -ne 1) {
+        throw "site did not persist after restart"
     }
     $env:CONSOLE_BASE_URL = "http://localhost:18088"
     $env:ADMIN_PASSWORD = "change-me-before-production"
