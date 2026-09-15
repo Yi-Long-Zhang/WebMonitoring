@@ -37,7 +37,7 @@ Go HTTP Worker       Playwright Browser Worker
 - TanStack Query for Vue：请求缓存、重试、失效和加载状态。
 - ECharts 已作为依赖预留给总览统计；当前页面以摘要和列表为主。
 - 差异详情当前使用结构化信号和证据下载，Monaco Diff Editor 尚未接入。
-- 前端当前有 API client 和 Worker 测试；完整 Playwright E2E 尚未建立。
+- 前端当前有 API client 和 Worker 测试，并有控制台 Playwright E2E（`console-smoke`，纳入 Compose smoke）。
 
 ### 前端分层
 
@@ -65,7 +65,7 @@ src/
 - 禁止无审查使用 `v-html`。
 - 必须预览时使用独立 origin 和严格 `sandbox` iframe。
 - 当前证据下载由已认证 API 直接返回，并校验对象大小和 SHA-256；
-  短期签名 URL 尚未接入。
+  另支持短期签名 URL。
 - 菜单隐藏不等于权限控制，后端必须鉴权。
 
 ## 3. Go 控制面
