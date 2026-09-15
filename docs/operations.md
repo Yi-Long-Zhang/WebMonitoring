@@ -92,6 +92,90 @@ API/Worker。生产环境执行前必须记录审批、备份版本、RPO/RTO �
 以及 API/Worker 重启。
 测试数据保存在 `.data-smoke`，该目录已被 Git 忽略。
 
+### 验收清单
+
+| 门禁 | 覆盖内容 | 命令 |
+| --- | --- | --- |
+| 主链路 smoke | 登录/资产验证/基线审批/HTTP+Browser 检测/事件/证据/报告/控制台 E2E/重启持久化 | `.\scripts\compose-smoke.ps1` |
+| 安全边界 smoke | P0-1 登录锁定（N 次失败后即使密码正确也返回 `ACCOUNT_LOCKED`，且不影响其他账户）、P1-5 keyset 分页（`limit`+`cursor` 无重复无遗漏）、P1-6 资产暂停/恢复（暂停后排队返回 `JOB_REJECTED`，恢复不自动启用）、P1-7 任务取消（终态为 `CANCELLED`，迟到结果不得覆盖） | 同上，`compose-smoke.ps1` 已内置 |
+| 100 资产压测 | 跨租户播种、真实 FILE 所有权验证、单轮 HTTP 检测吞吐、任务无丢失、证据完整、未批准基线无假阳性 | `.\scripts\load-test.ps1` |
+| 备份恢复演练 | 数据库 dump、evidence bucket 清单、恢复后 `/readyz` 与证据校验 | `.\scripts\compose-backup.ps1`、`.\scripts\compose-restore.ps1`（见 [backup-restore-rehearsal.md](backup-restore-rehearsal.md)） |
+
+`compose-smoke.ps1` 会固定 `LOGIN_MAX_FAILURES=5` 后再断言锁定行为，因此本机
+环境变量不会影响该断言。压测脚本的每个资产生成一个独立主机名（`load-NNN.webmonitoring.test`，
+通过 smoke-target 容器的 Docker DNS 别名解析）和独立文档根，从而对每个资产执行一次真实
+的 FILE 验证，而不是批量伪造验证状态。
+
+压测脚本每次运行都为每个分片新建租户（slug 带运行 ID），不复用内置的 `default`
+租户：Compose 具名卷会跨运行保留，复用 default 会让"每个租户只看到自己的资产"这类
+计数断言取决于上一次运行的残留数据，脚本就不再可重复。
+
+```powershell
+# 默认 100 资产 / 2 租户 / 吞吐下限 1 任务每秒 / 超时 300 秒
+.\scripts\load-test.ps1
+.\scripts\load-test.ps1 -AssetCount 100 -Tenants 4 -MinimumJobsPerSecond 2 -KeepRunning
+```
+
+测试数据保存在 `.data-smoke` 与 `.data-loadtest`，两个目录已被 Git 忽略。两个脚本
+使用不同的 Compose 项目名和主机端口（smoke：API 18080 / 控制台 18088；压测：API 18081），
+可以并存运行。
+
+### 镜像准备
+
+首次运行需要拉取 `golang`、`node`、`nginx`、`postgres`、`redis`、`minio`、`gcr.io/distroless`
+和 `mcr.microsoft.com/playwright` 基础镜像。受限网络中 MCR 的 IPv6 路由可能被重置，
+表现为 `docker pull mcr.microsoft.com/playwright:...` 连接失败；重试即可（Docker 会在
+IPv6 失败后回退 IPv4），也可在具备网络的机器上预先拉取并导入镜像。基础镜像缺失时
+`docker compose up` 会在构建 `browser-worker` 阶段失败，这是构建环境问题，不是应用缺陷。
+
+构建阶段的 npm/Go 依赖下载走的是 buildkit 的默认网桥，带宽可能远低于宿主机直连
+（实测同一 tarball 25 秒内默认网桥约 0.5 MB、host 网络约 3 MB，且默认网桥更容易被重置）。
+镜像构建因此需要时可切换到 host 网络：
+
+```powershell
+$env:BUILD_NETWORK = "host"
+docker compose -f deployments/compose/docker-compose.yml build
+```
+
+`BUILD_NETWORK` 默认是 `default`，即 compose 原本的行为；只有显式设置才会改变构建网络。
+
+若 registry 连元数据都频繁重置，可以在宿主机预热 pnpm store 再灌进构建缓存，
+让镜像里的 `pnpm install --frozen-lockfile` 基本走离线。`console` 与
+`browser-worker` 的 Dockerfile 共用 `webmonitoring-pnpm-store` 这个 buildkit
+缓存挂载，因此只需灌一次（在仓库外的临时目录执行，不污染工作区）：
+
+```powershell
+mkdir D:\pnpm-seed\work\apps\console, D:\pnpm-seed\work\apps\browser-worker
+Copy-Item package.json,pnpm-workspace.yaml,pnpm-lock.yaml D:\pnpm-seed\work
+Copy-Item apps\console\package.json D:\pnpm-seed\work\apps\console
+Copy-Item apps\browser-worker\package.json D:\pnpm-seed\work\apps\browser-worker
+cd D:\pnpm-seed\work
+pnpm fetch --store-dir D:\pnpm-seed\v11 `
+  --fetch-retries=20 --fetch-retry-maxtimeout=180000 --fetch-timeout=900000 --network-concurrency=6
+```
+
+`pnpm fetch` 必须在一个没有 `node_modules` 的目录里跑：pnpm 检测到 store 目录
+变化时会要求删除 modules 目录，在交互式终端之外会直接中止。
+
+```dockerfile
+FROM node:24-alpine
+COPY v11 /seed
+RUN --mount=type=cache,id=webmonitoring-pnpm-store,target=/root/.local/share/pnpm/store/v11,sharing=locked \
+    cp -a /seed/. /root/.local/share/pnpm/store/v11/
+```
+
+```powershell
+docker build -f D:\pnpm-seed\seed.Dockerfile -t pnpm-store-seed D:\pnpm-seed
+```
+
+之后 `docker compose build` 中 `pnpm install` 会报告 `reused <N>, downloaded 0`。
+构建镜像时无论是否走离线 store，仍会向 registry 拉取 lockfile 元数据做
+supply-chain 校验（约 2 分钟），这是 pnpm 的校验步骤，不是下载失败。
+
+`console` 与 `browser-worker` 的 `pnpm <workspace> build` 步骤复用了同一个
+`webmonitoring-corepack` 缓存挂载，因此不会在每次构建时重新下载 corepack 固定
+的 pnpm 版本。
+
 升级失败时保留日志和审计记录，回滚 API/Worker 镜像版本；不要回滚已经执行
 的破坏性数据库迁移。检查：
 

@@ -48,6 +48,10 @@
   受保护页面，API 响应不泄露凭据；浏览器模式暂不支持登录（失败关闭）。
 - 内存/本地证据开发模式，以及 PostgreSQL、Redis、MinIO 的 Compose 路径。
 - 生产配置门禁、90 天证据/365 天审计保留策略、dry-run 清理和备份恢复校验脚本。
+- 可重复的验收演练脚本：Compose smoke（含登录锁定、keyset 分页、资产暂停/恢复、
+  任务取消与迟到结果不覆盖）、100 资产跨租户压测（逐资产真实 FILE 所有权验证、
+  吞吐下限与任务完整性断言）、备份/恢复（MinIO 客户端在 Compose 网络内运行，
+  不依赖宿主机 `mc` 或 PowerShell 7）。
 - OpenTelemetry Trace（env 门控、默认 no-op）和补充的单元测试（含 miniredis）。
 - Repository 错误传播、真实 PostgreSQL/Redis 集成测试和 100 资产调度合成测试。
 
@@ -59,24 +63,32 @@
   浏览器模式登录态检测。
 - 完整多租户运营管理。
 - 真实 100 资产 HTTP/Browser 压测和备份恢复实机演练；控制台 Playwright E2E
-  已纳入 Compose smoke，尚未在本机实跑。
-- Docker Compose smoke 和真实数据库/Redis 集成门禁尚未在本机实跑（本机已具备
-  Docker 与 Compose，正在补做验收演练）。
+  已纳入 Compose smoke，并已于 2026-09-15 在本机实跑通过（见
+  [operations.md](operations.md) 的验收清单和 [backup-restore-rehearsal.md](backup-restore-rehearsal.md)）。
+- Docker Compose smoke 和真实数据库/Redis 集成门禁已于 2026-09-15 在本机实跑
+  通过；演练记录覆盖单机 Compose 拓扑，尚未覆盖多副本和真实生产网络。
 
 功能状态以代码、测试结果和部署验证记录为准。通过本地内存模式不能推出
 生产可用性；发布前必须单独完成 Compose、数据库迁移、队列恢复和安全验收。
 
 ## 当前验证基线
 
-截至 2026-09-14，以下检查已在本地通过：
+截至 2026-09-15，以下检查已在本地通过：
 
-- `go test ./...`
+- `go test ./...`（含 `POSTGRES_TEST_DSN` 指向真实 PostgreSQL 的集成测试）
 - `go vet ./...`
 - `corepack pnpm --filter @webmonitoring/console --filter @webmonitoring/browser-worker typecheck`
 - `corepack pnpm --filter @webmonitoring/console --filter @webmonitoring/browser-worker test`
 - `corepack pnpm --filter @webmonitoring/console lint`
 - `corepack pnpm --filter @webmonitoring/console --filter @webmonitoring/browser-worker build`
+- `.\scripts\compose-smoke.ps1`（含 P0 登录锁定、P1 keyset 分页、资产暂停/恢复、
+  任务取消、控制台 Playwright E2E）
+- `.\scripts\load-test.ps1`：100 资产 / 2 租户全部验证启用，100 个检测任务
+  全部 SUCCEEDED，吞吐 32.8 任务/秒（下限 1.0），0 假阳性事件；同一数据卷上
+  重复运行同样通过
+- `.\scripts\compose-backup.ps1` + `.\scripts\compose-restore.ps1`：备份
+  1198 个受校验文件，恢复后 `/readyz`、证据 SHA-256、任务数与 Redis pending
+  全部通过（见 [backup-restore-rehearsal.md](backup-restore-rehearsal.md)）
 
-前端构建存在 Element Plus 产物体积提示，但不是构建失败。本机现已具备 Docker 和
-Compose，Compose smoke、真实数据库/队列集成和恢复演练正在补做；此前因缺少
-Docker 由 CI 或具备基础设施的验收主机执行。
+前端构建存在 Element Plus 产物体积提示，但不是构建失败。以上演练均在单机
+Docker Compose 拓扑上完成，尚未覆盖多副本、外部对象存储和真实生产网络。
