@@ -66,7 +66,18 @@ func main() {
 	allowPrivate, _ := strconv.ParseBool(env("ALLOW_PRIVATE_TARGETS", "false"))
 	guard := security.NewURLGuard(allowPrivate)
 	broker := events.NewBroker()
+	var secretCipher *security.SecretCipher
+	if secret := os.Getenv("ALERT_SECRET_KEY"); secret != "" {
+		if cipher, cipherErr := security.NewSecretCipher(secret); cipherErr == nil {
+			secretCipher = cipher
+		} else {
+			logger.Warn("invalid ALERT_SECRET_KEY; login-state detection disabled", "error", cipherErr)
+		}
+	}
 	httpChecker := detection.NewChecker(guard)
+	if secretCipher != nil {
+		httpChecker.SetCipher(secretCipher)
+	}
 	browserClient := browser.NewClient(os.Getenv("BROWSER_WORKER_URL"), os.Getenv("BROWSER_WORKER_TOKEN"), allowPrivate)
 	var browserChecker detection.BrowserChecker
 	if browserClient.Available() {
@@ -138,6 +149,7 @@ func main() {
 		repository, authService, detectionService, evidenceStore, guard, broker, logger, sessionSecure,
 	)
 	server.SetLoginGuard(loginGuard)
+	server.SetSecretCipher(secretCipher)
 	server.SetRetentionPolicy(
 		config.PositiveInt(os.Getenv, "EVIDENCE_RETENTION_DAYS", config.DefaultEvidenceRetentionDays),
 		config.PositiveInt(os.Getenv, "AUDIT_RETENTION_DAYS", config.DefaultAuditRetentionDays),

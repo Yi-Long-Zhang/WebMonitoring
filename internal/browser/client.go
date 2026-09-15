@@ -59,6 +59,11 @@ func (c *Client) Check(ctx context.Context, asset domain.Asset, policy domain.Mo
 	if !c.Available() {
 		return detection.CheckResult{}, errors.New("browser worker is not configured")
 	}
+	// Fail closed rather than snapshot the login form: login-state detection is
+	// currently implemented on the HTTP checker path only.
+	if policy.Auth != nil {
+		return detection.CheckResult{}, errors.New("login-state detection is only supported in HTTP mode")
+	}
 	requestBody, _ := json.Marshal(map[string]any{
 		"url":                 asset.URL,
 		"timeoutSeconds":      policy.TimeoutSeconds,

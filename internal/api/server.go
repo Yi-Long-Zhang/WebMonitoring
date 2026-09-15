@@ -58,6 +58,7 @@ type Server struct {
 	detection         *detection.Service
 	evidence          evidence.Store
 	guard             *security.URLGuard
+	cipher            *security.SecretCipher
 	broker            *events.Broker
 	logger            *slog.Logger
 	sessionSecure     bool
@@ -126,6 +127,13 @@ func (s *Server) RetentionRunner() *maintenance.Runner {
 
 func (s *Server) SetLoginGuard(guard *auth.LoginGuard) {
 	s.loginGuard = guard
+}
+
+// SetSecretCipher enables login-state detection. When set, updatePolicy can
+// encrypt customer credentials; without it, enabling login detection fails
+// closed with SECRET_UNAVAILABLE.
+func (s *Server) SetSecretCipher(cipher *security.SecretCipher) {
+	s.cipher = cipher
 }
 
 // SetSignedURLs enables control-plane-served signed evidence URLs (the local
@@ -1252,7 +1260,11 @@ func (s *Server) listPolicies(writer http.ResponseWriter, request *http.Request)
 		s.repositoryFailure(writer, request, "list policies", err)
 		return
 	}
-	writeList(writer, items, nextCursor)
+	redacted := make([]domain.MonitorPolicy, len(items))
+	for i := range items {
+		redacted[i] = redactPolicy(items[i])
+	}
+	writeList(writer, redacted, nextCursor)
 }
 
 func (s *Server) updatePolicy(writer http.ResponseWriter, request *http.Request) {
@@ -1268,14 +1280,15 @@ func (s *Server) updatePolicy(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	var input struct {
-		HTTPIntervalSeconds    int        `json:"httpIntervalSeconds"`
-		BrowserIntervalSeconds int        `json:"browserIntervalSeconds"`
-		TimeoutSeconds         int        `json:"timeoutSeconds"`
-		MaxResponseBytes       int64      `json:"maxResponseBytes"`
-		IgnoreSelectors        []string   `json:"ignoreSelectors"`
-		TrustedDomains         []string   `json:"trustedDomains"`
-		MaintenanceWindowStart *time.Time `json:"maintenanceWindowStart"`
-		MaintenanceWindowEnd   *time.Time `json:"maintenanceWindowEnd"`
+		HTTPIntervalSeconds    int             `json:"httpIntervalSeconds"`
+		BrowserIntervalSeconds int             `json:"browserIntervalSeconds"`
+		TimeoutSeconds         int             `json:"timeoutSeconds"`
+		MaxResponseBytes       int64           `json:"maxResponseBytes"`
+		IgnoreSelectors        []string        `json:"ignoreSelectors"`
+		TrustedDomains         []string        `json:"trustedDomains"`
+		MaintenanceWindowStart *time.Time      `json:"maintenanceWindowStart"`
+		MaintenanceWindowEnd   *time.Time      `json:"maintenanceWindowEnd"`
+		Auth                   json.RawMessage `json:"auth"`
 	}
 	if !decodeJSON(writer, request, &input) {
 		return
@@ -1302,13 +1315,110 @@ func (s *Server) updatePolicy(writer http.ResponseWriter, request *http.Request)
 	current.TrustedDomains = append([]string(nil), input.TrustedDomains...)
 	current.MaintenanceWindowStart = input.MaintenanceWindowStart
 	current.MaintenanceWindowEnd = input.MaintenanceWindowEnd
+	// A missing "auth" key preserves existing login state; an explicit null
+	// disables it; an object enables or reconfigures it.
+	if len(input.Auth) > 0 {
+		if bytes.Equal(bytes.TrimSpace(input.Auth), []byte("null")) {
+			current.Auth = nil
+		} else if authConfig, authErr := s.buildAuthConfig(request.Context(), session.User.TenantID, assetID, input.Auth, current.Auth); authErr != nil {
+			writeError(writer, request, http.StatusBadRequest, "INVALID_AUTH", authErr.Error(), nil)
+			return
+		} else {
+			current.Auth = authConfig
+		}
+		action := "detection.login_state.disabled"
+		if current.Auth != nil {
+			action = "detection.login_state.enabled"
+		}
+		s.appendAudit(request, session.User, action, "policy", current.ID, "SUCCESS", map[string]any{"version": current.Version})
+	}
 	current.UpdatedAt = now
 	if err := s.repository.UpsertPolicy(current); err != nil {
 		s.repositoryFailure(writer, request, "update policy", err)
 		return
 	}
 	s.appendAudit(request, session.User, "policy.update", "policy", current.ID, "SUCCESS", map[string]any{"version": current.Version})
-	writeJSON(writer, http.StatusOK, current)
+	writeJSON(writer, http.StatusOK, redactPolicy(current))
+}
+
+// authInput is the login-state portion of an updatePolicy request. Username and
+// password arrive as plaintext only here, in the request body, and are encrypted
+// before they touch the repository.
+type authInput struct {
+	LoginURL       string            `json:"loginUrl"`
+	UsernameField  string            `json:"usernameField"`
+	PasswordField  string            `json:"passwordField"`
+	ExtraFields    map[string]string `json:"extraFields"`
+	SubmitSelector string            `json:"submitSelector"`
+	Username       string            `json:"username"`
+	Password       string            `json:"password"`
+}
+
+// buildAuthConfig parses and validates a login-state config. Credentials are
+// never stored in plaintext: they are AES-GCM encrypted with associated data
+// bound to the tenant and asset. Re-sending the config without a password
+// preserves any previously stored credentials.
+func (s *Server) buildAuthConfig(ctx context.Context, tenantID, assetID string, raw json.RawMessage, existing *domain.AuthConfig) (*domain.AuthConfig, error) {
+	var input authInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return nil, errors.New("登录态检测配置格式错误")
+	}
+	if input.LoginURL == "" || input.UsernameField == "" || input.PasswordField == "" {
+		return nil, errors.New("loginUrl、usernameField、passwordField 为必填项")
+	}
+	if _, _, err := s.guard.Validate(ctx, input.LoginURL); err != nil {
+		return nil, fmt.Errorf("登录地址不在允许范围内: %v", err)
+	}
+	auth := &domain.AuthConfig{
+		LoginURL:       input.LoginURL,
+		UsernameField:  input.UsernameField,
+		PasswordField:  input.PasswordField,
+		SubmitSelector: input.SubmitSelector,
+		ExtraFields:    input.ExtraFields,
+	}
+	if existing != nil {
+		auth.EncryptedUsername = existing.EncryptedUsername
+		auth.EncryptedPassword = existing.EncryptedPassword
+	}
+	if input.Username != "" || input.Password != "" {
+		if input.Username == "" || input.Password == "" {
+			return nil, errors.New("用户名和密码必须同时提供")
+		}
+		if s.cipher == nil {
+			return nil, errors.New("登录态检测需要配置 ALERT_SECRET_KEY")
+		}
+		associatedData := security.AuthAssociatedData(tenantID, assetID)
+		encryptedUsername, err := s.cipher.Encrypt(input.Username, associatedData)
+		if err != nil {
+			return nil, err
+		}
+		encryptedPassword, err := s.cipher.Encrypt(input.Password, associatedData)
+		if err != nil {
+			return nil, err
+		}
+		auth.EncryptedUsername = encryptedUsername
+		auth.EncryptedPassword = encryptedPassword
+	}
+	auth.CredentialsSet = auth.EncryptedUsername != "" || auth.EncryptedPassword != ""
+	if !auth.CredentialsSet {
+		return nil, errors.New("启用登录态检测必须提供用户名和密码")
+	}
+	return auth, nil
+}
+
+// redactPolicy strips encrypted credentials before a policy is returned so that
+// ciphertext never leaves the control plane. CredentialsSet is derived from the
+// stored ciphertext so clients can still tell whether login is configured.
+func redactPolicy(policy domain.MonitorPolicy) domain.MonitorPolicy {
+	if policy.Auth == nil {
+		return policy
+	}
+	auth := *policy.Auth
+	auth.CredentialsSet = auth.EncryptedUsername != "" || auth.EncryptedPassword != ""
+	auth.EncryptedUsername = ""
+	auth.EncryptedPassword = ""
+	policy.Auth = &auth
+	return policy
 }
 
 func (s *Server) listBaselines(writer http.ResponseWriter, request *http.Request) {

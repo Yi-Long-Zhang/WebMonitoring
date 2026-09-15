@@ -84,10 +84,16 @@ func main() {
 		From:     os.Getenv("SMTP_FROM"),
 	})
 	consumer := env("WORKER_ID", "worker-1")
+	secretCipher, err := security.NewSecretCipher(required("ALERT_SECRET_KEY"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	httpChecker := detection.NewChecker(guard)
+	httpChecker.SetCipher(secretCipher)
 	service := detection.NewService(
 		repository,
 		evidenceStore,
-		detection.NewChecker(guard),
+		httpChecker,
 		browserChecker,
 		dispatcher,
 		broker,

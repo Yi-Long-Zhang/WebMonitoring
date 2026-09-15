@@ -883,10 +883,35 @@ export interface components {
             maintenanceWindowStart?: string;
             /** Format: date-time */
             maintenanceWindowEnd?: string;
+            auth?: components["schemas"]["AuthConfig"];
         };
         PolicyList: {
             items: components["schemas"]["Policy"][];
             nextCursor: string;
+        };
+        AuthConfig: {
+            /** Format: uri */
+            loginUrl: string;
+            usernameField: string;
+            passwordField: string;
+            extraFields?: {
+                [key: string]: string;
+            };
+            submitSelector?: string;
+            credentialsSet?: boolean;
+        };
+        AuthConfigInput: {
+            /** Format: uri */
+            loginUrl: string;
+            usernameField: string;
+            passwordField: string;
+            extraFields?: {
+                [key: string]: string;
+            };
+            submitSelector?: string;
+            username?: string;
+            /** Format: password */
+            password?: string;
         };
         DetectionJob: {
             /** Format: uuid */
@@ -1516,7 +1541,24 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    httpIntervalSeconds: number;
+                    browserIntervalSeconds: number;
+                    timeoutSeconds: number;
+                    /** Format: int64 */
+                    maxResponseBytes: number;
+                    ignoreSelectors: string[];
+                    trustedDomains: string[];
+                    /** Format: date-time */
+                    maintenanceWindowStart?: string;
+                    /** Format: date-time */
+                    maintenanceWindowEnd?: string;
+                    auth?: components["schemas"]["AuthConfigInput"];
+                };
+            };
+        };
         responses: {
             /** @description 已更新 */
             200: {

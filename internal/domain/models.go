@@ -132,21 +132,38 @@ type Asset struct {
 	UpdatedAt             time.Time          `json:"updatedAt"`
 }
 
+// AuthConfig enables login-state detection: the checker authenticates against
+// LoginURL before capturing the protected asset, so the snapshot reflects the
+// authenticated page rather than the login form. Username and password are only
+// ever stored encrypted (AES-GCM with associated data bound to tenant+asset);
+// they are never returned by the API, logged, or written to spans.
+type AuthConfig struct {
+	LoginURL          string            `json:"loginUrl"`
+	UsernameField     string            `json:"usernameField"`
+	PasswordField     string            `json:"passwordField"`
+	ExtraFields       map[string]string `json:"extraFields,omitempty"`
+	SubmitSelector    string            `json:"submitSelector,omitempty"`
+	EncryptedUsername string            `json:"encryptedUsername,omitempty"`
+	EncryptedPassword string            `json:"encryptedPassword,omitempty"`
+	CredentialsSet    bool              `json:"credentialsSet,omitempty"`
+}
+
 type MonitorPolicy struct {
-	ID                     string     `json:"id"`
-	TenantID               string     `json:"tenantId"`
-	AssetID                string     `json:"assetId"`
-	Version                int        `json:"version"`
-	HTTPIntervalSeconds    int        `json:"httpIntervalSeconds"`
-	BrowserIntervalSeconds int        `json:"browserIntervalSeconds"`
-	TimeoutSeconds         int        `json:"timeoutSeconds"`
-	MaxResponseBytes       int64      `json:"maxResponseBytes"`
-	IgnoreSelectors        []string   `json:"ignoreSelectors"`
-	TrustedDomains         []string   `json:"trustedDomains"`
-	MaintenanceWindowStart *time.Time `json:"maintenanceWindowStart,omitempty"`
-	MaintenanceWindowEnd   *time.Time `json:"maintenanceWindowEnd,omitempty"`
-	CreatedAt              time.Time  `json:"createdAt"`
-	UpdatedAt              time.Time  `json:"updatedAt"`
+	ID                     string      `json:"id"`
+	TenantID               string      `json:"tenantId"`
+	AssetID                string      `json:"assetId"`
+	Version                int         `json:"version"`
+	HTTPIntervalSeconds    int         `json:"httpIntervalSeconds"`
+	BrowserIntervalSeconds int         `json:"browserIntervalSeconds"`
+	TimeoutSeconds         int         `json:"timeoutSeconds"`
+	MaxResponseBytes       int64       `json:"maxResponseBytes"`
+	IgnoreSelectors        []string    `json:"ignoreSelectors"`
+	TrustedDomains         []string    `json:"trustedDomains"`
+	MaintenanceWindowStart *time.Time  `json:"maintenanceWindowStart,omitempty"`
+	MaintenanceWindowEnd   *time.Time  `json:"maintenanceWindowEnd,omitempty"`
+	Auth                   *AuthConfig `json:"auth,omitempty"`
+	CreatedAt              time.Time   `json:"createdAt"`
+	UpdatedAt              time.Time   `json:"updatedAt"`
 }
 
 type ResourceRef struct {
