@@ -28,6 +28,7 @@ services:
     build:
       context: ../..
       dockerfile: apps/migrate/Dockerfile
+      network: ${BUILD_NETWORK:-default}
     command: ["up"]
     environment:
       POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:-webmonitoring}@postgres:5432/webmonitoring?sslmode=disable
@@ -52,10 +53,20 @@ services:
       timeout: 3s
       retries: 20
 
+  # MinIO client used by the backup/restore rehearsal. It lives behind a profile
+  # so `up` never starts it, and it runs inside the Compose network so the scripts
+  # need neither a host `mc` install nor a published MinIO port.
+  mc:
+    image: quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    profiles: ["tools"]
+    depends_on:
+      minio: { condition: service_healthy }
+
   browser-worker:
     build:
       context: ../..
       dockerfile: apps/browser-worker/Dockerfile
+      network: ${BUILD_NETWORK:-default}
     environment:
       PORT: "8081"
       WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:-replace-with-a-random-token}
@@ -77,6 +88,7 @@ services:
     build:
       context: ../..
       dockerfile: apps/api/Dockerfile
+      network: ${BUILD_NETWORK:-default}
     environment:
       APP_ENV: ${APP_ENV:-development}
       HTTP_ADDR: ":8080"
@@ -124,6 +136,7 @@ services:
     build:
       context: ../..
       dockerfile: apps/http-worker/Dockerfile
+      network: ${BUILD_NETWORK:-default}
     environment:
       APP_ENV: ${APP_ENV:-development}
       WORKER_ID: http-worker-1
@@ -167,6 +180,7 @@ services:
     build:
       context: ../..
       dockerfile: apps/console/Dockerfile
+      network: ${BUILD_NETWORK:-default}
     depends_on:
       api: { condition: service_healthy }
     ports:

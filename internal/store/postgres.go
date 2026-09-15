@@ -47,7 +47,6 @@ func (p *PostgresRepository) Ready(ctx context.Context) error {
 func (p *PostgresRepository) ListTenants(opts ListOptions) ([]domain.Tenant, string, error) {
 	query := tenantSelect + ` WHERE TRUE`
 	query, args := paginateQuery(query, nil, opts, "created_at")
-	query += ` ORDER BY created_at DESC, id DESC`
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
@@ -262,7 +261,6 @@ func (p *PostgresRepository) ListAssets(tenantID string, opts ListOptions) ([]do
 	args := []any{tenantID}
 	query := assetSelect + ` WHERE tenant_id=$1`
 	query, args = paginateQuery(query, args, opts, "created_at")
-	query += ` ORDER BY created_at DESC, id DESC`
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
@@ -331,7 +329,6 @@ func (p *PostgresRepository) ListSites(tenantID string, opts ListOptions) ([]dom
 	args := []any{tenantID}
 	query := siteSelect + ` WHERE tenant_id=$1`
 	query, args = paginateQuery(query, args, opts, "created_at")
-	query += ` ORDER BY created_at DESC, id DESC`
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
@@ -394,7 +391,6 @@ func (p *PostgresRepository) ListPolicies(tenantID string, opts ListOptions) ([]
 	args := []any{tenantID}
 	query := `SELECT config FROM monitor_policies WHERE tenant_id=$1`
 	query, args = paginateQuery(query, args, opts, "updated_at")
-	query += ` ORDER BY updated_at DESC, id DESC`
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
@@ -483,7 +479,6 @@ func (p *PostgresRepository) ListBaselines(tenantID, assetID string, opts ListOp
 		args = append(args, assetID)
 	}
 	query, args = paginateQuery(query, args, opts, "created_at")
-	query += ` ORDER BY created_at DESC, id DESC`
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
@@ -577,7 +572,6 @@ func (p *PostgresRepository) ListJobs(tenantID string, opts ListOptions) ([]doma
 	args := []any{tenantID}
 	query := jobSelect + ` WHERE tenant_id=$1`
 	query, args = paginateQuery(query, args, opts, "created_at")
-	query += ` ORDER BY created_at DESC, id DESC`
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
@@ -658,7 +652,6 @@ func (p *PostgresRepository) ListEvidence(tenantID, assetID string, opts ListOpt
 		args = append(args, assetID)
 	}
 	query, args = paginateQuery(query, args, opts, "created_at")
-	query += ` ORDER BY created_at DESC, id DESC`
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
@@ -821,7 +814,6 @@ func (p *PostgresRepository) ListIncidents(tenantID string, opts ListOptions) ([
 	args := []any{tenantID}
 	query := incidentSelect + ` WHERE tenant_id=$1`
 	query, args = paginateQuery(query, args, opts, "last_seen_at")
-	query += ` ORDER BY last_seen_at DESC, id DESC`
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
@@ -966,7 +958,6 @@ func (p *PostgresRepository) ListAlertDeliveries(tenantID, incidentID string, op
 		args = append(args, incidentID)
 	}
 	query, args = paginateQuery(query, args, opts, "created_at")
-	query += ` ORDER BY created_at DESC, id DESC`
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
@@ -1005,7 +996,6 @@ func (p *PostgresRepository) ListAudits(tenantID string, opts ListOptions) ([]do
 		result,trace_id,COALESCE(details,'{}'::jsonb),created_at
 		FROM audit_events WHERE tenant_id=$1`
 	query, args = paginateQuery(query, args, opts, "created_at")
-	query += ` ORDER BY created_at DESC, id DESC`
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
@@ -1042,9 +1032,12 @@ func (p *PostgresRepository) DeleteAuditsBefore(tenantID string, before time.Tim
 	return int(tag.RowsAffected()), nil
 }
 
-// paginateQuery appends a keyset cursor filter and a LIMIT n+1 (for next-page
-// detection) to a list query that already ends with a WHERE clause. The cursor
-// selects rows strictly after the cursor in descending (column, id) order.
+// paginateQuery completes a list query that already ends with its WHERE clause:
+// it appends the keyset cursor filter, the descending (column, id) ordering and a
+// LIMIT of Limit+1 (so the caller can detect a further page). The ordering and
+// the LIMIT are emitted together because SQL requires ORDER BY to precede LIMIT;
+// a non-positive Limit keeps the result unbounded for internal callers and omits
+// only the LIMIT. The cursor selects rows strictly after it in that same order.
 func paginateQuery(query string, args []any, opts ListOptions, column string) (string, []any) {
 	if opts.Cursor != "" {
 		if cursorTime, cursorID, ok := decodeCursor(opts.Cursor); ok {
@@ -1053,6 +1046,7 @@ func paginateQuery(query string, args []any, opts ListOptions, column string) (s
 			args = append(args, cursorTime, cursorID)
 		}
 	}
+	query += fmt.Sprintf(" ORDER BY %s DESC, id DESC", column)
 	if opts.Limit > 0 {
 		next := len(args) + 1
 		query += fmt.Sprintf(" LIMIT $%d", next)

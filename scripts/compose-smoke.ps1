@@ -7,6 +7,10 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 if (-not $env:ALERT_SECRET_KEY) {
     $env:ALERT_SECRET_KEY = [Convert]::ToBase64String([byte[]](1..32))
 }
+# Pin the lockout threshold so the P0-1 rehearsal asserts an exact attempt count
+# instead of whatever the host environment happens to set.
+$env:LOGIN_MAX_FAILURES = "5"
+$lockoutMaxFailures = 5
 $projectName = if ($env:SMOKE_PROJECT_NAME) { $env:SMOKE_PROJECT_NAME } else { "webmonitoring-smoke" }
 $compose = @(
     "--project-name", $projectName,
@@ -68,6 +72,57 @@ function Wait-JobStatus($WebSession, [string]$JobID, [string]$Expected) {
     throw "job $JobID did not reach $Expected"
 }
 
+# Invoke-ApiExpectError performs a request that must fail and returns the status
+# code plus the decoded error envelope. Windows PowerShell 5.1 throws on any
+# non-2xx response, so the body has to be recovered from the exception; both the
+# response stream and ErrorDetails are tried because 5.1 may have consumed one.
+function Invoke-ApiExpectError {
+    param(
+        [string]$Method,
+        [string]$Uri,
+        $WebSession,
+        $Headers,
+        [string]$Body
+    )
+    $arguments = @{ Method = $Method; Uri = $Uri; ErrorAction = "Stop" }
+    if ($WebSession) { $arguments.WebSession = $WebSession }
+    if ($Headers) { $arguments.Headers = $Headers }
+    if ($Body) {
+        $arguments.Body = $Body
+        $arguments.ContentType = "application/json"
+    }
+    try {
+        Invoke-RestMethod @arguments | Out-Null
+    }
+    catch {
+        $response = $_.Exception.Response
+        if (-not $response) {
+            throw
+        }
+        $raw = ""
+        try {
+            $stream = $response.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($stream)
+            $raw = $reader.ReadToEnd()
+            $reader.Dispose()
+        }
+        catch { }
+        if (-not $raw -and $_.ErrorDetails) {
+            $raw = $_.ErrorDetails.Message
+        }
+        $payload = $null
+        if ($raw) {
+            try { $payload = $raw | ConvertFrom-Json } catch { }
+        }
+        return [pscustomobject]@{
+            Status = [int]$response.StatusCode
+            Code   = if ($payload) { $payload.code } else { "" }
+            Raw    = $raw
+        }
+    }
+    throw "expected $Method $Uri to fail, but it succeeded"
+}
+
 function Test-EvidenceArchive([string]$Path, $Incident, $EvidenceItems) {
     $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
     try {
@@ -104,7 +159,7 @@ function Test-EvidenceArchive([string]$Path, $Incident, $EvidenceItems) {
 }
 
 try {
-    Invoke-Compose @("config")
+    Invoke-Compose @("config") | Out-Null
     Invoke-Compose @("up", "-d", "--build")
     foreach ($service in @("postgres", "redis", "minio", "browser-worker", "migrate", "api", "http-worker", "console", "smoke-target")) {
         Wait-Healthy $service
@@ -165,9 +220,12 @@ try {
     Wait-Healthy "http-worker"
     Invoke-RestMethod -Method Get -Uri "$apiBase/readyz" | Out-Null
     $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
-    Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/auth/session" `
+    $relogin = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/auth/session" `
         -WebSession $session -ContentType "application/json" `
-        -Body '{"username":"admin","password":"change-me-before-production"}' | Out-Null
+        -Body '{"username":"admin","password":"change-me-before-production"}'
+    # The CSRF token belongs to the session, so the post-restart login needs its
+    # own token before any further write request.
+    $csrf = @{ "X-CSRF-Token" = $relogin.csrfToken }
     $persisted = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/assets" -WebSession $session
     if (@($persisted.items | Where-Object id -eq $asset.id).Count -ne 1) {
         throw "asset did not persist after restart"
@@ -176,6 +234,127 @@ try {
     if (@($persistedSites.items | Where-Object id -eq $site.id).Count -ne 1) {
         throw "site did not persist after restart"
     }
+
+    # --- P1-5 keyset pagination ---------------------------------------------
+    # Two filler assets bring the tenant to three, so limit=2 must return a full
+    # first page plus a cursor and a single-item, cursor-free second page.
+    $import = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/assets/import" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" `
+        -Body '{"assets":[{"name":"smoke filler 1","url":"http://smoke-target/filler-1.html","type":"OFFICIAL"},{"name":"smoke filler 2","url":"http://smoke-target/filler-2.html","type":"OFFICIAL"}]}'
+    if ($import.created -ne 2) {
+        throw "asset import created $($import.created) rows, want 2"
+    }
+    $page1 = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/assets?limit=2" -WebSession $session
+    if (@($page1.items).Count -ne 2) {
+        throw "limit=2 returned $(@($page1.items).Count) assets"
+    }
+    if (-not $page1.nextCursor) {
+        throw "limit=2 over three assets returned no nextCursor"
+    }
+    $page2 = Invoke-RestMethod -Method Get `
+        -Uri "$apiBase/api/v1/assets?limit=2&cursor=$([uri]::EscapeDataString($page1.nextCursor))" -WebSession $session
+    if (@($page2.items).Count -ne 1) {
+        throw "second page returned $(@($page2.items).Count) assets, want 1"
+    }
+    if ($page2.nextCursor) {
+        throw "last page returned a nextCursor"
+    }
+    $pageIds = @($page1.items.id) + @($page2.items.id)
+    if (@($pageIds | Sort-Object -Unique).Count -ne $pageIds.Count) {
+        throw "keyset pagination returned duplicate assets"
+    }
+
+    # --- P0-1 login lockout -------------------------------------------------
+    # A random suffix keeps a re-run over a reused data root from colliding with
+    # the account a previous run locked.
+    $lockoutUser = "smoke-lockout-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
+    Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/users" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" `
+        -Body "{`"username`":`"$lockoutUser`",`"password`":`"smoke-lockout-password`",`"role`":`"OPERATOR`"}" | Out-Null
+    for ($attempt = 1; $attempt -le $lockoutMaxFailures; $attempt++) {
+        $failed = Invoke-ApiExpectError -Method Post -Uri "$apiBase/api/v1/auth/session" `
+            -Body "{`"username`":`"$lockoutUser`",`"password`":`"wrong-password`"}"
+        if ($failed.Status -ne 401 -or $failed.Code -ne "INVALID_CREDENTIALS") {
+            throw "failed login $attempt returned $($failed.Status)/$($failed.Code)"
+        }
+    }
+    # The lockout is checked before the password is verified, so even the correct
+    # password must be refused while the window is armed.
+    $locked = Invoke-ApiExpectError -Method Post -Uri "$apiBase/api/v1/auth/session" `
+        -Body "{`"username`":`"$lockoutUser`",`"password`":`"smoke-lockout-password`"}"
+    if ($locked.Status -ne 401 -or $locked.Code -ne "ACCOUNT_LOCKED") {
+        throw "expected ACCOUNT_LOCKED after $lockoutMaxFailures failures, got $($locked.Status)/$($locked.Code)"
+    }
+    # Lockout is per account: an unrelated session must survive it.
+    $stillIn = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/auth/session" -WebSession $session
+    if ($stillIn.user.username -ne "admin") {
+        throw "unrelated account lost its session during another account's lockout"
+    }
+
+    # --- P1-6 asset suspend / resume ---------------------------------------
+    $suspended = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/assets/$($asset.id)/suspend" `
+        -WebSession $session -Headers $csrf
+    if ($suspended.verificationStatus -ne "SUSPENDED" -or $suspended.enabled) {
+        throw "suspend left asset $($suspended.verificationStatus)/enabled=$($suspended.enabled)"
+    }
+    $invalidSuspend = Invoke-ApiExpectError -Method Post -Uri "$apiBase/api/v1/assets/$($asset.id)/suspend" `
+        -WebSession $session -Headers $csrf
+    if ($invalidSuspend.Status -ne 409 -or $invalidSuspend.Code -ne "INVALID_ASSET_STATE") {
+        throw "re-suspend returned $($invalidSuspend.Status)/$($invalidSuspend.Code)"
+    }
+    $rejectedJob = Invoke-ApiExpectError -Method Post -Uri "$apiBase/api/v1/detection-jobs" `
+        -WebSession $session -Headers $csrf `
+        -Body "{`"assetId`":`"$($asset.id)`",`"mode`":`"HTTP`"}"
+    if ($rejectedJob.Status -ne 409 -or $rejectedJob.Code -ne "JOB_REJECTED") {
+        throw "queueing a suspended asset returned $($rejectedJob.Status)/$($rejectedJob.Code)"
+    }
+    $resumedAsset = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/assets/$($asset.id)/resume" `
+        -WebSession $session -Headers $csrf
+    if ($resumedAsset.verificationStatus -ne "VERIFIED" -or $resumedAsset.enabled) {
+        throw "resume left asset $($resumedAsset.verificationStatus)/enabled=$($resumedAsset.enabled)"
+    }
+    # Resuming deliberately does not re-enable monitoring; that stays an explicit
+    # operator action through PATCH.
+    $reenabled = Invoke-RestMethod -Method Patch -Uri "$apiBase/api/v1/assets/$($asset.id)" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" -Body '{"enabled":true}'
+    if (-not $reenabled.enabled) {
+        throw "re-enabling a resumed asset failed"
+    }
+
+    # --- P1-7 job cancellation ---------------------------------------------
+    # Stopping the worker makes cancellation deterministic: the job cannot be
+    # picked up between queueing and the cancel call.
+    Invoke-Compose @("stop", "http-worker")
+    $queued = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/detection-jobs" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" `
+        -Body "{`"assetId`":`"$($asset.id)`",`"mode`":`"HTTP`"}"
+    if ($queued.status -ne "QUEUED") {
+        throw "job started as $($queued.status) with the worker stopped, want QUEUED"
+    }
+    $cancelled = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/detection-jobs/$($queued.id)/cancel" `
+        -WebSession $session -Headers $csrf
+    if ($cancelled.status -ne "CANCELLED") {
+        throw "cancel left job in $($cancelled.status)"
+    }
+    $reCancel = Invoke-ApiExpectError -Method Post -Uri "$apiBase/api/v1/detection-jobs/$($queued.id)/cancel" `
+        -WebSession $session -Headers $csrf
+    if ($reCancel.Status -ne 409 -or $reCancel.Code -ne "INVALID_JOB_STATE") {
+        throw "re-cancelling a cancelled job returned $($reCancel.Status)/$($reCancel.Code)"
+    }
+    Invoke-Compose @("start", "http-worker")
+    Wait-Healthy "http-worker"
+    $afterRestart = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/detection-jobs" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" `
+        -Body "{`"assetId`":`"$($asset.id)`",`"mode`":`"HTTP`"}"
+    Wait-JobStatus $session $afterRestart.id "SUCCEEDED"
+    # The restarted worker drained the cancelled job from the queue; a late
+    # SUCCEEDED must not overwrite the terminal CANCELLED state.
+    $terminal = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/detection-jobs" -WebSession $session |
+        Select-Object -ExpandProperty items | Where-Object id -eq $queued.id
+    if (-not $terminal -or $terminal.status -ne "CANCELLED") {
+        throw "cancelled job was overwritten by a late result: $($terminal.status)"
+    }
+
     $env:CONSOLE_BASE_URL = "http://localhost:18088"
     $env:ADMIN_PASSWORD = "change-me-before-production"
     & pnpm --filter @webmonitoring/console e2e

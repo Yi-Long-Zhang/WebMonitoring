@@ -2,7 +2,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$BackupRoot,
     [switch]$Execute,
-    [string]$ConfirmText
+    [string]$ConfirmText,
+    # Restore a stack started under a different Compose project (for example the
+    # one left running by compose-smoke.ps1 -KeepRunning).
+    [string]$ProjectName = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,11 +40,40 @@ if ($ConfirmText -cne "RESTORE") {
     throw "destructive restore requires -ConfirmText RESTORE"
 }
 
+$composeArgs = @()
+if ($ProjectName) {
+    $composeArgs += @("--project-name", $ProjectName)
+}
+$composeArgs += @("-f", "deployments/compose/docker-compose.yml")
+
 function Invoke-Compose([string[]]$Arguments) {
-    & docker compose -f deployments/compose/docker-compose.yml @Arguments
+    & docker compose @composeArgs @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "docker compose failed: $($Arguments -join ' ')"
     }
+}
+
+function Invoke-Required([string]$Command, [string[]]$Arguments) {
+    & $Command @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Command failed"
+    }
+}
+
+# The MinIO client runs as an ephemeral Compose service on the Compose network, so
+# the rehearsal needs no host `mc` installation and no published MinIO port. The
+# credentials are handed over through MC_HOST_backup rather than argv so they do
+# not appear in the process list.
+function Invoke-Mc([string]$Command, [string]$Mount) {
+    $env:MC_HOST_backup = "http://$($env:S3_ACCESS_KEY):$($env:S3_SECRET_KEY)@$minioEndpoint"
+    $arguments = @("compose") + $composeArgs + @(
+        "run", "--rm", "-T", "--no-deps", "--entrypoint", "sh", "-e", "MC_HOST_backup"
+    )
+    if ($Mount) {
+        $arguments += @("-v", $Mount)
+    }
+    $arguments += @("mc", "-c", $Command)
+    Invoke-Required "docker" $arguments
 }
 
 function Wait-Ready([string]$Url) {
@@ -74,11 +106,11 @@ function Get-PendingCount([string]$Stream, [string]$Group) {
     return $count
 }
 
-function Test-RestoredEvidence($Manifest, [string]$Alias, [string]$Bucket, [string]$Root) {
+function Test-RestoredEvidence($Manifest, [string]$Bucket, [string]$Root) {
     $verifyRoot = Join-Path ([IO.Path]::GetTempPath()) "webmonitoring-restore-$PID"
     try {
         New-Item -ItemType Directory -Force -Path $verifyRoot | Out-Null
-        Invoke-Required "mc" @("mirror", "--overwrite", "$Alias/$Bucket", $verifyRoot)
+        Invoke-Mc "mc mirror --overwrite backup/$Bucket /verify" "$((Resolve-Path -LiteralPath $verifyRoot).Path):/verify"
         foreach ($file in @($Manifest.files | Where-Object path -like "evidence/*")) {
             $path = Join-Path $Root $file.path
             if (-not (Test-Path -LiteralPath $path)) {
@@ -120,29 +152,27 @@ function Test-RestoredTaskState([string]$ApiBase) {
 if (-not $env:S3_ACCESS_KEY -or -not $env:S3_SECRET_KEY) {
     throw "S3_ACCESS_KEY and S3_SECRET_KEY are required for restore"
 }
-$s3Endpoint = if ($env:S3_ENDPOINT) { $env:S3_ENDPOINT } else { "http://localhost:9000" }
 $s3Bucket = if ($env:S3_BUCKET) { $env:S3_BUCKET } else { "evidence" }
-& mc alias set webmonitoring-restore $s3Endpoint $env:S3_ACCESS_KEY $env:S3_SECRET_KEY
-if ($LASTEXITCODE -ne 0) {
-    throw "mc alias setup failed"
-}
+# The mc container talks to MinIO over the Compose network, not through the host
+# port mapping. Override for a deployment whose object store lives elsewhere.
+$minioEndpoint = if ($env:S3_INTERNAL_ENDPOINT) { $env:S3_INTERNAL_ENDPOINT } else { "minio:9000" }
 
 Invoke-Compose @("stop", "api", "http-worker")
-Get-Content -AsByteStream -Raw -LiteralPath $databaseDump |
-    & docker compose -f deployments/compose/docker-compose.yml exec -T postgres `
-        pg_restore -U webmonitoring -d webmonitoring --clean --if-exists
-if ($LASTEXITCODE -ne 0) {
-    throw "pg_restore failed"
-}
-& mc mirror --overwrite --remove $evidenceRoot "webmonitoring-restore/$s3Bucket"
-if ($LASTEXITCODE -ne 0) {
-    throw "evidence restore failed"
-}
+# The dump is copied into the container instead of being piped, so no binary
+# stream crosses the PowerShell pipeline (which needs PowerShell 7 for that).
+$copyArguments = @("compose") + $composeArgs + @("cp", $databaseDump, "postgres:/tmp/webmonitoring.dump")
+Invoke-Required "docker" $copyArguments
+Invoke-Compose @("exec", "-T", "postgres", "pg_restore", "-U", "webmonitoring", "-d", "webmonitoring", "--clean", "--if-exists", "/tmp/webmonitoring.dump")
+# A restore target is usually a fresh object store where the API has not run yet,
+# so the bucket does not exist until it is created here; `mc mirror` refuses to
+# pick the destination otherwise.
+Invoke-Mc "mc mb --ignore-existing backup/$s3Bucket"
+Invoke-Mc "mc mirror --overwrite --remove /backup backup/$s3Bucket" "$((Resolve-Path -LiteralPath $evidenceRoot).Path):/backup"
 Invoke-Compose @("run", "--rm", "migrate", "up")
 Invoke-Compose @("up", "-d", "api", "http-worker")
 $apiBase = if ($env:API_BASE_URL) { $env:API_BASE_URL } else { "http://localhost:8080" }
 Wait-Ready "$apiBase/readyz"
-Test-RestoredEvidence $manifest "webmonitoring-restore" $s3Bucket $resolvedBackup
+Test-RestoredEvidence $manifest $s3Bucket $resolvedBackup
 Test-RestoredTaskState $apiBase
 $detectionPending = Get-PendingCount "webmonitoring:detection-jobs" "detection-workers"
 $alertPending = Get-PendingCount "webmonitoring:alert-jobs" "alert-workers"
