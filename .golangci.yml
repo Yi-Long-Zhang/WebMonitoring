@@ -1,0 +1,19 @@
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - gosec
+
+issues:
+  exclude-dirs:
+    - .cache
+  exclude-rules:
+    # 测试夹具里的合成密钥、固定私网目标是测试数据，不是产品缺陷。
+    - path: _test\.go
+      linters:
+        - gosec
