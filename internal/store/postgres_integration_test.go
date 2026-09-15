@@ -152,8 +152,10 @@ func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 	if err := repository.CreateUser(owner); err != nil {
 		t.Fatal(err)
 	}
+	// Names are unique per tenant, so the suite has to mint a fresh one to stay
+	// re-runnable against a database that outlives a single test run.
 	site := domain.Site{
-		ID: identity.New(), TenantID: defaultTenant, Name: "scoped site",
+		ID: identity.New(), TenantID: defaultTenant, Name: "scoped site " + identity.New(),
 		Domain: "example-" + identity.New() + ".com", OwnerID: owner.ID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := repository.CreateSite(site); err != nil {
@@ -182,7 +184,7 @@ func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 	// A site whose owner belongs to a different tenant must be rejected by the
 	// composite (tenant_id, owner_id) foreign key.
 	crossOwner := domain.Site{
-		ID: identity.New(), TenantID: defaultTenant, Name: "cross-owner site",
+		ID: identity.New(), TenantID: defaultTenant, Name: "cross-owner site " + identity.New(),
 		Domain: "example-" + identity.New() + ".com", OwnerID: foreignOwner.ID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := repository.CreateSite(crossOwner); err == nil {
@@ -190,7 +192,7 @@ func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 	}
 
 	foreignSite := domain.Site{
-		ID: identity.New(), TenantID: otherTenant.ID, Name: "foreign site",
+		ID: identity.New(), TenantID: otherTenant.ID, Name: "foreign site " + identity.New(),
 		Domain: "example-" + identity.New() + ".com", OwnerID: foreignOwner.ID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := repository.CreateSite(foreignSite); err != nil {
@@ -206,6 +208,137 @@ func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 	}
 	if err := repository.CreateAsset(crossAsset); err == nil {
 		t.Fatal("cross-tenant site reference on asset was accepted")
+	}
+}
+
+// TestPostgresKeysetPaginationWalksEveryRowOnce pins the SQL that paginateQuery
+// builds. SQL requires ORDER BY to precede LIMIT, so the ordering and the LIMIT
+// have to be emitted together; a list query that appends them in the wrong order
+// fails at parse time and only ever shows up against a real server. The test also
+// asserts that the cursor resumes exactly after the previous page and that a
+// second tenant's rows never leak into the walk.
+func TestPostgresKeysetPaginationWalksEveryRowOnce(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN"))
+	if dsn == "" {
+		t.Skip("POSTGRES_TEST_DSN is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	runner, err := migrate.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("PostgreSQL integration test unavailable: %v", err)
+	}
+	defer runner.Close()
+	if err := runner.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey)
+	if err != nil {
+		t.Fatalf("PostgreSQL repository unavailable: %v", err)
+	}
+	defer repository.Close()
+
+	now := time.Now().UTC()
+	tenant := domain.Tenant{ID: identity.New(), Slug: "pagination-" + identity.New(), Name: "Pagination", CreatedAt: now}
+	if err := repository.CreateTenant(tenant); err != nil {
+		t.Fatal(err)
+	}
+	owner := domain.User{
+		ID: identity.New(), TenantID: tenant.ID, Username: "pagination-owner-" + identity.New(),
+		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
+	}
+	if err := repository.CreateUser(owner); err != nil {
+		t.Fatal(err)
+	}
+	foreign := domain.Tenant{ID: identity.New(), Slug: "pagination-foreign-" + identity.New(), Name: "Foreign", CreatedAt: now}
+	if err := repository.CreateTenant(foreign); err != nil {
+		t.Fatal(err)
+	}
+	foreignOwner := domain.User{
+		ID: identity.New(), TenantID: foreign.ID, Username: "pagination-foreign-owner-" + identity.New(),
+		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
+	}
+	if err := repository.CreateUser(foreignOwner); err != nil {
+		t.Fatal(err)
+	}
+
+	// The walk is descending on created_at, so the newest row has to come first.
+	const total = 5
+	base := now.Add(-time.Hour)
+	expected := make([]string, 0, total)
+	for index := range total {
+		asset := domain.Asset{
+			ID: identity.New(), TenantID: tenant.ID, Name: "pagination asset",
+			URL:  "https://pagination-" + identity.New() + ".example",
+			Type: domain.AssetOfficial, OwnerID: owner.ID, Enabled: true,
+			VerificationStatus: domain.VerificationVerified,
+			CreatedAt:          base.Add(time.Duration(index) * time.Second), UpdatedAt: now,
+		}
+		if err := repository.CreateAsset(asset); err != nil {
+			t.Fatal(err)
+		}
+		expected = append([]string{asset.ID}, expected...)
+	}
+	foreignAsset := domain.Asset{
+		ID: identity.New(), TenantID: foreign.ID, Name: "foreign pagination asset",
+		URL:  "https://pagination-foreign-" + identity.New() + ".example",
+		Type: domain.AssetOfficial, OwnerID: foreignOwner.ID, Enabled: true,
+		VerificationStatus: domain.VerificationVerified,
+		CreatedAt:          base.Add(time.Hour), UpdatedAt: now,
+	}
+	if err := repository.CreateAsset(foreignAsset); err != nil {
+		t.Fatal(err)
+	}
+
+	const pageSize = 2
+	pageSizes := make([]int, 0, 3)
+	seen := make([]string, 0, total)
+	cursor := ""
+	for page := 1; ; page++ {
+		if page > total+1 {
+			t.Fatal("keyset pagination did not terminate")
+		}
+		items, next, err := repository.ListAssets(tenant.ID, ListOptions{Limit: pageSize, Cursor: cursor})
+		if err != nil {
+			t.Fatalf("assets page %d: %v", page, err)
+		}
+		if len(items) > pageSize {
+			t.Fatalf("assets page %d returned %d rows, want at most %d", page, len(items), pageSize)
+		}
+		pageSizes = append(pageSizes, len(items))
+		for _, item := range items {
+			if item.TenantID != tenant.ID {
+				t.Fatalf("assets page %d leaked tenant %s", page, item.TenantID)
+			}
+			seen = append(seen, item.ID)
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+
+	if len(pageSizes) != 3 || pageSizes[0] != 2 || pageSizes[1] != 2 || pageSizes[2] != 1 {
+		t.Fatalf("page sizes=%v, want [2 2 1]", pageSizes)
+	}
+	if len(seen) != total {
+		t.Fatalf("walked %d assets, want %d", len(seen), total)
+	}
+	for index := range expected {
+		if seen[index] != expected[index] {
+			t.Fatalf("walk position %d = %s, want %s (descending created_at order)", index, seen[index], expected[index])
+		}
+	}
+
+	// ListTenants shares the helper but has no tenant predicate at all.
+	tenants, _, err := repository.ListTenants(ListOptions{Limit: 2})
+	if err != nil {
+		t.Fatalf("list tenants: %v", err)
+	}
+	if len(tenants) < 1 || len(tenants) > 2 {
+		t.Fatalf("limited tenant list returned %d rows, want 1..2", len(tenants))
 	}
 }
 
