@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium, type BrowserContext, type Page } from "playwright";
-import { assertSafeTarget } from "./security.js";
+import { assertSafeTarget, probeTLSFingerprint } from "./security.js";
 
 const port = Number(process.env.PORT || 8081);
 const workerToken = process.env.WORKER_TOKEN || "";
@@ -24,6 +24,8 @@ type BrowserEvents = {
   dialogs?: string[];
   downloads?: string[];
   responseHeaders?: Record<string, string[]>;
+  resolvedIps?: string[];
+  tlsFingerprint?: string;
 };
 
 type Snapshot = {
@@ -92,7 +94,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 }
 
 export async function check(input: CheckRequest) {
-  const target = await assertSafeTarget(input.url, input.allowPrivateTargets === true);
+  const { target, addresses } = await assertSafeTarget(input.url, input.allowPrivateTargets === true);
+  const tlsFingerprint = target.protocol === "https:" ? await probeTLSFingerprint(target.hostname) : "";
   const timeout = Math.min(Math.max((input.timeoutSeconds || 30) * 1000, 1000), 90000);
   const limit = Math.min(Math.max(input.maxResponseBytes || maxResponseBytes, 1024), maxResponseBytes);
   const started = Date.now();
@@ -171,6 +174,8 @@ export async function check(input: CheckRequest) {
         dialogs,
         downloads,
         responseHeaders,
+        resolvedIps: addresses,
+        tlsFingerprint,
       }),
       page.screenshot({ type: "png", fullPage: true }),
     ]);
@@ -262,7 +267,8 @@ export async function extractSnapshot(
     iframes: unique(data.iframes),
     forms: data.forms,
     redirectChain: [...redirects],
-    resolvedIps: [],
+    resolvedIps: unique(events.resolvedIps ?? []),
+    tlsFingerprint: events.tlsFingerprint,
     responseHeaders: events.responseHeaders ?? {},
     resourceRequests: unique(events.resourceRequests ?? requests),
     blockedRequests: unique(events.blockedRequests ?? []),

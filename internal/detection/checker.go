@@ -16,6 +16,10 @@ import (
 
 	"webmonitoring/internal/domain"
 	"webmonitoring/internal/security"
+
+	otelattr "go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const defaultMaxResponseBytes int64 = 5 * 1024 * 1024
@@ -36,6 +40,13 @@ func NewChecker(guard *security.URLGuard) *Checker {
 }
 
 func (c *Checker) Check(ctx context.Context, asset domain.Asset, policy domain.MonitorPolicy) (CheckResult, error) {
+	ctx, span := detectionTracer.Start(ctx, "checker.http",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			otelattr.String("webmonitoring.asset_id", asset.ID),
+			otelattr.String("webmonitoring.policy_version", strconv.Itoa(policy.Version)),
+		))
+	defer span.End()
 	timeout := time.Duration(policy.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -49,8 +60,13 @@ func (c *Checker) Check(ctx context.Context, asset domain.Asset, policy domain.M
 
 	parsed, ips, err := c.guard.Validate(ctx, asset.URL)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "unsafe target")
 		return CheckResult{}, err
 	}
+	// The host is recorded but not logged: it is a customer URL and this span is
+	// exported to an external collector.
+	span.SetAttributes(otelattr.String("server.address", parsed.Hostname()))
 	redirects := make([]string, 0, 4)
 	transport := &http.Transport{
 		Proxy:                 nil,
@@ -106,22 +122,23 @@ func (c *Checker) Check(ctx context.Context, asset domain.Asset, policy domain.M
 		resolvedIPs = append(resolvedIPs, ip.String())
 	}
 	snapshot := domain.Snapshot{
-		URL:             asset.URL,
-		FinalURL:        response.Request.URL.String(),
-		StatusCode:      response.StatusCode,
-		Title:           analysis.Title,
-		ContentHash:     hashString(analysis.CanonicalHTML),
-		TextHash:        hashString(analysis.VisibleText),
-		Scripts:         analysis.Scripts,
-		Links:           analysis.Links,
-		IFrames:         analysis.IFrames,
-		Forms:           analysis.Forms,
-		RedirectChain:   redirects,
-		ResolvedIPs:     resolvedIPs,
-		TLSFingerprint:  tlsFingerprint(response),
-		ResponseHeaders: safeHeaders(response.Header),
-		DurationMillis:  time.Since(started).Milliseconds(),
-		CapturedAt:      time.Now().UTC(),
+		URL:              asset.URL,
+		FinalURL:         response.Request.URL.String(),
+		StatusCode:       response.StatusCode,
+		Title:            analysis.Title,
+		ContentHash:      hashString(analysis.CanonicalHTML),
+		TextHash:         hashString(analysis.VisibleText),
+		Scripts:          analysis.Scripts,
+		Links:            analysis.Links,
+		IFrames:          analysis.IFrames,
+		Forms:            analysis.Forms,
+		RedirectChain:    redirects,
+		ResolvedIPs:      resolvedIPs,
+		TLSFingerprint:   tlsFingerprint(response),
+		ResponseHeaders:  safeHeaders(response.Header),
+		ResourceRequests: analysis.Resources,
+		DurationMillis:   time.Since(started).Milliseconds(),
+		CapturedAt:       time.Now().UTC(),
 	}
 	return CheckResult{Snapshot: snapshot, RawHTML: body}, nil
 }

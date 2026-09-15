@@ -14,6 +14,10 @@ func (r staticResolver) LookupIP(_ context.Context, _ string, host string) ([]ne
 	return r.addresses[host], nil
 }
 
+func (r staticResolver) LookupTXT(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+
 func TestURLGuardRejectsPrivateAndUnsafeTargets(t *testing.T) {
 	guard := NewURLGuard(false)
 	guard.Resolver = staticResolver{addresses: map[string][]net.IP{

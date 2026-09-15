@@ -98,7 +98,7 @@ func TestPostgresMigrationJobClaimAndRestartRecovery(t *testing.T) {
 		repository.Close()
 		t.Fatalf("job status=%s, want RUNNING", current.Status)
 	}
-	jobs, err := repository.ListJobs(tenantID)
+	jobs, _, err := repository.ListJobs(tenantID, ListOptions{})
 	if err != nil || len(jobs) == 0 {
 		repository.Close()
 		t.Fatalf("list jobs: count=%d err=%v", len(jobs), err)
@@ -159,7 +159,7 @@ func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 	if err := repository.CreateSite(site); err != nil {
 		t.Fatal(err)
 	}
-	listed, err := repository.ListSites(defaultTenant)
+	listed, _, err := repository.ListSites(defaultTenant, ListOptions{})
 	if err != nil || len(listed) == 0 {
 		t.Fatalf("list sites: count=%d err=%v", len(listed), err)
 	}

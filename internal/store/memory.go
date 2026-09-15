@@ -50,15 +50,21 @@ func (m *MemoryRepository) Ready(context.Context) error {
 	return nil
 }
 
-func (m *MemoryRepository) ListTenants() ([]domain.Tenant, error) {
+func (m *MemoryRepository) ListTenants(opts ListOptions) ([]domain.Tenant, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Tenant, 0, len(m.tenants))
 	for _, tenant := range m.tenants {
 		result = append(result, tenant)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.Before(result[j].CreatedAt) })
-	return result, nil
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	items, next := applyPage(result, opts, func(t domain.Tenant) (time.Time, string) { return t.CreatedAt, t.ID })
+	return items, next, nil
 }
 
 func (m *MemoryRepository) GetTenant(tenantID string) (domain.Tenant, error) {
@@ -113,6 +119,131 @@ func tenantKey(tenantID, id string) string {
 	return tenantID + ":" + id
 }
 
+// CountTenantResources returns per-kind row counts for one tenant. The JSON
+// keys match the Postgres implementation.
+func (m *MemoryRepository) CountTenantResources(tenantID string) (map[string]int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := map[string]int{"assets": 0, "sites": 0, "users": 0, "evidence": 0,
+		"incidents": 0, "baselines": 0, "jobs": 0, "alertChannels": 0, "auditEvents": 0}
+	for _, site := range m.sites {
+		if site.TenantID == tenantID {
+			result["sites"]++
+		}
+	}
+	for _, user := range m.users {
+		if user.TenantID == tenantID {
+			result["users"]++
+		}
+	}
+	for _, asset := range m.assets {
+		if asset.TenantID == tenantID {
+			result["assets"]++
+		}
+	}
+	for _, baseline := range m.baselines {
+		if baseline.TenantID == tenantID {
+			result["baselines"]++
+		}
+	}
+	for _, job := range m.jobs {
+		if job.TenantID == tenantID {
+			result["jobs"]++
+		}
+	}
+	for _, item := range m.evidence {
+		if item.TenantID == tenantID {
+			result["evidence"]++
+		}
+	}
+	for _, incident := range m.incidents {
+		if incident.TenantID == tenantID {
+			result["incidents"]++
+		}
+	}
+	for _, channel := range m.channels {
+		if channel.TenantID == tenantID {
+			result["alertChannels"]++
+		}
+	}
+	for _, event := range m.audits {
+		if event.TenantID == tenantID {
+			result["auditEvents"]++
+		}
+	}
+	return result, nil
+}
+
+// DeleteTenant removes a tenant and every tenant-scoped row in one critical
+// section. Callers must have verified the tenant is empty (or explicitly
+// requested a cascade) before calling.
+func (m *MemoryRepository) DeleteTenant(tenantID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return ErrNotFound
+	}
+	delete(m.tenants, tenantID)
+	for key, value := range m.sites {
+		if value.TenantID == tenantID {
+			delete(m.sites, key)
+		}
+	}
+	for key, value := range m.users {
+		if value.TenantID == tenantID {
+			delete(m.users, key)
+		}
+	}
+	for key, value := range m.assets {
+		if value.TenantID == tenantID {
+			delete(m.assets, key)
+		}
+	}
+	for key, value := range m.policies {
+		if value.TenantID == tenantID {
+			delete(m.policies, key)
+		}
+	}
+	for key, value := range m.baselines {
+		if value.TenantID == tenantID {
+			delete(m.baselines, key)
+		}
+	}
+	for key, value := range m.jobs {
+		if value.TenantID == tenantID {
+			delete(m.jobs, key)
+		}
+	}
+	for key, value := range m.evidence {
+		if value.TenantID == tenantID {
+			delete(m.evidence, key)
+		}
+	}
+	for key, value := range m.incidents {
+		if value.TenantID == tenantID {
+			delete(m.incidents, key)
+		}
+	}
+	for key, value := range m.channels {
+		if value.TenantID == tenantID {
+			delete(m.channels, key)
+		}
+	}
+	for key, value := range m.deliveries {
+		if value.TenantID == tenantID {
+			delete(m.deliveries, key)
+		}
+	}
+	filtered := m.audits[:0]
+	for _, event := range m.audits {
+		if event.TenantID != tenantID {
+			filtered = append(filtered, event)
+		}
+	}
+	m.audits = filtered
+	return nil
+}
+
 func (m *MemoryRepository) CreateUser(user domain.User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -144,6 +275,35 @@ func (m *MemoryRepository) GetUser(tenantID, id string) (domain.User, error) {
 		return domain.User{}, ErrNotFound
 	}
 	return user, nil
+}
+
+func (m *MemoryRepository) ListUsers(tenantID string) ([]domain.User, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]domain.User, 0)
+	for _, user := range m.users {
+		if user.TenantID == tenantID {
+			result = append(result, user)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
+	return result, nil
+}
+
+func (m *MemoryRepository) UpdateUser(user domain.User) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := tenantKey(user.TenantID, user.ID)
+	if _, ok := m.users[key]; !ok {
+		return ErrNotFound
+	}
+	for _, existing := range m.users {
+		if existing.TenantID == user.TenantID && existing.ID != user.ID && strings.EqualFold(existing.Username, user.Username) {
+			return ErrConflict
+		}
+	}
+	m.users[key] = user
+	return nil
 }
 
 func (m *MemoryRepository) CreateAsset(asset domain.Asset) error {
@@ -179,7 +339,7 @@ func (m *MemoryRepository) GetAsset(tenantID, id string) (domain.Asset, error) {
 	return asset, nil
 }
 
-func (m *MemoryRepository) ListAssets(tenantID string) ([]domain.Asset, error) {
+func (m *MemoryRepository) ListAssets(tenantID string, opts ListOptions) ([]domain.Asset, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Asset, 0)
@@ -188,8 +348,14 @@ func (m *MemoryRepository) ListAssets(tenantID string) ([]domain.Asset, error) {
 			result = append(result, asset)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
-	return result, nil
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	items, next := applyPage(result, opts, func(a domain.Asset) (time.Time, string) { return a.CreatedAt, a.ID })
+	return items, next, nil
 }
 
 func (m *MemoryRepository) CreateSite(site domain.Site) error {
@@ -230,7 +396,7 @@ func (m *MemoryRepository) GetSite(tenantID, id string) (domain.Site, error) {
 	return site, nil
 }
 
-func (m *MemoryRepository) ListSites(tenantID string) ([]domain.Site, error) {
+func (m *MemoryRepository) ListSites(tenantID string, opts ListOptions) ([]domain.Site, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Site, 0)
@@ -239,8 +405,14 @@ func (m *MemoryRepository) ListSites(tenantID string) ([]domain.Site, error) {
 			result = append(result, site)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
-	return result, nil
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	items, next := applyPage(result, opts, func(s domain.Site) (time.Time, string) { return s.CreatedAt, s.ID })
+	return items, next, nil
 }
 
 func (m *MemoryRepository) UpsertPolicy(policy domain.MonitorPolicy) error {
@@ -260,7 +432,7 @@ func (m *MemoryRepository) GetPolicy(tenantID, assetID string) (domain.MonitorPo
 	return clonePolicy(policy), nil
 }
 
-func (m *MemoryRepository) ListPolicies(tenantID string) ([]domain.MonitorPolicy, error) {
+func (m *MemoryRepository) ListPolicies(tenantID string, opts ListOptions) ([]domain.MonitorPolicy, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.MonitorPolicy, 0)
@@ -269,8 +441,14 @@ func (m *MemoryRepository) ListPolicies(tenantID string) ([]domain.MonitorPolicy
 			result = append(result, clonePolicy(policy))
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].UpdatedAt.After(result[j].UpdatedAt) })
-	return result, nil
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].UpdatedAt.Equal(result[j].UpdatedAt) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].UpdatedAt.After(result[j].UpdatedAt)
+	})
+	items, next := applyPage(result, opts, func(p domain.MonitorPolicy) (time.Time, string) { return p.UpdatedAt, p.ID })
+	return items, next, nil
 }
 
 func (m *MemoryRepository) CreateBaseline(baseline domain.BaselineVersion) error {
@@ -333,7 +511,7 @@ func (m *MemoryRepository) GetApprovedBaseline(tenantID, assetID string) (domain
 	return cloneBaseline(selected), nil
 }
 
-func (m *MemoryRepository) ListBaselines(tenantID, assetID string) ([]domain.BaselineVersion, error) {
+func (m *MemoryRepository) ListBaselines(tenantID, assetID string, opts ListOptions) ([]domain.BaselineVersion, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.BaselineVersion, 0)
@@ -343,12 +521,13 @@ func (m *MemoryRepository) ListBaselines(tenantID, assetID string) ([]domain.Bas
 		}
 	}
 	sort.Slice(result, func(i, j int) bool {
-		if result[i].AssetID == result[j].AssetID {
-			return result[i].Version > result[j].Version
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID > result[j].ID
 		}
 		return result[i].CreatedAt.After(result[j].CreatedAt)
 	})
-	return result, nil
+	items, next := applyPage(result, opts, func(b domain.BaselineVersion) (time.Time, string) { return b.CreatedAt, b.ID })
+	return items, next, nil
 }
 
 func (m *MemoryRepository) CreateJob(job domain.DetectionJob) error {
@@ -371,7 +550,7 @@ func (m *MemoryRepository) ClaimJob(tenantID, id string, startedAt time.Time) (b
 		return false, ErrNotFound
 	}
 	staleRunning := job.Status == domain.JobRunning &&
-		job.StartedAt != nil && job.StartedAt.Before(startedAt.Add(-5*time.Minute))
+		job.StartedAt != nil && job.StartedAt.Before(startedAt.Add(-JobLease))
 	if job.Status != domain.JobQueued && !staleRunning {
 		return false, nil
 	}
@@ -402,7 +581,7 @@ func (m *MemoryRepository) GetJob(tenantID, id string) (domain.DetectionJob, err
 	return job, nil
 }
 
-func (m *MemoryRepository) ListJobs(tenantID string) ([]domain.DetectionJob, error) {
+func (m *MemoryRepository) ListJobs(tenantID string, opts ListOptions) ([]domain.DetectionJob, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.DetectionJob, 0)
@@ -411,8 +590,53 @@ func (m *MemoryRepository) ListJobs(tenantID string) ([]domain.DetectionJob, err
 			result = append(result, job)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
-	return result, nil
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	items, next := applyPage(result, opts, func(j domain.DetectionJob) (time.Time, string) { return j.CreatedAt, j.ID })
+	return items, next, nil
+}
+
+func (m *MemoryRepository) CancelJob(tenantID, id string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := tenantKey(tenantID, id)
+	job, ok := m.jobs[key]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if job.Status != domain.JobQueued && job.Status != domain.JobRunning {
+		return false, nil
+	}
+	now := time.Now().UTC()
+	job.Status = domain.JobCancelled
+	job.FinishedAt = &now
+	m.jobs[key] = job
+	return true, nil
+}
+
+func (m *MemoryRepository) ReapTimedOut(tenantID string, before time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	reaped := 0
+	for key, job := range m.jobs {
+		if job.TenantID != tenantID || job.Status != domain.JobRunning {
+			continue
+		}
+		if job.StartedAt == nil || !job.StartedAt.Before(before) {
+			continue
+		}
+		now := time.Now().UTC()
+		job.Status = domain.JobTimedOut
+		job.ErrorCode = "CHECK_TIMEOUT"
+		job.FinishedAt = &now
+		m.jobs[key] = job
+		reaped++
+	}
+	return reaped, nil
 }
 
 func (m *MemoryRepository) CreateEvidence(evidence domain.Evidence) error {
@@ -436,7 +660,7 @@ func (m *MemoryRepository) GetEvidence(tenantID, id string) (domain.Evidence, er
 	return evidence, nil
 }
 
-func (m *MemoryRepository) ListEvidence(tenantID, assetID string) ([]domain.Evidence, error) {
+func (m *MemoryRepository) ListEvidence(tenantID, assetID string, opts ListOptions) ([]domain.Evidence, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Evidence, 0)
@@ -445,8 +669,14 @@ func (m *MemoryRepository) ListEvidence(tenantID, assetID string) ([]domain.Evid
 			result = append(result, evidence)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
-	return result, nil
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	items, next := applyPage(result, opts, func(e domain.Evidence) (time.Time, string) { return e.CreatedAt, e.ID })
+	return items, next, nil
 }
 
 func (m *MemoryRepository) ListExpiredEvidence(tenantID string, before time.Time) ([]domain.Evidence, error) {
@@ -533,7 +763,7 @@ func (m *MemoryRepository) GetIncident(tenantID, id string) (domain.Incident, er
 	return cloneIncident(incident), nil
 }
 
-func (m *MemoryRepository) ListIncidents(tenantID string) ([]domain.Incident, error) {
+func (m *MemoryRepository) ListIncidents(tenantID string, opts ListOptions) ([]domain.Incident, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Incident, 0)
@@ -542,8 +772,14 @@ func (m *MemoryRepository) ListIncidents(tenantID string) ([]domain.Incident, er
 			result = append(result, cloneIncident(incident))
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].LastSeenAt.After(result[j].LastSeenAt) })
-	return result, nil
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].LastSeenAt.Equal(result[j].LastSeenAt) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].LastSeenAt.After(result[j].LastSeenAt)
+	})
+	items, next := applyPage(result, opts, func(i domain.Incident) (time.Time, string) { return i.LastSeenAt, i.ID })
+	return items, next, nil
 }
 
 func (m *MemoryRepository) CreateAlertChannel(channel domain.AlertChannel) error {
@@ -604,7 +840,7 @@ func (m *MemoryRepository) UpdateAlertDelivery(delivery domain.AlertDelivery) er
 	return nil
 }
 
-func (m *MemoryRepository) ListAlertDeliveries(tenantID, incidentID string) ([]domain.AlertDelivery, error) {
+func (m *MemoryRepository) ListAlertDeliveries(tenantID, incidentID string, opts ListOptions) ([]domain.AlertDelivery, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.AlertDelivery, 0)
@@ -613,8 +849,14 @@ func (m *MemoryRepository) ListAlertDeliveries(tenantID, incidentID string) ([]d
 			result = append(result, delivery)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
-	return result, nil
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	items, next := applyPage(result, opts, func(d domain.AlertDelivery) (time.Time, string) { return d.CreatedAt, d.ID })
+	return items, next, nil
 }
 
 func (m *MemoryRepository) AppendAudit(event domain.AuditEvent) error {
@@ -624,7 +866,7 @@ func (m *MemoryRepository) AppendAudit(event domain.AuditEvent) error {
 	return nil
 }
 
-func (m *MemoryRepository) ListAudits(tenantID string) ([]domain.AuditEvent, error) {
+func (m *MemoryRepository) ListAudits(tenantID string, opts ListOptions) ([]domain.AuditEvent, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.AuditEvent, 0)
@@ -633,8 +875,14 @@ func (m *MemoryRepository) ListAudits(tenantID string) ([]domain.AuditEvent, err
 			result = append(result, event)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
-	return result, nil
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	items, next := applyPage(result, opts, func(e domain.AuditEvent) (time.Time, string) { return e.CreatedAt, e.ID })
+	return items, next, nil
 }
 
 func (m *MemoryRepository) DeleteAuditsBefore(tenantID string, before time.Time) (int, error) {

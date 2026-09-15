@@ -99,4 +99,19 @@ func (s *S3Store) Delete(objectKey string) error {
 	return s.client.RemoveObject(context.Background(), s.bucket, strings.TrimPrefix(cleaned, "/"), minio.RemoveObjectOptions{})
 }
 
+// PresignedGetURL returns a short-lived URL that fetches the object directly
+// from S3 without going through the control plane.
+func (s *S3Store) PresignedGetURL(ctx context.Context, objectKey string, ttl time.Duration) (string, error) {
+	cleaned := path.Clean("/" + objectKey)
+	if strings.Contains(cleaned, "..") {
+		return "", fmt.Errorf("invalid evidence object key")
+	}
+	presigned, err := s.client.PresignedGetObject(ctx, s.bucket, strings.TrimPrefix(cleaned, "/"), ttl, nil)
+	if err != nil {
+		return "", err
+	}
+	return presigned.String(), nil
+}
+
 var _ Store = (*S3Store)(nil)
+var _ URLPresigner = (*S3Store)(nil)

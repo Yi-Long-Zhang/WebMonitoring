@@ -5,13 +5,19 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"net"
 	"net/http"
+	"net/smtp"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"webmonitoring/internal/domain"
@@ -19,7 +25,15 @@ import (
 	"webmonitoring/internal/metrics"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// notifyTracer is the no-op tracer until telemetry.Setup installs a provider.
+var notifyTracer = otel.Tracer("webmonitoring/internal/notify")
 
 type Dispatcher struct {
 	repository  store.Repository
@@ -28,6 +42,17 @@ type Dispatcher struct {
 	metrics     *metrics.Registry
 	maxAttempts int
 	baseBackoff time.Duration
+	smtp        SMTPConfig
+}
+
+// SMTPConfig holds the outbound SMTP relay settings for EMAIL alert channels.
+// Credentials are supplied via environment, never stored on the channel.
+type SMTPConfig struct {
+	Host     string
+	Port     int
+	Username string
+	Password string
+	From     string
 }
 
 type AlertQueue interface {
@@ -47,6 +72,10 @@ func (d *Dispatcher) SetRetryPolicy(maxAttempts int, baseBackoff time.Duration) 
 	}
 }
 
+func (d *Dispatcher) SetSMTP(cfg SMTPConfig) {
+	d.smtp = cfg
+}
+
 func (d *Dispatcher) ProcessAlert(ctx context.Context, job domain.AlertJob) error {
 	incident, err := d.repository.GetIncident(job.TenantID, job.IncidentID)
 	if err != nil {
@@ -64,7 +93,7 @@ func (d *Dispatcher) ProcessAlert(ctx context.Context, job domain.AlertJob) erro
 }
 
 func (d *Dispatcher) MarkDeadLetter(ctx context.Context, job domain.AlertJob) error {
-	deliveries, err := d.repository.ListAlertDeliveries(job.TenantID, job.IncidentID)
+	deliveries, _, err := d.repository.ListAlertDeliveries(job.TenantID, job.IncidentID, store.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("load alert deliveries: %w", err)
 	}
@@ -213,7 +242,7 @@ func (d *Dispatcher) record(channelType, status string) {
 }
 
 func (d *Dispatcher) findDelivery(tenantID, incidentID, channelID string) (domain.AlertDelivery, error) {
-	deliveries, err := d.repository.ListAlertDeliveries(tenantID, incidentID)
+	deliveries, _, err := d.repository.ListAlertDeliveries(tenantID, incidentID, store.ListOptions{})
 	if err != nil {
 		return domain.AlertDelivery{}, err
 	}
@@ -242,37 +271,42 @@ func (d *Dispatcher) send(
 	incident domain.Incident,
 	asset domain.Asset,
 ) error {
+	// The span records the channel type and nothing else: a webhook URL can
+	// carry a token, a DingTalk URL carries a signature, and recipients are
+	// personal data. All of that stays out of the exported trace.
+	ctx, span := notifyTracer.Start(ctx, "notify.send",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			attribute.String("webmonitoring.channel_type", channel.Type),
+			attribute.String("webmonitoring.incident_id", incident.ID),
+		))
+	defer span.End()
+	if err := d.sendForChannel(ctx, channel, incident, asset); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "delivery failed")
+		return err
+	}
+	return nil
+}
+
+func (d *Dispatcher) sendForChannel(
+	ctx context.Context,
+	channel domain.AlertChannel,
+	incident domain.Incident,
+	asset domain.Asset,
+) error {
+	if channel.Type == "EMAIL" {
+		return d.sendEmail(ctx, channel, incident, asset)
+	}
 	if _, _, err := d.guard.Validate(ctx, channel.URL); err != nil {
 		return fmt.Errorf("unsafe notification target: %w", err)
 	}
-	var payload any
-	if channel.Type == "WECHAT_WORK" {
-		payload = map[string]any{
-			"msgtype": "markdown",
-			"markdown": map[string]string{
-				"content": fmt.Sprintf(
-					"**网页风险告警**\n>资产：%s\n>风险：%s\n>事件：%s",
-					asset.Name,
-					incident.Severity,
-					incident.Title,
-				),
-			},
-		}
-	} else {
-		payload = map[string]any{
-			"event": "incident.created",
-			"data": map[string]any{
-				"incidentId": incident.ID,
-				"assetId":    asset.ID,
-				"assetName":  asset.Name,
-				"severity":   incident.Severity,
-				"title":      incident.Title,
-				"createdAt":  incident.CreatedAt,
-			},
-		}
+	body, _ := json.Marshal(buildAlertPayload(channel.Type, incident, asset))
+	target := channel.URL
+	if channel.Type == "DINGTALK" && channel.Secret != "" {
+		target = signDingTalkURL(channel.URL, channel.Secret)
 	}
-	body, _ := json.Marshal(payload)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, channel.URL, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -296,4 +330,110 @@ func (d *Dispatcher) send(
 		return fmt.Errorf("notification endpoint returned %d", response.StatusCode)
 	}
 	return nil
+}
+
+func buildAlertPayload(channelType string, incident domain.Incident, asset domain.Asset) any {
+	content := fmt.Sprintf(
+		"**网页风险告警**\n>资产：%s\n>风险：%s\n>事件：%s",
+		asset.Name,
+		incident.Severity,
+		incident.Title,
+	)
+	switch channelType {
+	case "WECHAT_WORK":
+		return map[string]any{
+			"msgtype":  "markdown",
+			"markdown": map[string]string{"content": content},
+		}
+	case "DINGTALK":
+		return map[string]any{
+			"msgtype": "markdown",
+			"markdown": map[string]string{
+				"title": "网页风险告警",
+				"text":  content,
+			},
+		}
+	default:
+		return map[string]any{
+			"event": "incident.created",
+			"data": map[string]any{
+				"incidentId": incident.ID,
+				"assetId":    asset.ID,
+				"assetName":  asset.Name,
+				"severity":   incident.Severity,
+				"title":      incident.Title,
+				"createdAt":  incident.CreatedAt,
+			},
+		}
+	}
+}
+
+// signDingTalkURL appends the timestamp and HMAC-SHA256 signature that DingTalk
+// requires for a robot webhook configured with the "加签" secret.
+func signDingTalkURL(target, secret string) string {
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(timestamp + "\n" + secret))
+	sign := url.QueryEscape(base64.StdEncoding.EncodeToString(mac.Sum(nil)))
+	separator := "&"
+	if !strings.Contains(target, "?") {
+		separator = "?"
+	}
+	return target + separator + "timestamp=" + timestamp + "&sign=" + sign
+}
+
+func (d *Dispatcher) sendEmail(ctx context.Context, channel domain.AlertChannel, incident domain.Incident, asset domain.Asset) error {
+	cfg := d.smtp
+	if cfg.Host == "" {
+		return errors.New("SMTP is not configured for email notifications")
+	}
+	recipients := splitRecipients(channel.Recipients)
+	if len(recipients) == 0 {
+		return errors.New("email channel has no recipients")
+	}
+	from := cfg.From
+	if from == "" {
+		from = cfg.Username
+	}
+	message := buildEmailMessage(from, recipients, incident, asset)
+	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	var auth smtp.Auth
+	if cfg.Username != "" {
+		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
+	}
+	done := make(chan error, 1)
+	go func() { done <- smtp.SendMail(addr, auth, from, recipients, message) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func splitRecipients(raw string) []string {
+	parts := strings.Split(raw, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
+}
+
+func buildEmailMessage(from string, recipients []string, incident domain.Incident, asset domain.Asset) []byte {
+	subject := "网页风险告警：" + incident.Title
+	body := fmt.Sprintf(
+		"资产：%s\n风险等级：%s\n事件：%s\n事件 ID：%s\n",
+		asset.Name, incident.Severity, incident.Title, incident.ID,
+	)
+	var header bytes.Buffer
+	fmt.Fprintf(&header, "From: %s\r\n", from)
+	fmt.Fprintf(&header, "To: %s\r\n", strings.Join(recipients, ", "))
+	fmt.Fprintf(&header, "Subject: %s\r\n", mime.QEncoding.Encode("UTF-8", subject))
+	header.WriteString("MIME-Version: 1.0\r\n")
+	header.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
+	header.WriteString("\r\n")
+	return append(header.Bytes(), []byte(body)...)
 }
