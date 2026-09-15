@@ -23,6 +23,7 @@
 - 不在 `main` 或保护分支上直接开发功能；先创建 `codex/<topic>` 分支。
 - 一个提交只解决一个目标；提交类型用 `feat`/`fix`/`test`/`refactor`/`docs`/`chore`/`security`。
 - 默认只修改和验证，不自动 commit、不 push，除非用户明确要求。
+- 推进多项目 roadmap 时，每完成一项就在该项的 `codex/<topic>` 分支通过验证门槛（gofmt/build/vet/test，涉及前端加 typecheck）后自动提交并合并回 `main`；只 commit 与 merge、不 push（push 需用户明确要求）、不在 main/保护分支上直接开发。这是对上一行「不自动 commit」的明确例外。
 - 不硬编码密钥、客户 URL、账号和环境配置；安全校验优先于业务便利。
 
 ## 架构不变量
