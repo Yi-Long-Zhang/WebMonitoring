@@ -44,6 +44,8 @@
 - Webhook/企业微信/DingTalk/邮件通知、投递记录和事件级去重。
 - 登录防爆破与账户锁定、Redis 会话持久化、用户/角色管理、keyset 真分页、
   任务取消/超时终态、优雅停机和批量导入/导出。
+- 登录态检测（HTTP 路径）：客户凭据 AES-GCM 加密、登录地址 SSRF 复核、登录后抓取
+  受保护页面，API 响应不泄露凭据；浏览器模式暂不支持登录（失败关闭）。
 - 内存/本地证据开发模式，以及 PostgreSQL、Redis、MinIO 的 Compose 路径。
 - 生产配置门禁、90 天证据/365 天审计保留策略、dry-run 清理和备份恢复校验脚本。
 - OpenTelemetry Trace（env 门控、默认 no-op）和补充的单元测试（含 miniredis）。
@@ -53,7 +55,8 @@
 
 - 租户和站点的完整管理界面（当前为站点/租户 CRUD 基础形态）。
 - 细粒度权限、跨租户管理员、二次确认和双人审批。
-- 登录态检测和 Secret Manager 集成（需显式授权使用客户凭据）。
+- 完整 Secret Manager 集成（当前凭据用 ALERT_SECRET_KEY 派生密钥加密）与
+  浏览器模式登录态检测。
 - 完整多租户运营管理。
 - 真实 100 资产 HTTP/Browser 压测和备份恢复实机演练；控制台 Playwright E2E
   已纳入 Compose smoke，尚未在本机实跑。

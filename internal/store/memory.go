@@ -913,7 +913,23 @@ func contains(values []string, target string) bool {
 func clonePolicy(policy domain.MonitorPolicy) domain.MonitorPolicy {
 	policy.IgnoreSelectors = append([]string(nil), policy.IgnoreSelectors...)
 	policy.TrustedDomains = append([]string(nil), policy.TrustedDomains...)
+	if policy.Auth != nil {
+		auth := *policy.Auth
+		auth.ExtraFields = cloneStringMap(policy.Auth.ExtraFields)
+		policy.Auth = &auth
+	}
 	return policy
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	if source == nil {
+		return nil
+	}
+	result := make(map[string]string, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
 }
 
 func cloneBaseline(baseline domain.BaselineVersion) domain.BaselineVersion {

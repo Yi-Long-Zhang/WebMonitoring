@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strconv"
 	"strings"
@@ -32,11 +33,19 @@ type CheckResult struct {
 
 type Checker struct {
 	guard     *security.URLGuard
+	cipher    *security.SecretCipher
 	userAgent string
 }
 
 func NewChecker(guard *security.URLGuard) *Checker {
 	return &Checker{guard: guard, userAgent: "WebMonitoring/0.1 (+authorized-integrity-monitor)"}
+}
+
+// SetCipher enables login-state detection. It is optional for plain HTTP checks
+// but required whenever a policy carries an Auth config; Check fails closed when
+// a login is needed and no cipher has been configured.
+func (c *Checker) SetCipher(cipher *security.SecretCipher) {
+	c.cipher = cipher
 }
 
 func (c *Checker) Check(ctx context.Context, asset domain.Asset, policy domain.MonitorPolicy) (CheckResult, error) {
@@ -76,22 +85,45 @@ func (c *Checker) Check(ctx context.Context, asset domain.Asset, policy domain.M
 		ResponseHeaderTimeout: timeout,
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 	}
+	defer transport.CloseIdleConnections()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return CheckResult{}, fmt.Errorf("create cookie jar: %w", err)
+	}
+	validateRedirect := func(request *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("redirect limit exceeded")
+		}
+		if _, _, validateErr := c.guard.Validate(request.Context(), request.URL.String()); validateErr != nil {
+			return validateErr
+		}
+		request.Header.Set("User-Agent", c.userAgent)
+		return nil
+	}
 	client := &http.Client{
 		Transport: transport,
 		Timeout:   timeout,
+		Jar:       jar,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return errors.New("redirect limit exceeded")
-			}
-			if _, _, validateErr := c.guard.Validate(request.Context(), request.URL.String()); validateErr != nil {
-				return validateErr
+			if err := validateRedirect(request, via); err != nil {
+				return err
 			}
 			redirects = append(redirects, request.URL.String())
-			request.Header.Set("User-Agent", c.userAgent)
 			return nil
 		},
 	}
-	defer transport.CloseIdleConnections()
+
+	// Login-state detection: authenticate first so the snapshot captures the
+	// protected page, not the login form. The login POST is SSRF-guarded and
+	// shares the cookie jar so the session is attached to the asset request.
+	if policy.Auth != nil {
+		loginClient := &http.Client{Transport: transport, Timeout: timeout, Jar: jar, CheckRedirect: validateRedirect}
+		if err := c.authenticate(ctx, loginClient, policy.Auth, security.AuthAssociatedData(asset.TenantID, asset.ID), maxBytes); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "login failed")
+			return CheckResult{}, err
+		}
+	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
@@ -141,6 +173,46 @@ func (c *Checker) Check(ctx context.Context, asset domain.Asset, policy domain.M
 		CapturedAt:       time.Now().UTC(),
 	}
 	return CheckResult{Snapshot: snapshot, RawHTML: body}, nil
+}
+
+func (c *Checker) authenticate(ctx context.Context, client *http.Client, auth *domain.AuthConfig, associatedData string, maxBytes int64) error {
+	if c.cipher == nil {
+		return errors.New("login-state detection requires a secret cipher")
+	}
+	username, err := c.cipher.Decrypt(auth.EncryptedUsername, associatedData)
+	if err != nil {
+		return fmt.Errorf("decrypt login username: %w", err)
+	}
+	password, err := c.cipher.Decrypt(auth.EncryptedPassword, associatedData)
+	if err != nil {
+		return fmt.Errorf("decrypt login password: %w", err)
+	}
+	loginURL, _, err := c.guard.Validate(ctx, auth.LoginURL)
+	if err != nil {
+		return fmt.Errorf("unsafe login URL: %w", err)
+	}
+	form := url.Values{}
+	form.Set(auth.UsernameField, username)
+	form.Set(auth.PasswordField, password)
+	for key, value := range auth.ExtraFields {
+		form.Set(key, value)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, loginURL.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("create login request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("User-Agent", c.userAgent)
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("login request: %w", err)
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxBytes+1))
+	if response.StatusCode >= 500 {
+		return fmt.Errorf("login endpoint returned status %d", response.StatusCode)
+	}
+	return nil
 }
 
 func tlsFingerprint(response *http.Response) string {

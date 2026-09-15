@@ -56,6 +56,12 @@ func (c *SecretCipher) Encrypt(plaintext, associatedData string) (string, error)
 	return base64.RawURLEncoding.EncodeToString(sealed), nil
 }
 
+// AuthAssociatedData binds encrypted login credentials to the tenant and asset
+// they belong to, so a ciphertext cannot be replayed across assets or tenants.
+func AuthAssociatedData(tenantID, assetID string) string {
+	return tenantID + ":" + assetID + ":auth"
+}
+
 func (c *SecretCipher) Decrypt(encoded, associatedData string) (string, error) {
 	if encoded == "" {
 		return "", nil

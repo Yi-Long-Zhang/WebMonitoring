@@ -281,6 +281,27 @@ paths:
           required: true
           schema: { type: string, format: uuid }
         - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [httpIntervalSeconds, browserIntervalSeconds, timeoutSeconds, maxResponseBytes, ignoreSelectors, trustedDomains]
+              properties:
+                httpIntervalSeconds: { type: integer }
+                browserIntervalSeconds: { type: integer }
+                timeoutSeconds: { type: integer }
+                maxResponseBytes: { type: integer, format: int64 }
+                ignoreSelectors:
+                  type: array
+                  items: { type: string }
+                trustedDomains:
+                  type: array
+                  items: { type: string }
+                maintenanceWindowStart: { type: string, format: date-time }
+                maintenanceWindowEnd: { type: string, format: date-time }
+                auth: { $ref: "#/components/schemas/AuthConfigInput" }
       responses:
         "200":
           description: 已更新
@@ -1099,6 +1120,7 @@ components:
           items: { type: string }
         maintenanceWindowStart: { type: string, format: date-time }
         maintenanceWindowEnd: { type: string, format: date-time }
+        auth: { $ref: "#/components/schemas/AuthConfig" }
     PolicyList:
       type: object
       required: [items, nextCursor]
@@ -1107,6 +1129,31 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Policy" }
         nextCursor: { type: string }
+    AuthConfig:
+      type: object
+      required: [loginUrl, usernameField, passwordField]
+      properties:
+        loginUrl: { type: string, format: uri }
+        usernameField: { type: string }
+        passwordField: { type: string }
+        extraFields:
+          type: object
+          additionalProperties: { type: string }
+        submitSelector: { type: string }
+        credentialsSet: { type: boolean }
+    AuthConfigInput:
+      type: object
+      required: [loginUrl, usernameField, passwordField]
+      properties:
+        loginUrl: { type: string, format: uri }
+        usernameField: { type: string }
+        passwordField: { type: string }
+        extraFields:
+          type: object
+          additionalProperties: { type: string }
+        submitSelector: { type: string }
+        username: { type: string }
+        password: { type: string, format: password }
     DetectionJob:
       type: object
       required: [id, assetId, mode, status, createdAt]
