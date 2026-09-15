@@ -88,6 +88,8 @@ paths:
         - name: siteId
           in: query
           schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: 资产列表
@@ -112,6 +114,7 @@ paths:
                 type: { $ref: "#/components/schemas/AssetType" }
                 ownerId: { type: string, format: uuid }
                 siteId: { type: string, format: uuid }
+                verificationMethod: { $ref: "#/components/schemas/VerificationMethod" }
       responses:
         "201":
           description: 已创建
@@ -119,6 +122,64 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Asset" }
         "400": { $ref: "#/components/responses/Error" }
+  /assets/import:
+    post:
+      operationId: importAssets
+      description: 批量导入资产；每行独立校验与写入，失败行不影响成功行。
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assets]
+              properties:
+                dryRun: { type: boolean }
+                siteId: { type: string, format: uuid }
+                ownerId: { type: string, format: uuid }
+                assets:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, url, type]
+                    properties:
+                      name: { type: string }
+                      url: { type: string, format: uri }
+                      type: { $ref: "#/components/schemas/AssetType" }
+                      ownerId: { type: string, format: uuid }
+                      siteId: { type: string, format: uuid }
+                      verificationMethod: { $ref: "#/components/schemas/VerificationMethod" }
+      responses:
+        "200":
+          description: 逐行导入结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AssetImportResult" }
+        "400": { $ref: "#/components/responses/Error" }
+  /assets/export:
+    get:
+      operationId: exportAssets
+      description: 导出当前租户的全部资产，format=json 或 csv。
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, csv] }
+      responses:
+        "200":
+          description: 资产导出
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Asset" }
+            text/csv:
+              schema: { type: string }
   /assets/{id}:
     parameters:
       - $ref: "#/components/parameters/ResourceID"
@@ -171,9 +232,40 @@ paths:
                   enum: [ISSUE, VERIFY]
       responses:
         "200": { description: 验证令牌或验证结果 }
+  /assets/{id}/suspend:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    post:
+      operationId: suspendAsset
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200":
+          description: 已暂停
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Asset" }
+        "409": { $ref: "#/components/responses/Error" }
+  /assets/{id}/resume:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    post:
+      operationId: resumeAsset
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200":
+          description: 已恢复
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Asset" }
+        "409": { $ref: "#/components/responses/Error" }
   /policies:
     get:
       operationId: listPolicies
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: 策略列表
@@ -202,6 +294,8 @@ paths:
         - name: assetId
           in: query
           schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: 基线列表
@@ -247,6 +341,9 @@ paths:
   /detection-jobs:
     get:
       operationId: listDetectionJobs
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: 检测任务列表
@@ -273,9 +370,26 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DetectionJob" }
+  /detection-jobs/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    post:
+      operationId: cancelDetectionJob
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200":
+          description: 已取消
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DetectionJob" }
+        "409": { $ref: "#/components/responses/Error" }
   /incidents:
     get:
       operationId: listIncidents
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: 事件列表
@@ -323,6 +437,8 @@ paths:
         - name: assetId
           in: query
           schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: 证据列表
@@ -336,6 +452,18 @@ paths:
         - $ref: "#/components/parameters/ResourceID"
       responses:
         "200": { description: 证据文件 }
+  /evidence/{id}/signed-url:
+    post:
+      operationId: issueEvidenceSignedUrl
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200":
+          description: 短时签名下载 URL
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SignedUrl" }
   /alert-channels:
     get:
       operationId: listAlertChannels
@@ -367,6 +495,8 @@ paths:
         - name: incidentId
           in: query
           schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: 告警投递列表
@@ -399,6 +529,9 @@ paths:
   /audit-events:
     get:
       operationId: listAuditEvents
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: 审计列表
@@ -448,6 +581,9 @@ paths:
   /sites:
     get:
       operationId: listSites
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: 站点列表
@@ -512,6 +648,9 @@ paths:
   /tenants:
     get:
       operationId: listTenants
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: 租户列表
@@ -568,6 +707,7 @@ paths:
               properties:
                 name: { type: string }
                 slug: { type: string }
+                disabled: { type: boolean }
       responses:
         "200":
           description: 已更新
@@ -575,6 +715,130 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Tenant" }
         "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteTenant
+      description: 删除租户；confirm 必须回显 slug，非空租户需显式 cascade。
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm: { type: string }
+                cascade: { type: boolean }
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TenantDeleteResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /auth/password:
+    post:
+      operationId: changeOwnPassword
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, format: password }
+                newPassword: { type: string, format: password }
+      responses:
+        "204": { description: 已更新 }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+  /users:
+    get:
+      operationId: listUsers
+      responses:
+        "200":
+          description: 租户用户列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserList" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createUser
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, role]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+                role: { $ref: "#/components/schemas/Role" }
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    patch:
+      operationId: updateUser
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                role: { $ref: "#/components/schemas/Role" }
+                disabled: { type: boolean }
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /users/{id}/password:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    post:
+      operationId: resetUserPassword
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, format: password }
+      responses:
+        "204": { description: 已重置 }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
 components:
   securitySchemes:
     sessionCookie:
@@ -591,6 +855,14 @@ components:
       name: X-CSRF-Token
       in: header
       required: true
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
       schema: { type: string }
   responses:
     Error:
@@ -612,13 +884,22 @@ components:
       enum: [ADMIN, OPERATOR, AUDITOR, SUPER_ADMIN]
     User:
       type: object
-      required: [id, tenantId, username, role, createdAt]
+      required: [id, tenantId, username, role, disabled, createdAt]
       properties:
         id: { type: string, format: uuid }
         tenantId: { type: string, format: uuid }
         username: { type: string }
         role: { $ref: "#/components/schemas/Role" }
+        disabled: { type: boolean }
         createdAt: { type: string, format: date-time }
+    UserList:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/User" }
+        nextCursor: { type: string }
     Tenant:
       type: object
       required: [id, slug, name, createdAt]
@@ -626,7 +907,37 @@ components:
         id: { type: string, format: uuid }
         slug: { type: string }
         name: { type: string }
+        disabled: { type: boolean }
         createdAt: { type: string, format: date-time }
+    TenantDeleteResult:
+      type: object
+      required: [tenantId, deletedResources, orphanedEvidenceObjects]
+      properties:
+        tenantId: { type: string, format: uuid }
+        deletedResources:
+          type: object
+          additionalProperties: { type: integer }
+        orphanedEvidenceObjects: { type: integer }
+    AssetImportResult:
+      type: object
+      required: [dryRun, rows, created, results]
+      properties:
+        dryRun: { type: boolean }
+        rows: { type: integer }
+        created: { type: integer }
+        results:
+          type: array
+          items:
+            type: object
+            required: [index, status]
+            properties:
+              index: { type: integer }
+              assetId: { type: string, format: uuid }
+              name: { type: string }
+              url: { type: string }
+              status: { type: string, enum: [CREATED, VALIDATED, REJECTED] }
+              code: { type: string }
+              message: { type: string }
     TenantList:
       type: object
       required: [items, nextCursor]
@@ -649,6 +960,9 @@ components:
     VerificationStatus:
       type: string
       enum: [PENDING, VERIFIED, REJECTED, SUSPENDED]
+    VerificationMethod:
+      type: string
+      enum: [FILE, DNS, META]
     Asset:
       type: object
       required: [id, tenantId, name, url, type, enabled, verificationStatus, createdAt, updatedAt]
@@ -662,6 +976,7 @@ components:
         ownerId: { type: string, format: uuid }
         enabled: { type: boolean }
         verificationStatus: { $ref: "#/components/schemas/VerificationStatus" }
+        verificationMethod: { $ref: "#/components/schemas/VerificationMethod" }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     AssetList:
@@ -834,9 +1149,15 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Evidence" }
         nextCursor: { type: string }
+    SignedUrl:
+      type: object
+      required: [url, expiresAt]
+      properties:
+        url: { type: string }
+        expiresAt: { type: string, format: date-time }
     AlertChannelType:
       type: string
-      enum: [WEBHOOK, WECHAT_WORK]
+      enum: [WEBHOOK, WECHAT_WORK, DINGTALK, EMAIL]
     AlertChannel:
       type: object
       required: [id, name, type, url, enabled, createdAt]
@@ -845,15 +1166,17 @@ components:
         name: { type: string }
         type: { $ref: "#/components/schemas/AlertChannelType" }
         url: { type: string }
+        recipients: { type: string }
         enabled: { type: boolean }
         createdAt: { type: string, format: date-time }
     CreateAlertChannel:
       type: object
-      required: [name, type, url, enabled]
+      required: [name, type, enabled]
       properties:
         name: { type: string }
         type: { $ref: "#/components/schemas/AlertChannelType" }
         url: { type: string, format: uri }
+        recipients: { type: string }
         secret: { type: string, format: password }
         enabled: { type: boolean }
     AlertDelivery:

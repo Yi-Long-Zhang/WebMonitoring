@@ -17,7 +17,17 @@ import (
 	"webmonitoring/internal/notify"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
+
+	"go.opentelemetry.io/otel"
+	// Aliased because this package already has an `attribute` helper for HTML
+	// nodes (html.go), which must not be shadowed by the tracing attributes.
+	otelattr "go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// detectionTracer is the no-op tracer until telemetry.Setup installs a provider.
+var detectionTracer = otel.Tracer("webmonitoring/internal/detection")
 
 type BrowserChecker interface {
 	Check(context.Context, domain.Asset, domain.MonitorPolicy) (CheckResult, error)
@@ -140,10 +150,21 @@ func (s *Service) Queue(tenantID, assetID, mode string) (domain.DetectionJob, er
 }
 
 func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
+	ctx, span := detectionTracer.Start(ctx, "detection.process",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			otelattr.String("webmonitoring.tenant_id", job.TenantID),
+			otelattr.String("webmonitoring.job_id", job.ID),
+			otelattr.String("webmonitoring.asset_id", job.AssetID),
+			otelattr.String("webmonitoring.mode", job.Mode),
+		))
+	defer span.End()
 	started := time.Now().UTC()
 	claimed, err := s.repository.ClaimJob(job.TenantID, job.ID, started)
 	if err != nil {
 		s.logger.Error("claim detection job failed", "job_id", job.ID, "error", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "claim failed")
 		return err
 	}
 	if !claimed {
@@ -244,7 +265,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 
 	baseline, baselineErr := s.repository.GetApprovedBaseline(asset.TenantID, asset.ID)
 	if errors.Is(baselineErr, store.ErrNotFound) {
-		baselines, listErr := s.repository.ListBaselines(asset.TenantID, asset.ID)
+		baselines, _, listErr := s.repository.ListBaselines(asset.TenantID, asset.ID, store.ListOptions{})
 		if listErr != nil {
 			return s.failJob(ctx, job, "BASELINE_READ_FAILED", listErr)
 		}
@@ -314,6 +335,10 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 	}
 
 	finished := time.Now().UTC()
+	// A cancel that lands while the check runs must win over a late success.
+	if s.jobCancelled(job) {
+		return nil
+	}
 	job.Status = domain.JobSucceeded
 	job.FinishedAt = &finished
 	if err := s.repository.UpdateJob(job); err != nil {
@@ -327,6 +352,9 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 }
 
 func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code string, err error) error {
+	if s.jobCancelled(job) {
+		return nil
+	}
 	if isRetryable(code) {
 		maxAttempts := job.MaxAttempts
 		if maxAttempts <= 0 {
@@ -361,6 +389,9 @@ func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code str
 	}
 	finished := time.Now().UTC()
 	job.Status = domain.JobFailed
+	if code == "CHECK_TIMEOUT" {
+		job.Status = domain.JobTimedOut
+	}
 	job.ErrorCode = code
 	job.ErrorMessage = safeError(err)
 	job.FinishedAt = &finished
@@ -369,7 +400,11 @@ func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code str
 		return updateErr
 	}
 	s.logger.Warn("detection job failed", "job_id", job.ID, "code", code, "error", err)
-	s.broker.Publish("detection.job.failed", job)
+	if job.Status == domain.JobTimedOut {
+		s.broker.Publish("detection.job.timed_out", job)
+	} else {
+		s.broker.Publish("detection.job.failed", job)
+	}
 	if s.metrics != nil {
 		s.metrics.Inc("webmonitoring_detection_jobs_total", map[string]string{"mode": job.Mode, "status": string(job.Status), "error_code": code})
 		if strings.HasPrefix(code, "EVIDENCE_") {
@@ -378,6 +413,17 @@ func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code str
 		}
 	}
 	return nil
+}
+
+// jobCancelled reports whether the persisted job has been cancelled since it
+// was claimed. It is the best-effort guard that lets CANCELLED win over a late
+// SUCCEEDED/FAILED write from a check that was already in flight.
+func (s *Service) jobCancelled(job domain.DetectionJob) bool {
+	current, err := s.repository.GetJob(job.TenantID, job.ID)
+	if err != nil {
+		return false
+	}
+	return current.Status == domain.JobCancelled
 }
 
 func (s *Service) enqueueRetry(ctx context.Context, job domain.DetectionJob) error {
@@ -413,7 +459,7 @@ func (s *Service) recordEvidenceWrite(kind, status string) {
 
 func isRetryable(code string) bool {
 	switch code {
-	case "CHECK_FAILED", "CHECK_TIMEOUT", "EVIDENCE_WRITE_FAILED", "EVIDENCE_METADATA_FAILED",
+	case "CHECK_FAILED", "EVIDENCE_WRITE_FAILED", "EVIDENCE_METADATA_FAILED",
 		"BASELINE_READ_FAILED", "BASELINE_CREATE_FAILED", "INCIDENT_WRITE_FAILED", "ALERT_QUEUE_FAILED":
 		return true
 	default:

@@ -33,6 +33,17 @@ const (
 	VerificationSuspended VerificationStatus = "SUSPENDED"
 )
 
+// VerificationMethod selects how ownership of an asset is proven: a well-known
+// file (FILE), a DNS TXT record (DNS), or an HTML meta tag (META). The method is
+// chosen at asset creation and never changes afterwards.
+type VerificationMethod string
+
+const (
+	VerificationFile VerificationMethod = "FILE"
+	VerificationDNS  VerificationMethod = "DNS"
+	VerificationMeta VerificationMethod = "META"
+)
+
 type BaselineStatus string
 
 const (
@@ -78,6 +89,7 @@ type Tenant struct {
 	ID        string    `json:"id"`
 	Slug      string    `json:"slug"`
 	Name      string    `json:"name"`
+	Disabled  bool      `json:"disabled"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -87,6 +99,7 @@ type User struct {
 	Username     string    `json:"username"`
 	PasswordHash string    `json:"-"`
 	Role         Role      `json:"role"`
+	Disabled     bool      `json:"disabled"`
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
@@ -110,6 +123,7 @@ type Asset struct {
 	OwnerID               string             `json:"ownerId"`
 	Enabled               bool               `json:"enabled"`
 	VerificationStatus    VerificationStatus `json:"verificationStatus"`
+	VerificationMethod    VerificationMethod `json:"verificationMethod"`
 	VerificationToken     string             `json:"-"`
 	VerificationTokenHash string             `json:"-"`
 	VerificationIssuedAt  *time.Time         `json:"verificationIssuedAt,omitempty"`
@@ -250,15 +264,16 @@ type Incident struct {
 }
 
 type AlertChannel struct {
-	ID        string    `json:"id"`
-	TenantID  string    `json:"tenantId"`
-	Name      string    `json:"name"`
-	Type      string    `json:"type"`
-	URL       string    `json:"url"`
-	Secret    string    `json:"-"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID         string    `json:"id"`
+	TenantID   string    `json:"tenantId"`
+	Name       string    `json:"name"`
+	Type       string    `json:"type"`
+	URL        string    `json:"url"`
+	Recipients string    `json:"recipients,omitempty"`
+	Secret     string    `json:"-"`
+	Enabled    bool      `json:"enabled"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
 type AlertDelivery struct {

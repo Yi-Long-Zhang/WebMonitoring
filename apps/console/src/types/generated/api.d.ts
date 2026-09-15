@@ -100,6 +100,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description 批量导入资产；每行独立校验与写入，失败行不影响成功行。 */
+        post: operations["importAssets"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 导出当前租户的全部资产，format=json 或 csv。 */
+        get: operations["exportAssets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets/{id}": {
         parameters: {
             query?: never;
@@ -130,6 +164,42 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["verifyAsset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{id}/suspend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["suspendAsset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["resumeAsset"];
         delete?: never;
         options?: never;
         head?: never;
@@ -248,6 +318,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/detection-jobs/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelDetectionJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/incidents": {
         parameters: {
             query?: never;
@@ -322,6 +410,22 @@ export interface paths {
         get: operations["downloadEvidence"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/evidence/{id}/signed-url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["issueEvidenceSignedUrl"];
         delete?: never;
         options?: never;
         head?: never;
@@ -502,10 +606,79 @@ export interface paths {
         get: operations["getTenant"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** @description 删除租户；confirm 必须回显 slug，非空租户需显式 cascade。 */
+        delete: operations["deleteTenant"];
         options?: never;
         head?: never;
         patch: operations["updateTenant"];
+        trace?: never;
+    };
+    "/auth/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["changeOwnPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listUsers"];
+        put?: never;
+        post: operations["createUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["updateUser"];
+        trace?: never;
+    };
+    "/users/{id}/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["resetUserPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
 }
@@ -529,16 +702,46 @@ export interface components {
             tenantId: string;
             username: string;
             role: components["schemas"]["Role"];
+            disabled: boolean;
             /** Format: date-time */
             createdAt: string;
+        };
+        UserList: {
+            items: components["schemas"]["User"][];
+            nextCursor: string;
         };
         Tenant: {
             /** Format: uuid */
             id: string;
             slug: string;
             name: string;
+            disabled?: boolean;
             /** Format: date-time */
             createdAt: string;
+        };
+        TenantDeleteResult: {
+            /** Format: uuid */
+            tenantId: string;
+            deletedResources: {
+                [key: string]: number;
+            };
+            orphanedEvidenceObjects: number;
+        };
+        AssetImportResult: {
+            dryRun: boolean;
+            rows: number;
+            created: number;
+            results: {
+                index: number;
+                /** Format: uuid */
+                assetId?: string;
+                name?: string;
+                url?: string;
+                /** @enum {string} */
+                status: "CREATED" | "VALIDATED" | "REJECTED";
+                code?: string;
+                message?: string;
+            }[];
         };
         TenantList: {
             items: components["schemas"]["Tenant"][];
@@ -555,6 +758,8 @@ export interface components {
         AssetType: "OFFICIAL" | "BUSINESS" | "LOGIN" | "OTHER";
         /** @enum {string} */
         VerificationStatus: "PENDING" | "VERIFIED" | "REJECTED" | "SUSPENDED";
+        /** @enum {string} */
+        VerificationMethod: "FILE" | "DNS" | "META";
         Asset: {
             /** Format: uuid */
             id: string;
@@ -570,6 +775,7 @@ export interface components {
             ownerId?: string;
             enabled: boolean;
             verificationStatus: components["schemas"]["VerificationStatus"];
+            verificationMethod?: components["schemas"]["VerificationMethod"];
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
@@ -723,14 +929,20 @@ export interface components {
             items: components["schemas"]["Evidence"][];
             nextCursor: string;
         };
+        SignedUrl: {
+            url: string;
+            /** Format: date-time */
+            expiresAt: string;
+        };
         /** @enum {string} */
-        AlertChannelType: "WEBHOOK" | "WECHAT_WORK";
+        AlertChannelType: "WEBHOOK" | "WECHAT_WORK" | "DINGTALK" | "EMAIL";
         AlertChannel: {
             /** Format: uuid */
             id: string;
             name: string;
             type: components["schemas"]["AlertChannelType"];
             url: string;
+            recipients?: string;
             enabled: boolean;
             /** Format: date-time */
             createdAt: string;
@@ -739,7 +951,8 @@ export interface components {
             name: string;
             type: components["schemas"]["AlertChannelType"];
             /** Format: uri */
-            url: string;
+            url?: string;
+            recipients?: string;
             /** Format: password */
             secret?: string;
             enabled: boolean;
@@ -833,6 +1046,8 @@ export interface components {
     parameters: {
         ResourceID: string;
         CSRFToken: string;
+        Limit: number;
+        Cursor: string;
     };
     requestBodies: never;
     headers: never;
@@ -1004,6 +1219,8 @@ export interface operations {
         parameters: {
             query?: {
                 siteId?: string;
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
             };
             header?: never;
             path?: never;
@@ -1042,6 +1259,7 @@ export interface operations {
                     ownerId?: string;
                     /** Format: uuid */
                     siteId?: string;
+                    verificationMethod?: components["schemas"]["VerificationMethod"];
                 };
             };
         };
@@ -1056,6 +1274,75 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
+        };
+    };
+    importAssets: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    dryRun?: boolean;
+                    /** Format: uuid */
+                    siteId?: string;
+                    /** Format: uuid */
+                    ownerId?: string;
+                    assets: {
+                        name: string;
+                        /** Format: uri */
+                        url: string;
+                        type: components["schemas"]["AssetType"];
+                        /** Format: uuid */
+                        ownerId?: string;
+                        /** Format: uuid */
+                        siteId?: string;
+                        verificationMethod?: components["schemas"]["VerificationMethod"];
+                    }[];
+                };
+            };
+        };
+        responses: {
+            /** @description 逐行导入结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetImportResult"];
+                };
+            };
+            400: components["responses"]["Error"];
+        };
+    };
+    exportAssets: {
+        parameters: {
+            query?: {
+                format?: "json" | "csv";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 资产导出 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Asset"][];
+                    };
+                    "text/csv": string;
+                };
+            };
         };
     };
     getAsset: {
@@ -1145,9 +1432,62 @@ export interface operations {
             };
         };
     };
-    listPolicies: {
+    suspendAsset: {
         parameters: {
             query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已暂停 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Asset"];
+                };
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    resumeAsset: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已恢复 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Asset"];
+                };
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    listPolicies: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1193,6 +1533,8 @@ export interface operations {
         parameters: {
             query?: {
                 assetId?: string;
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
             };
             header?: never;
             path?: never;
@@ -1285,7 +1627,10 @@ export interface operations {
     };
     listDetectionJobs: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1334,9 +1679,37 @@ export interface operations {
             };
         };
     };
-    listIncidents: {
+    cancelDetectionJob: {
         parameters: {
             query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已取消 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DetectionJob"];
+                };
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    listIncidents: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1413,6 +1786,8 @@ export interface operations {
         parameters: {
             query?: {
                 assetId?: string;
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
             };
             header?: never;
             path?: never;
@@ -1448,6 +1823,30 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    issueEvidenceSignedUrl: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 短时签名下载 URL */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignedUrl"];
+                };
             };
         };
     };
@@ -1501,6 +1900,8 @@ export interface operations {
         parameters: {
             query?: {
                 incidentId?: string;
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
             };
             header?: never;
             path?: never;
@@ -1547,7 +1948,10 @@ export interface operations {
     };
     listAuditEvents: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1636,7 +2040,10 @@ export interface operations {
     };
     listSites: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1746,7 +2153,10 @@ export interface operations {
     };
     listTenants: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1823,6 +2233,39 @@ export interface operations {
             404: components["responses"]["Error"];
         };
     };
+    deleteTenant: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    confirm: string;
+                    cascade?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description 已删除 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantDeleteResult"];
+                };
+            };
+            400: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
     updateTenant: {
         parameters: {
             query?: never;
@@ -1839,6 +2282,7 @@ export interface operations {
                 "application/json": {
                     name?: string;
                     slug?: string;
+                    disabled?: boolean;
                 };
             };
         };
@@ -1853,6 +2297,161 @@ export interface operations {
                 };
             };
             403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    changeOwnPassword: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: password */
+                    currentPassword: string;
+                    /** Format: password */
+                    newPassword: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 已更新 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+        };
+    };
+    listUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 租户用户列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserList"];
+                };
+            };
+            403: components["responses"]["Error"];
+        };
+    };
+    createUser: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    username: string;
+                    /** Format: password */
+                    password: string;
+                    role: components["schemas"]["Role"];
+                };
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["User"];
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    updateUser: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    username?: string;
+                    role?: components["schemas"]["Role"];
+                    disabled?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description 已更新 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["User"];
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    resetUserPassword: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: password */
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 已重置 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
         };
     };
 }

@@ -24,6 +24,7 @@ type HTMLAnalysis struct {
 	Links         []string
 	IFrames       []string
 	Forms         []domain.FormRef
+	Resources     []string
 }
 
 func AnalyzeHTML(raw []byte, baseURL string, ignoreSelectors []string) (HTMLAnalysis, error) {
@@ -53,6 +54,7 @@ func AnalyzeHTML(raw []byte, baseURL string, ignoreSelectors []string) (HTMLAnal
 	analysis.Scripts = uniqueResources(analysis.Scripts)
 	analysis.Links = uniqueStrings(analysis.Links)
 	analysis.IFrames = uniqueStrings(analysis.IFrames)
+	analysis.Resources = uniqueStrings(analysis.Resources)
 	sort.Slice(analysis.Forms, func(i, j int) bool {
 		if analysis.Forms[i].Action == analysis.Forms[j].Action {
 			return analysis.Forms[i].Method < analysis.Forms[j].Method
@@ -86,6 +88,7 @@ func walkHTML(
 			source := resolveReference(base, attribute(node, "src"))
 			if source != "" {
 				analysis.Scripts = append(analysis.Scripts, domain.ResourceRef{URL: source})
+				analysis.Resources = append(analysis.Resources, source)
 			} else {
 				inline := normalizeWhitespace(nodeText(node))
 				if inline != "" {
@@ -99,6 +102,17 @@ func walkHTML(
 		case "iframe":
 			if target := resolveReference(base, attribute(node, "src")); target != "" {
 				analysis.IFrames = append(analysis.IFrames, target)
+				analysis.Resources = append(analysis.Resources, target)
+			}
+		case "img":
+			if target := resolveReference(base, attribute(node, "src")); target != "" {
+				analysis.Resources = append(analysis.Resources, target)
+			}
+		case "link":
+			if isStylesheetLink(node) {
+				if target := resolveReference(base, attribute(node, "href")); target != "" {
+					analysis.Resources = append(analysis.Resources, target)
+				}
 			}
 		case "form":
 			method := strings.ToUpper(attribute(node, "method"))
@@ -186,6 +200,38 @@ func nodeText(node *html.Node) string {
 	}
 	visit(node)
 	return builder.String()
+}
+
+func isStylesheetLink(node *html.Node) bool {
+	for _, token := range strings.Fields(strings.ToLower(attribute(node, "rel"))) {
+		if token == "stylesheet" {
+			return true
+		}
+	}
+	return false
+}
+
+// FindMetaVerification returns the content of the
+// <meta name="webmonitoring-verification"> tag, or an empty string if the page
+// does not carry one. Used by the META ownership verification method.
+func FindMetaVerification(raw []byte) string {
+	root, err := html.Parse(bytes.NewReader(raw))
+	if err != nil {
+		return ""
+	}
+	var value string
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if node.Type == html.ElementNode && strings.EqualFold(node.Data, "meta") &&
+			strings.EqualFold(attribute(node, "name"), "webmonitoring-verification") {
+			value = attribute(node, "content")
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(root)
+	return strings.TrimSpace(value)
 }
 
 func attribute(node *html.Node, name string) string {

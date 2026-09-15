@@ -34,7 +34,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 }
 
 func (s *Scheduler) scheduleAll() {
-	tenants, err := s.repository.ListTenants()
+	tenants, _, err := s.repository.ListTenants(store.ListOptions{})
 	if err != nil {
 		s.logger.Error("list tenants for scheduling", "error", err)
 		return
@@ -46,12 +46,17 @@ func (s *Scheduler) scheduleAll() {
 
 func (s *Scheduler) schedule(tenantID string) {
 	now := time.Now().UTC()
-	jobs, err := s.repository.ListJobs(tenantID)
+	if reaped, err := s.repository.ReapTimedOut(tenantID, now.Add(-store.JobLease)); err != nil {
+		s.logger.Error("reap timed out detection jobs", "error", err)
+	} else if reaped > 0 {
+		s.logger.Warn("reaped stale RUNNING detection jobs", "tenant_id", tenantID, "count", reaped)
+	}
+	jobs, _, err := s.repository.ListJobs(tenantID, store.ListOptions{})
 	if err != nil {
 		s.logger.Error("list scheduled jobs", "error", err)
 		return
 	}
-	assets, err := s.repository.ListAssets(tenantID)
+	assets, _, err := s.repository.ListAssets(tenantID, store.ListOptions{})
 	if err != nil {
 		s.logger.Error("list scheduled assets", "error", err)
 		return

@@ -15,6 +15,7 @@ var ErrUnsafeTarget = errors.New("target is outside the authorized public networ
 
 type Resolver interface {
 	LookupIP(ctx context.Context, network, host string) ([]net.IP, error)
+	LookupTXT(ctx context.Context, name string) ([]string, error)
 }
 
 type URLGuard struct {

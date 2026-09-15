@@ -22,6 +22,7 @@ import (
 	"webmonitoring/internal/notify"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
+	"webmonitoring/internal/telemetry"
 )
 
 func main() {
@@ -34,6 +35,17 @@ func main() {
 	if err := config.ValidateProductionWorker(os.Getenv); err != nil {
 		log.Fatalf("invalid production configuration: %v", err)
 	}
+	// Tracing is opt-in; a setup failure must not stop detection.
+	shutdownTelemetry, err := telemetry.Setup(ctx, "webmonitoring-http-worker", os.Getenv, logger)
+	if err != nil {
+		logger.Warn("telemetry setup failed; continuing without tracing", "error", err)
+		shutdownTelemetry = func(context.Context) error { return nil }
+	}
+	defer func() {
+		if shutdownErr := shutdownTelemetry(ctx); shutdownErr != nil {
+			logger.Warn("telemetry shutdown failed", "error", shutdownErr)
+		}
+	}()
 	dsn := required("POSTGRES_DSN")
 	repository, err := store.NewPostgresRepository(ctx, dsn, required("ALERT_SECRET_KEY"))
 	if err != nil {
@@ -64,6 +76,13 @@ func main() {
 		int(envInt64("ALERT_MAX_ATTEMPTS", 3)),
 		time.Duration(envInt64("ALERT_RETRY_BASE_MILLISECONDS", 250))*time.Millisecond,
 	)
+	dispatcher.SetSMTP(notify.SMTPConfig{
+		Host:     os.Getenv("SMTP_HOST"),
+		Port:     config.PositiveInt(os.Getenv, "SMTP_PORT", 25),
+		Username: os.Getenv("SMTP_USERNAME"),
+		Password: os.Getenv("SMTP_PASSWORD"),
+		From:     os.Getenv("SMTP_FROM"),
+	})
 	consumer := env("WORKER_ID", "worker-1")
 	service := detection.NewService(
 		repository,

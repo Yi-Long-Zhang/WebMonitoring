@@ -44,24 +44,28 @@ func (p *PostgresRepository) Ready(ctx context.Context) error {
 	return p.pool.Ping(ctx)
 }
 
-func (p *PostgresRepository) ListTenants() ([]domain.Tenant, error) {
-	rows, err := p.pool.Query(context.Background(), tenantSelect+` ORDER BY created_at ASC`)
+func (p *PostgresRepository) ListTenants(opts ListOptions) ([]domain.Tenant, string, error) {
+	query := tenantSelect + ` WHERE TRUE`
+	query, args := paginateQuery(query, nil, opts, "created_at")
+	query += ` ORDER BY created_at DESC, id DESC`
+	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
 	defer rows.Close()
 	result := make([]domain.Tenant, 0)
 	for rows.Next() {
 		item, scanErr := scanTenant(rows)
 		if scanErr != nil {
-			return nil, scanErr
+			return nil, "", scanErr
 		}
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
-	return result, nil
+	items, next := trimPage(result, opts, func(t domain.Tenant) (time.Time, string) { return t.CreatedAt, t.ID })
+	return items, next, nil
 }
 
 func (p *PostgresRepository) GetTenant(tenantID string) (domain.Tenant, error) {
@@ -74,17 +78,17 @@ func (p *PostgresRepository) GetTenantBySlug(slug string) (domain.Tenant, error)
 
 func (p *PostgresRepository) CreateTenant(tenant domain.Tenant) error {
 	_, err := p.pool.Exec(context.Background(), `
-		INSERT INTO tenants (id, slug, name, created_at)
-		VALUES ($1, $2, $3, $4)`,
-		tenant.ID, tenant.Slug, tenant.Name, tenant.CreatedAt,
+		INSERT INTO tenants (id, slug, name, disabled, created_at)
+		VALUES ($1, $2, $3, $4, $5)`,
+		tenant.ID, tenant.Slug, tenant.Name, tenant.Disabled, tenant.CreatedAt,
 	)
 	return normalizePostgresError(err)
 }
 
 func (p *PostgresRepository) UpdateTenant(tenant domain.Tenant) error {
 	tag, err := p.pool.Exec(context.Background(), `
-		UPDATE tenants SET slug=$2, name=$3 WHERE id=$1`,
-		tenant.ID, tenant.Slug, tenant.Name,
+		UPDATE tenants SET slug=$2, name=$3, disabled=$4 WHERE id=$1`,
+		tenant.ID, tenant.Slug, tenant.Name, tenant.Disabled,
 	)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -92,50 +96,143 @@ func (p *PostgresRepository) UpdateTenant(tenant domain.Tenant) error {
 	return normalizePostgresError(err)
 }
 
-const tenantSelect = `SELECT id, slug, name, created_at FROM tenants`
+// CountTenantResources returns per-kind row counts for one tenant. It is used
+// to fail a destructive tenant delete closed unless the caller explicitly
+// requests a cascade.
+func (p *PostgresRepository) CountTenantResources(tenantID string) (map[string]int, error) {
+	kinds := []struct {
+		name  string
+		query string
+	}{
+		{"assets", `SELECT count(*) FROM assets WHERE tenant_id=$1`},
+		{"sites", `SELECT count(*) FROM sites WHERE tenant_id=$1`},
+		{"users", `SELECT count(*) FROM users WHERE tenant_id=$1`},
+		{"evidence", `SELECT count(*) FROM evidence WHERE tenant_id=$1`},
+		{"incidents", `SELECT count(*) FROM incidents WHERE tenant_id=$1`},
+		{"baselines", `SELECT count(*) FROM baseline_versions WHERE tenant_id=$1`},
+		{"jobs", `SELECT count(*) FROM detection_jobs WHERE tenant_id=$1`},
+		{"alertChannels", `SELECT count(*) FROM alert_channels WHERE tenant_id=$1`},
+		{"auditEvents", `SELECT count(*) FROM audit_events WHERE tenant_id=$1`},
+	}
+	result := make(map[string]int, len(kinds))
+	for _, kind := range kinds {
+		var count int
+		if err := p.pool.QueryRow(context.Background(), kind.query, tenantID).Scan(&count); err != nil {
+			return nil, normalizePostgresError(err)
+		}
+		result[kind.name] = count
+	}
+	return result, nil
+}
+
+func (p *PostgresRepository) DeleteTenant(tenantID string) error {
+	tx, err := p.pool.Begin(context.Background())
+	if err != nil {
+		return normalizePostgresError(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	// Children first, respecting foreign keys down to tenants.
+	statements := []string{
+		`DELETE FROM alert_deliveries WHERE tenant_id=$1`,
+		`DELETE FROM alert_channels WHERE tenant_id=$1`,
+		`DELETE FROM audit_events WHERE tenant_id=$1`,
+		`DELETE FROM incidents WHERE tenant_id=$1`,
+		`DELETE FROM evidence WHERE tenant_id=$1`,
+		`DELETE FROM detection_jobs WHERE tenant_id=$1`,
+		`DELETE FROM baseline_versions WHERE tenant_id=$1`,
+		`DELETE FROM monitor_policies WHERE tenant_id=$1`,
+		`DELETE FROM assets WHERE tenant_id=$1`,
+		`DELETE FROM sites WHERE tenant_id=$1`,
+		`DELETE FROM users WHERE tenant_id=$1`,
+		`DELETE FROM tenants WHERE id=$1`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(context.Background(), statement, tenantID); err != nil {
+			return normalizePostgresError(err)
+		}
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		return normalizePostgresError(err)
+	}
+	return nil
+}
+
+const tenantSelect = `SELECT id, slug, name, disabled, created_at FROM tenants`
 
 func scanTenant(row rowScanner) (domain.Tenant, error) {
 	var tenant domain.Tenant
-	err := row.Scan(&tenant.ID, &tenant.Slug, &tenant.Name, &tenant.CreatedAt)
+	err := row.Scan(&tenant.ID, &tenant.Slug, &tenant.Name, &tenant.Disabled, &tenant.CreatedAt)
 	return tenant, normalizePostgresError(err)
 }
 
 func (p *PostgresRepository) CreateUser(user domain.User) error {
 	_, err := p.pool.Exec(context.Background(), `
-		INSERT INTO users (id, tenant_id, username, password_hash, role, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		user.ID, user.TenantID, user.Username, user.PasswordHash, user.Role, user.CreatedAt,
+		INSERT INTO users (id, tenant_id, username, password_hash, role, disabled, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		user.ID, user.TenantID, user.Username, user.PasswordHash, user.Role, user.Disabled, user.CreatedAt,
 	)
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) FindUserByUsername(tenantID, username string) (domain.User, error) {
+const userSelect = `
+	SELECT id, tenant_id, username, password_hash, role, disabled, created_at FROM users`
+
+func scanUser(row rowScanner) (domain.User, error) {
 	var user domain.User
-	err := p.pool.QueryRow(context.Background(), `
-		SELECT id, tenant_id, username, password_hash, role, created_at
-		FROM users WHERE tenant_id = $1 AND lower(username) = lower($2)`,
-		tenantID, username,
-	).Scan(&user.ID, &user.TenantID, &user.Username, &user.PasswordHash, &user.Role, &user.CreatedAt)
+	err := row.Scan(
+		&user.ID, &user.TenantID, &user.Username, &user.PasswordHash, &user.Role, &user.Disabled, &user.CreatedAt,
+	)
 	return user, normalizePostgresError(err)
 }
 
+func (p *PostgresRepository) FindUserByUsername(tenantID, username string) (domain.User, error) {
+	return scanUser(p.pool.QueryRow(context.Background(), userSelect+` WHERE tenant_id=$1 AND lower(username)=lower($2)`, tenantID, username))
+}
+
 func (p *PostgresRepository) GetUser(tenantID, id string) (domain.User, error) {
-	var user domain.User
-	err := p.pool.QueryRow(context.Background(), `
-		SELECT id, tenant_id, username, password_hash, role, created_at
-		FROM users WHERE tenant_id = $1 AND id = $2`, tenantID, id,
-	).Scan(&user.ID, &user.TenantID, &user.Username, &user.PasswordHash, &user.Role, &user.CreatedAt)
-	return user, normalizePostgresError(err)
+	return scanUser(p.pool.QueryRow(context.Background(), userSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
+}
+
+func (p *PostgresRepository) ListUsers(tenantID string) ([]domain.User, error) {
+	rows, err := p.pool.Query(context.Background(), userSelect+` WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, normalizePostgresError(err)
+	}
+	defer rows.Close()
+	result := make([]domain.User, 0)
+	for rows.Next() {
+		item, scanErr := scanUser(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, normalizePostgresError(err)
+	}
+	return result, nil
+}
+
+func (p *PostgresRepository) UpdateUser(user domain.User) error {
+	tag, err := p.pool.Exec(context.Background(), `
+		UPDATE users SET username=$3, password_hash=$4, role=$5, disabled=$6
+		WHERE tenant_id=$1 AND id=$2`,
+		user.TenantID, user.ID, user.Username, user.PasswordHash, user.Role, user.Disabled,
+	)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return normalizePostgresError(err)
 }
 
 func (p *PostgresRepository) CreateAsset(asset domain.Asset) error {
 	_, err := p.pool.Exec(context.Background(), `
 		INSERT INTO assets (
 			id, tenant_id, site_id, name, url, asset_type, owner_id, enabled,
-			verification_status, verification_token, verification_token_hash, verification_issued_at, verification_expires_at, created_at, updated_at
-		) VALUES ($1, $2, NULLIF($3, '')::uuid, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), NULLIF($11, ''), $12, $13, $14, $15)`,
+			verification_status, verification_method, verification_token, verification_token_hash, verification_issued_at, verification_expires_at, created_at, updated_at
+		) VALUES ($1, $2, NULLIF($3, '')::uuid, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), NULLIF($12, ''), $13, $14, $15, $16)`,
 		asset.ID, asset.TenantID, asset.SiteID, asset.Name, asset.URL, asset.Type, asset.OwnerID,
-		asset.Enabled, asset.VerificationStatus, asset.VerificationToken, asset.VerificationTokenHash, asset.VerificationIssuedAt, asset.VerificationExpiresAt,
+		asset.Enabled, asset.VerificationStatus, asset.VerificationMethod, asset.VerificationToken, asset.VerificationTokenHash, asset.VerificationIssuedAt, asset.VerificationExpiresAt,
 		asset.CreatedAt, asset.UpdatedAt,
 	)
 	return normalizePostgresError(err)
@@ -161,29 +258,34 @@ func (p *PostgresRepository) GetAsset(tenantID, id string) (domain.Asset, error)
 	return scanAsset(row)
 }
 
-func (p *PostgresRepository) ListAssets(tenantID string) ([]domain.Asset, error) {
-	rows, err := p.pool.Query(context.Background(), assetSelect+` WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+func (p *PostgresRepository) ListAssets(tenantID string, opts ListOptions) ([]domain.Asset, string, error) {
+	args := []any{tenantID}
+	query := assetSelect + ` WHERE tenant_id=$1`
+	query, args = paginateQuery(query, args, opts, "created_at")
+	query += ` ORDER BY created_at DESC, id DESC`
+	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
 	defer rows.Close()
 	result := make([]domain.Asset, 0)
 	for rows.Next() {
 		item, scanErr := scanAsset(rows)
 		if scanErr != nil {
-			return nil, scanErr
+			return nil, "", scanErr
 		}
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
-	return result, nil
+	items, next := trimPage(result, opts, func(a domain.Asset) (time.Time, string) { return a.CreatedAt, a.ID })
+	return items, next, nil
 }
 
 const assetSelect = `
 	SELECT id, tenant_id, COALESCE(site_id::text, ''), name, url, asset_type, owner_id,
-		enabled, verification_status, COALESCE(verification_token, ''), COALESCE(verification_token_hash, ''),
+		enabled, verification_status, verification_method, COALESCE(verification_token, ''), COALESCE(verification_token_hash, ''),
 		verification_issued_at, verification_expires_at, created_at, updated_at FROM assets`
 
 type rowScanner interface {
@@ -194,7 +296,7 @@ func scanAsset(row rowScanner) (domain.Asset, error) {
 	var asset domain.Asset
 	err := row.Scan(
 		&asset.ID, &asset.TenantID, &asset.SiteID, &asset.Name, &asset.URL, &asset.Type,
-		&asset.OwnerID, &asset.Enabled, &asset.VerificationStatus, &asset.VerificationToken, &asset.VerificationTokenHash,
+		&asset.OwnerID, &asset.Enabled, &asset.VerificationStatus, &asset.VerificationMethod, &asset.VerificationToken, &asset.VerificationTokenHash,
 		&asset.VerificationIssuedAt, &asset.VerificationExpiresAt, &asset.CreatedAt, &asset.UpdatedAt,
 	)
 	return asset, normalizePostgresError(err)
@@ -225,24 +327,29 @@ func (p *PostgresRepository) GetSite(tenantID, id string) (domain.Site, error) {
 	return scanSite(p.pool.QueryRow(context.Background(), siteSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
 }
 
-func (p *PostgresRepository) ListSites(tenantID string) ([]domain.Site, error) {
-	rows, err := p.pool.Query(context.Background(), siteSelect+` WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+func (p *PostgresRepository) ListSites(tenantID string, opts ListOptions) ([]domain.Site, string, error) {
+	args := []any{tenantID}
+	query := siteSelect + ` WHERE tenant_id=$1`
+	query, args = paginateQuery(query, args, opts, "created_at")
+	query += ` ORDER BY created_at DESC, id DESC`
+	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
 	defer rows.Close()
 	result := make([]domain.Site, 0)
 	for rows.Next() {
 		item, scanErr := scanSite(rows)
 		if scanErr != nil {
-			return nil, scanErr
+			return nil, "", scanErr
 		}
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
-	return result, nil
+	items, next := trimPage(result, opts, func(s domain.Site) (time.Time, string) { return s.CreatedAt, s.ID })
+	return items, next, nil
 }
 
 const siteSelect = `SELECT id, tenant_id, name, domain, owner_id, created_at, updated_at FROM sites`
@@ -283,11 +390,14 @@ func (p *PostgresRepository) GetPolicy(tenantID, assetID string) (domain.Monitor
 	return policy, nil
 }
 
-func (p *PostgresRepository) ListPolicies(tenantID string) ([]domain.MonitorPolicy, error) {
-	rows, err := p.pool.Query(context.Background(), `
-		SELECT config FROM monitor_policies WHERE tenant_id=$1 ORDER BY updated_at DESC`, tenantID)
+func (p *PostgresRepository) ListPolicies(tenantID string, opts ListOptions) ([]domain.MonitorPolicy, string, error) {
+	args := []any{tenantID}
+	query := `SELECT config FROM monitor_policies WHERE tenant_id=$1`
+	query, args = paginateQuery(query, args, opts, "updated_at")
+	query += ` ORDER BY updated_at DESC, id DESC`
+	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
 	defer rows.Close()
 	result := make([]domain.MonitorPolicy, 0)
@@ -295,17 +405,18 @@ func (p *PostgresRepository) ListPolicies(tenantID string) ([]domain.MonitorPoli
 		var raw []byte
 		var policy domain.MonitorPolicy
 		if err := rows.Scan(&raw); err != nil {
-			return nil, normalizePostgresError(err)
+			return nil, "", normalizePostgresError(err)
 		}
 		if err := json.Unmarshal(raw, &policy); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		result = append(result, policy)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
-	return result, nil
+	items, next := trimPage(result, opts, func(p domain.MonitorPolicy) (time.Time, string) { return p.UpdatedAt, p.ID })
+	return items, next, nil
 }
 
 func (p *PostgresRepository) CreateBaseline(baseline domain.BaselineVersion) error {
@@ -364,31 +475,33 @@ func (p *PostgresRepository) GetApprovedBaseline(tenantID, assetID string) (doma
 		tenantID, assetID))
 }
 
-func (p *PostgresRepository) ListBaselines(tenantID, assetID string) ([]domain.BaselineVersion, error) {
-	query := baselineSelect + ` WHERE tenant_id=$1`
+func (p *PostgresRepository) ListBaselines(tenantID, assetID string, opts ListOptions) ([]domain.BaselineVersion, string, error) {
 	args := []any{tenantID}
+	query := baselineSelect + ` WHERE tenant_id=$1`
 	if assetID != "" {
 		query += ` AND asset_id=$2`
 		args = append(args, assetID)
 	}
-	query += ` ORDER BY created_at DESC`
+	query, args = paginateQuery(query, args, opts, "created_at")
+	query += ` ORDER BY created_at DESC, id DESC`
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
 	defer rows.Close()
 	result := make([]domain.BaselineVersion, 0)
 	for rows.Next() {
 		item, scanErr := scanBaseline(rows)
 		if scanErr != nil {
-			return nil, scanErr
+			return nil, "", scanErr
 		}
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
-	return result, nil
+	items, next := trimPage(result, opts, func(b domain.BaselineVersion) (time.Time, string) { return b.CreatedAt, b.ID })
+	return items, next, nil
 }
 
 const baselineSelect = `
@@ -428,7 +541,7 @@ func (p *PostgresRepository) CreateJob(job domain.DetectionJob) error {
 }
 
 func (p *PostgresRepository) ClaimJob(tenantID, id string, startedAt time.Time) (bool, error) {
-	leaseCutoff := startedAt.Add(-5 * time.Minute)
+	leaseCutoff := startedAt.Add(-JobLease)
 	tag, err := p.pool.Exec(context.Background(), `
 		UPDATE detection_jobs SET status='RUNNING', started_at=$3
 		WHERE tenant_id=$1 AND id=$2
@@ -460,24 +573,51 @@ func (p *PostgresRepository) GetJob(tenantID, id string) (domain.DetectionJob, e
 	return scanJob(p.pool.QueryRow(context.Background(), jobSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
 }
 
-func (p *PostgresRepository) ListJobs(tenantID string) ([]domain.DetectionJob, error) {
-	rows, err := p.pool.Query(context.Background(), jobSelect+` WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 1000`, tenantID)
+func (p *PostgresRepository) ListJobs(tenantID string, opts ListOptions) ([]domain.DetectionJob, string, error) {
+	args := []any{tenantID}
+	query := jobSelect + ` WHERE tenant_id=$1`
+	query, args = paginateQuery(query, args, opts, "created_at")
+	query += ` ORDER BY created_at DESC, id DESC`
+	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
 	defer rows.Close()
 	result := make([]domain.DetectionJob, 0)
 	for rows.Next() {
 		item, scanErr := scanJob(rows)
 		if scanErr != nil {
-			return nil, scanErr
+			return nil, "", scanErr
 		}
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
-	return result, nil
+	items, next := trimPage(result, opts, func(j domain.DetectionJob) (time.Time, string) { return j.CreatedAt, j.ID })
+	return items, next, nil
+}
+
+func (p *PostgresRepository) CancelJob(tenantID, id string) (bool, error) {
+	tag, err := p.pool.Exec(context.Background(), `
+		UPDATE detection_jobs SET status='CANCELLED', finished_at=now()
+		WHERE tenant_id=$1 AND id=$2 AND status IN ('QUEUED','RUNNING')`,
+		tenantID, id)
+	if err != nil {
+		return false, normalizePostgresError(err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (p *PostgresRepository) ReapTimedOut(tenantID string, before time.Time) (int, error) {
+	tag, err := p.pool.Exec(context.Background(), `
+		UPDATE detection_jobs SET status='TIMED_OUT', finished_at=now(), error_code='CHECK_TIMEOUT'
+		WHERE tenant_id=$1 AND status='RUNNING' AND started_at < $2`,
+		tenantID, before)
+	if err != nil {
+		return 0, normalizePostgresError(err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 const jobSelect = `
@@ -510,31 +650,33 @@ func (p *PostgresRepository) GetEvidence(tenantID, id string) (domain.Evidence, 
 	return scanEvidence(p.pool.QueryRow(context.Background(), evidenceSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
 }
 
-func (p *PostgresRepository) ListEvidence(tenantID, assetID string) ([]domain.Evidence, error) {
-	query := evidenceSelect + ` WHERE tenant_id=$1`
+func (p *PostgresRepository) ListEvidence(tenantID, assetID string, opts ListOptions) ([]domain.Evidence, string, error) {
 	args := []any{tenantID}
+	query := evidenceSelect + ` WHERE tenant_id=$1`
 	if assetID != "" {
 		query += ` AND asset_id=$2`
 		args = append(args, assetID)
 	}
-	query += ` ORDER BY created_at DESC`
+	query, args = paginateQuery(query, args, opts, "created_at")
+	query += ` ORDER BY created_at DESC, id DESC`
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
 	defer rows.Close()
 	result := make([]domain.Evidence, 0)
 	for rows.Next() {
 		item, scanErr := scanEvidence(rows)
 		if scanErr != nil {
-			return nil, scanErr
+			return nil, "", scanErr
 		}
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
-	return result, nil
+	items, next := trimPage(result, opts, func(e domain.Evidence) (time.Time, string) { return e.CreatedAt, e.ID })
+	return items, next, nil
 }
 
 func (p *PostgresRepository) ListExpiredEvidence(tenantID string, before time.Time) ([]domain.Evidence, error) {
@@ -639,7 +781,7 @@ func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.In
 	if err := row.Scan(&created); err != nil {
 		return domain.Incident{}, false, normalizePostgresError(err)
 	}
-	incidents, err := p.ListIncidents(incident.TenantID)
+	incidents, _, err := p.ListIncidents(incident.TenantID, ListOptions{})
 	if err != nil {
 		return domain.Incident{}, false, err
 	}
@@ -675,24 +817,29 @@ func (p *PostgresRepository) GetIncident(tenantID, id string) (domain.Incident, 
 	return scanIncident(p.pool.QueryRow(context.Background(), incidentSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
 }
 
-func (p *PostgresRepository) ListIncidents(tenantID string) ([]domain.Incident, error) {
-	rows, err := p.pool.Query(context.Background(), incidentSelect+` WHERE tenant_id=$1 ORDER BY last_seen_at DESC`, tenantID)
+func (p *PostgresRepository) ListIncidents(tenantID string, opts ListOptions) ([]domain.Incident, string, error) {
+	args := []any{tenantID}
+	query := incidentSelect + ` WHERE tenant_id=$1`
+	query, args = paginateQuery(query, args, opts, "last_seen_at")
+	query += ` ORDER BY last_seen_at DESC, id DESC`
+	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
 	defer rows.Close()
 	result := make([]domain.Incident, 0)
 	for rows.Next() {
 		item, scanErr := scanIncident(rows)
 		if scanErr != nil {
-			return nil, scanErr
+			return nil, "", scanErr
 		}
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
-	return result, nil
+	items, next := trimPage(result, opts, func(i domain.Incident) (time.Time, string) { return i.LastSeenAt, i.ID })
+	return items, next, nil
 }
 
 const incidentSelect = `
@@ -734,9 +881,9 @@ func (p *PostgresRepository) CreateAlertChannel(channel domain.AlertChannel) err
 	}
 	_, err = p.pool.Exec(context.Background(), `
 		INSERT INTO alert_channels (
-			id,tenant_id,name,channel_type,url,secret_ciphertext,enabled,created_at,updated_at
-		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),$7,$8,$9)`,
-		channel.ID, channel.TenantID, channel.Name, channel.Type, encryptedURL,
+			id,tenant_id,name,channel_type,url,recipients,secret_ciphertext,enabled,created_at,updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,$10)`,
+		channel.ID, channel.TenantID, channel.Name, channel.Type, encryptedURL, channel.Recipients,
 		encryptedSecret, channel.Enabled, channel.CreatedAt, channel.UpdatedAt,
 	)
 	return normalizePostgresError(err)
@@ -752,7 +899,7 @@ func (p *PostgresRepository) ListAlertChannelsWithSecrets(tenantID string) ([]do
 
 func (p *PostgresRepository) listAlertChannels(tenantID string, includeSecret bool) ([]domain.AlertChannel, error) {
 	rows, err := p.pool.Query(context.Background(), `
-		SELECT id,tenant_id,name,channel_type,url,COALESCE(secret_ciphertext,''),enabled,created_at,updated_at
+		SELECT id,tenant_id,name,channel_type,url,recipients,COALESCE(secret_ciphertext,''),enabled,created_at,updated_at
 		FROM alert_channels WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
 	if err != nil {
 		return nil, normalizePostgresError(err)
@@ -763,7 +910,7 @@ func (p *PostgresRepository) listAlertChannels(tenantID string, includeSecret bo
 		var item domain.AlertChannel
 		var encryptedURL, encryptedSecret string
 		if err := rows.Scan(
-			&item.ID, &item.TenantID, &item.Name, &item.Type, &encryptedURL, &encryptedSecret,
+			&item.ID, &item.TenantID, &item.Name, &item.Type, &encryptedURL, &item.Recipients, &encryptedSecret,
 			&item.Enabled, &item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
 			return nil, normalizePostgresError(err)
@@ -811,17 +958,18 @@ func (p *PostgresRepository) UpdateAlertDelivery(delivery domain.AlertDelivery) 
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) ListAlertDeliveries(tenantID, incidentID string) ([]domain.AlertDelivery, error) {
-	query := `SELECT id,tenant_id,incident_id,channel_id,dedup_key,status,attempts,COALESCE(last_error,''),next_attempt_at,created_at,updated_at FROM alert_deliveries WHERE tenant_id=$1`
+func (p *PostgresRepository) ListAlertDeliveries(tenantID, incidentID string, opts ListOptions) ([]domain.AlertDelivery, string, error) {
 	args := []any{tenantID}
+	query := `SELECT id,tenant_id,incident_id,channel_id,dedup_key,status,attempts,COALESCE(last_error,''),next_attempt_at,created_at,updated_at FROM alert_deliveries WHERE tenant_id=$1`
 	if incidentID != "" {
 		query += ` AND incident_id=$2`
 		args = append(args, incidentID)
 	}
-	query += ` ORDER BY created_at DESC LIMIT 1000`
+	query, args = paginateQuery(query, args, opts, "created_at")
+	query += ` ORDER BY created_at DESC, id DESC`
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
 	defer rows.Close()
 	result := make([]domain.AlertDelivery, 0)
@@ -829,14 +977,15 @@ func (p *PostgresRepository) ListAlertDeliveries(tenantID, incidentID string) ([
 		var item domain.AlertDelivery
 		if err := rows.Scan(&item.ID, &item.TenantID, &item.IncidentID, &item.ChannelID, &item.DedupKey,
 			&item.Status, &item.Attempts, &item.LastError, &item.NextAttemptAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
-			return nil, normalizePostgresError(err)
+			return nil, "", normalizePostgresError(err)
 		}
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
-	return result, nil
+	items, next := trimPage(result, opts, func(d domain.AlertDelivery) (time.Time, string) { return d.CreatedAt, d.ID })
+	return items, next, nil
 }
 func (p *PostgresRepository) AppendAudit(event domain.AuditEvent) error {
 	details, _ := json.Marshal(event.Details)
@@ -850,13 +999,16 @@ func (p *PostgresRepository) AppendAudit(event domain.AuditEvent) error {
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) ListAudits(tenantID string) ([]domain.AuditEvent, error) {
-	rows, err := p.pool.Query(context.Background(), `
-		SELECT id,tenant_id,COALESCE(actor_id::text,''),action,resource_type,resource_id,
-			result,trace_id,COALESCE(details,'{}'::jsonb),created_at
-		FROM audit_events WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 1000`, tenantID)
+func (p *PostgresRepository) ListAudits(tenantID string, opts ListOptions) ([]domain.AuditEvent, string, error) {
+	args := []any{tenantID}
+	query := `SELECT id,tenant_id,COALESCE(actor_id::text,''),action,resource_type,resource_id,
+		result,trace_id,COALESCE(details,'{}'::jsonb),created_at
+		FROM audit_events WHERE tenant_id=$1`
+	query, args = paginateQuery(query, args, opts, "created_at")
+	query += ` ORDER BY created_at DESC, id DESC`
+	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
 	defer rows.Close()
 	result := make([]domain.AuditEvent, 0)
@@ -867,17 +1019,18 @@ func (p *PostgresRepository) ListAudits(tenantID string) ([]domain.AuditEvent, e
 			&item.ID, &item.TenantID, &item.ActorID, &item.Action, &item.ResourceType,
 			&item.ResourceID, &item.Result, &item.TraceID, &details, &item.CreatedAt,
 		); err != nil {
-			return nil, normalizePostgresError(err)
+			return nil, "", normalizePostgresError(err)
 		}
 		if err := json.Unmarshal(details, &item.Details); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, normalizePostgresError(err)
+		return nil, "", normalizePostgresError(err)
 	}
-	return result, nil
+	items, next := trimPage(result, opts, func(e domain.AuditEvent) (time.Time, string) { return e.CreatedAt, e.ID })
+	return items, next, nil
 }
 
 func (p *PostgresRepository) DeleteAuditsBefore(tenantID string, before time.Time) (int, error) {
@@ -887,6 +1040,25 @@ func (p *PostgresRepository) DeleteAuditsBefore(tenantID string, before time.Tim
 		return 0, normalizePostgresError(err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// paginateQuery appends a keyset cursor filter and a LIMIT n+1 (for next-page
+// detection) to a list query that already ends with a WHERE clause. The cursor
+// selects rows strictly after the cursor in descending (column, id) order.
+func paginateQuery(query string, args []any, opts ListOptions, column string) (string, []any) {
+	if opts.Cursor != "" {
+		if cursorTime, cursorID, ok := decodeCursor(opts.Cursor); ok {
+			next := len(args) + 1
+			query += fmt.Sprintf(" AND (%s, id) < ($%d::timestamptz, $%d::uuid)", column, next, next+1)
+			args = append(args, cursorTime, cursorID)
+		}
+	}
+	if opts.Limit > 0 {
+		next := len(args) + 1
+		query += fmt.Sprintf(" LIMIT $%d", next)
+		args = append(args, opts.Limit+1)
+	}
+	return query, args
 }
 
 func normalizePostgresError(err error) error {

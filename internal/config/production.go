@@ -89,6 +89,24 @@ func validateCommon(get func(string) string) []error {
 	if err != nil || len(key) != 32 {
 		failures = append(failures, errors.New("ALERT_SECRET_KEY must be a base64-encoded 32-byte key"))
 	}
+	failures = append(failures, validateSMTP(get)...)
+	return failures
+}
+
+// validateSMTP enforces a complete SMTP configuration only when email
+// notifications are enabled (SMTP_HOST set). Email delivery is optional, so an
+// absent SMTP_HOST is not an error.
+func validateSMTP(get func(string) string) []error {
+	if strings.TrimSpace(get("SMTP_HOST")) == "" {
+		return nil
+	}
+	var failures []error
+	failures = append(failures, validateRequired(get, "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM")...)
+	if port := strings.TrimSpace(get("SMTP_PORT")); port != "" {
+		if parsed, err := strconv.Atoi(port); err != nil || parsed < 1 || parsed > 65535 {
+			failures = append(failures, errors.New("SMTP_PORT must be between 1 and 65535"))
+		}
+	}
 	return failures
 }
 

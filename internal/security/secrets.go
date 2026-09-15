@@ -11,17 +11,27 @@ import (
 
 const secretKeySize = 32
 
-type SecretCipher struct {
-	aead cipher.AEAD
-}
-
-func NewSecretCipher(encodedKey string) (*SecretCipher, error) {
+// decodeSecretKey decodes the base64-encoded master secret and enforces the
+// expected length. It is shared by the AES-GCM cipher and the signed-URL HMAC.
+func decodeSecretKey(encodedKey string) ([]byte, error) {
 	key, err := base64.StdEncoding.DecodeString(encodedKey)
 	if err != nil {
 		key, err = base64.RawStdEncoding.DecodeString(encodedKey)
 	}
 	if err != nil || len(key) != secretKeySize {
 		return nil, errors.New("ALERT_SECRET_KEY must be a base64-encoded 32-byte key")
+	}
+	return key, nil
+}
+
+type SecretCipher struct {
+	aead cipher.AEAD
+}
+
+func NewSecretCipher(encodedKey string) (*SecretCipher, error) {
+	key, err := decodeSecretKey(encodedKey)
+	if err != nil {
+		return nil, err
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {

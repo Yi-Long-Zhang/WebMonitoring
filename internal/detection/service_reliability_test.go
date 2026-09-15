@@ -54,3 +54,31 @@ func TestRetryIsPersistedBeforeQueueAcknowledgement(t *testing.T) {
 		t.Fatal("retry was not enqueued")
 	}
 }
+
+func TestCheckTimeoutMarksJobTimedOut(t *testing.T) {
+	repository := store.NewMemoryRepository()
+	job := domain.DetectionJob{
+		ID: "job", TenantID: "tenant", AssetID: "asset", Mode: "HTTP",
+		Status: domain.JobRunning, RetryCount: 0, MaxAttempts: 3, CreatedAt: time.Now().UTC(),
+	}
+	if err := repository.CreateJob(job); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(
+		repository, nil, nil, nil, nil, events.NewBroker(),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err := service.failJob(t.Context(), job, "CHECK_TIMEOUT", context.DeadlineExceeded); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := repository.GetJob("tenant", "job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != domain.JobTimedOut {
+		t.Fatalf("status=%s, want TIMED_OUT", persisted.Status)
+	}
+	if persisted.ErrorCode != "CHECK_TIMEOUT" || persisted.RetryCount != 0 {
+		t.Fatalf("unexpected persisted job: %#v", persisted)
+	}
+}

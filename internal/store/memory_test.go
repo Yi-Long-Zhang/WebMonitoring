@@ -84,7 +84,7 @@ func TestAlertDeliveryDeduplicatesByIncidentAndChannel(t *testing.T) {
 	if err := repository.CreateAlertDelivery(second); err != ErrConflict {
 		t.Fatalf("expected delivery conflict, got %v", err)
 	}
-	items, err := repository.ListAlertDeliveries("tenant", "incident")
+	items, _, err := repository.ListAlertDeliveries("tenant", "incident", ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,8 +140,8 @@ func TestAuditRetentionDeletesOnlyExpiredTenantEvents(t *testing.T) {
 	if err != nil || deleted != 1 {
 		t.Fatalf("deleted=%d err=%v", deleted, err)
 	}
-	current, _ := repository.ListAudits("tenant")
-	other, _ := repository.ListAudits("other")
+	current, _, _ := repository.ListAudits("tenant", ListOptions{})
+	other, _, _ := repository.ListAudits("other", ListOptions{})
 	if len(current) != 1 || current[0].ID != "current" || len(other) != 1 {
 		t.Fatalf("unexpected retained audits: current=%#v other=%#v", current, other)
 	}
@@ -149,7 +149,7 @@ func TestAuditRetentionDeletesOnlyExpiredTenantEvents(t *testing.T) {
 
 func TestTenantsSeededDefaultAndResolvedCaseInsensitively(t *testing.T) {
 	repository := NewMemoryRepository()
-	tenants, err := repository.ListTenants()
+	tenants, _, err := repository.ListTenants(ListOptions{})
 	if err != nil || len(tenants) != 1 {
 		t.Fatalf("list tenants: %#v err=%v", tenants, err)
 	}

@@ -108,7 +108,14 @@ API/Worker。生产环境执行前必须记录审批、备份版本、RPO/RTO �
 
 ## 保留期维护
 
-默认证据保留 90 天、审计保留 365 天。管理员应先调用 dry-run，确认过期数量和
+默认证据保留 90 天、审计保留 365 天。
+
+控制面进程同时运行后台保留任务（`RETENTION_INTERVAL_HOURS`，默认 24 小时，
+设为 0 则只保留手动入口）。后台任务在启动时先跑一次，此后按间隔逐租户执行；
+**已停用（disabled）的租户会被跳过**，其证据不会在人工复核期间被清理。
+
+手动入口与后台任务共用同一段逻辑（`internal/maintenance`），因此 dry-run 的
+结果就是下一次后台执行会做的操作。管理员应先调用 dry-run，确认过期数量和
 事件引用，再显式执行：
 
 ```powershell
@@ -119,3 +126,16 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/v1/maintenance/ret
 ```
 
 被事件引用的证据不会删除；对象删除、元数据删除、审计删除和失败原因都会记录。
+
+## Trace 采集（可选）
+
+默认不采集 trace。需要时把 API 和 http-worker 的 `OTEL_EXPORTER_OTLP_ENDPOINT`
+指向 OTLP/HTTP 采集器（例如 `http://otel-collector:4318`），两个服务必须配同一
+地址，否则同一任务的 span 会落到不同后端。采样率用
+`OTEL_TRACES_SAMPLER_ARG`（0.0-1.0，默认 1）。
+
+- 采集器不可达不会影响检测：导出失败只记录在 SDK 内部，控制面和 Worker 照常运行。
+- 停用采集只需清空该变量并重启；span 立即退回 no-op。
+- 导出内容不含客户 URL 凭据、通知签名、收件人和页面内容（见
+  `docs/architecture.md` 的「可观测性」）。采集器本身仍应视为敏感基础设施。
+- 消费者 span 与 API span 目前只通过 `job_id`/`asset_id` 属性关联，不是同一 trace。

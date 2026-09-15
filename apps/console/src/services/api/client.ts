@@ -1,5 +1,5 @@
 import type {
-  AlertChannel, AlertDelivery, Asset, AuditEvent, Baseline, Dashboard, DetectionJob, Evidence, Incident, IncidentStatus, ListResponse, Policy, ReportSummary, Session, Site, Tenant,
+  AlertChannel, AlertDelivery, Asset, AuditEvent, Baseline, Dashboard, DetectionJob, Evidence, Incident, IncidentStatus, ListResponse, Policy, ReportSummary, Session, Site, Tenant, User,
 } from "../../types/domain";
 
 let csrfToken = "";
@@ -71,6 +71,24 @@ export function createAsset(input: Pick<Asset, "name" | "url" | "type" | "siteId
   });
 }
 
+export function importAssets(input: {
+  assets: Array<Pick<Asset, "name" | "url" | "type"> & { ownerId?: string; siteId?: string }>;
+  dryRun?: boolean;
+  siteId?: string;
+  ownerId?: string;
+}) {
+  return request<{
+    dryRun: boolean;
+    rows: number;
+    created: number;
+    results: Array<{ index: number; name?: string; url?: string; status: "CREATED" | "VALIDATED" | "REJECTED"; code?: string; message?: string }>;
+  }>("/assets/import", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function exportAssets(format: "json" | "csv" = "csv") {
+  return request<{ items: Asset[] }>(`/assets/export?format=${format}`);
+}
+
 export function updateAsset(id: string, input: Partial<Pick<Asset, "name" | "ownerId" | "siteId" | "enabled">>) {
   return request<Asset>(`/assets/${id}`, {
     method: "PATCH",
@@ -138,6 +156,12 @@ export function getEvidence() {
   return request<ListResponse<Evidence>>("/evidence");
 }
 
+export function issueEvidenceSignedUrl(id: string) {
+  return request<{ url: string; expiresAt: string }>(`/evidence/${id}/signed-url`, {
+    method: "POST",
+  });
+}
+
 export function getAlertChannels() {
   return request<ListResponse<AlertChannel>>("/alert-channels");
 }
@@ -160,6 +184,7 @@ export function createAlertChannel(input: {
   name: string;
   type: AlertChannel["type"];
   url: string;
+  recipients?: string;
   secret: string;
   enabled: boolean;
 }) {
@@ -209,9 +234,48 @@ export function createTenant(input: { name: string; slug: string; adminUsername:
   });
 }
 
-export function updateTenant(id: string, input: Partial<Pick<Tenant, "name" | "slug">>) {
+export function updateTenant(id: string, input: Partial<Pick<Tenant, "name" | "slug" | "disabled">>) {
   return request<Tenant>(`/tenants/${id}`, {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+}
+
+export function deleteTenant(id: string, confirm: string, cascade = false) {
+  return request<{ tenantId: string; deletedResources: Record<string, number>; orphanedEvidenceObjects: number }>(
+    `/tenants/${id}`,
+    { method: "DELETE", body: JSON.stringify({ confirm, cascade }) },
+  );
+}
+
+export function getUsers() {
+  return request<ListResponse<User>>("/users");
+}
+
+export function createUser(input: { username: string; password: string; role: User["role"] }) {
+  return request<User>("/users", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateUser(id: string, input: Partial<Pick<User, "username" | "role" | "disabled">>) {
+  return request<User>(`/users/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export function resetUserPassword(id: string, password: string) {
+  return request<void>(`/users/${id}/password`, {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function changeOwnPassword(currentPassword: string, newPassword: string) {
+  return request<void>("/auth/password", {
+    method: "POST",
+    body: JSON.stringify({ currentPassword, newPassword }),
   });
 }

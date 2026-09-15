@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { chromium } from "playwright";
 import { extractSnapshot } from "../src/index.js";
-import { assertSafeTarget, isBlockedAddress } from "../src/security.js";
+import { assertSafeTarget, isBlockedAddress, probeTLSFingerprint } from "../src/security.js";
 
 describe("browser target security", () => {
   it("blocks private and metadata addresses", () => {
@@ -15,6 +15,19 @@ describe("browser target security", () => {
     await expect(assertSafeTarget("file:///etc/passwd")).rejects.toThrow();
     await expect(assertSafeTarget("https://user:pass@example.com")).rejects.toThrow();
   });
+
+  it("rejects private targets and returns addresses for allowed ones", async () => {
+    await expect(assertSafeTarget("http://127.0.0.1")).rejects.toThrow();
+    await expect(assertSafeTarget("http://169.254.169.254")).rejects.toThrow();
+    const allowed = await assertSafeTarget("http://127.0.0.1", true);
+    expect(allowed.target.hostname).toBe("127.0.0.1");
+    expect(allowed.addresses).toEqual([]);
+  });
+
+  it("returns an empty or 64-hex TLS fingerprint", async () => {
+    const fingerprint = await probeTLSFingerprint("example.com", 443, 3000);
+    expect(fingerprint).toMatch(/^([0-9a-f]{64})?$/);
+  }, 10_000);
 
   it("removes ignored nodes before calculating snapshot fields", async () => {
     const browser = await chromium.launch({ headless: true });

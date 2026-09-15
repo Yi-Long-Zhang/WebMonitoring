@@ -6,10 +6,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -23,14 +25,27 @@ import (
 	"webmonitoring/internal/events"
 	"webmonitoring/internal/evidence"
 	"webmonitoring/internal/identity"
+	"webmonitoring/internal/maintenance"
 	"webmonitoring/internal/metrics"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// apiTracer attaches HTTP spans to the caller's trace. It resolves to the global
+// no-op provider until telemetry.Setup installs a real one.
+var apiTracer = otel.Tracer("webmonitoring/internal/api")
 
 const (
 	sessionCookie = "webmonitoring_session"
 	defaultTenant = "00000000-0000-4000-8000-000000000001"
+	// maxImportRows bounds a single batch import so one request cannot hold an
+	// unbounded write loop on the control plane.
+	maxImportRows = 500
 )
 
 type principalKey struct{}
@@ -39,6 +54,7 @@ type traceKey struct{}
 type Server struct {
 	repository        store.Repository
 	auth              *auth.Service
+	loginGuard        *auth.LoginGuard
 	detection         *detection.Service
 	evidence          evidence.Store
 	guard             *security.URLGuard
@@ -49,6 +65,9 @@ type Server struct {
 	readiness         func(context.Context) map[string]error
 	evidenceRetention time.Duration
 	auditRetention    time.Duration
+	retention         *maintenance.Runner
+	signedURLSigner   *security.SignedURLSigner
+	signedURLTTL      time.Duration
 	handler           http.Handler
 }
 
@@ -74,7 +93,9 @@ func NewServer(
 		metrics:           metrics.New(),
 		evidenceRetention: time.Duration(config.DefaultEvidenceRetentionDays) * 24 * time.Hour,
 		auditRetention:    time.Duration(config.DefaultAuditRetentionDays) * 24 * time.Hour,
+		signedURLTTL:      5 * time.Minute,
 	}
+	server.retention = maintenance.NewRunner(repository, evidenceStore, server.auditRetention, logger)
 	server.handler = server.routes()
 	return server
 }
@@ -94,6 +115,26 @@ func (s *Server) SetRetentionPolicy(evidenceDays, auditDays int) {
 	if auditDays > 0 {
 		s.auditRetention = time.Duration(auditDays) * 24 * time.Hour
 	}
+	s.retention = maintenance.NewRunner(s.repository, s.evidence, s.auditRetention, s.logger)
+}
+
+// RetentionRunner exposes the shared retention runner so the process hosting
+// the control plane can also drive the background pass.
+func (s *Server) RetentionRunner() *maintenance.Runner {
+	return s.retention
+}
+
+func (s *Server) SetLoginGuard(guard *auth.LoginGuard) {
+	s.loginGuard = guard
+}
+
+// SetSignedURLs enables control-plane-served signed evidence URLs (the local
+// store path). S3 stores ignore the signer and issue presigned object URLs.
+func (s *Server) SetSignedURLs(signer *security.SignedURLSigner, ttlSeconds int) {
+	s.signedURLSigner = signer
+	if ttlSeconds > 0 {
+		s.signedURLTTL = time.Duration(ttlSeconds) * time.Second
+	}
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -106,6 +147,7 @@ func (s *Server) routes() http.Handler {
 	root.HandleFunc("GET /readyz", s.ready)
 	root.Handle("GET /metrics", s.metrics.Handler())
 	root.HandleFunc("POST /api/v1/auth/session", s.login)
+	root.HandleFunc("GET /api/v1/evidence/signed/{token}", s.downloadSignedEvidence)
 
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /api/v1/auth/session", s.session)
@@ -113,9 +155,13 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("GET /api/v1/dashboard", s.dashboard)
 	protected.HandleFunc("GET /api/v1/assets", s.listAssets)
 	protected.HandleFunc("POST /api/v1/assets", s.requireRoles(s.createAsset, domain.RoleAdmin, domain.RoleOperator))
+	protected.HandleFunc("POST /api/v1/assets/import", s.requireRoles(s.importAssets, domain.RoleAdmin))
+	protected.HandleFunc("GET /api/v1/assets/export", s.requireRoles(s.exportAssets, domain.RoleAdmin))
 	protected.HandleFunc("GET /api/v1/assets/{id}", s.getAsset)
 	protected.HandleFunc("PATCH /api/v1/assets/{id}", s.requireRoles(s.updateAsset, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("POST /api/v1/assets/{id}/verification", s.requireRoles(s.verifyAsset, domain.RoleAdmin, domain.RoleOperator))
+	protected.HandleFunc("POST /api/v1/assets/{id}/suspend", s.requireRoles(s.suspendAsset, domain.RoleAdmin, domain.RoleOperator))
+	protected.HandleFunc("POST /api/v1/assets/{id}/resume", s.requireRoles(s.resumeAsset, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/policies", s.listPolicies)
 	protected.HandleFunc("PUT /api/v1/policies/{assetId}", s.requireRoles(s.updatePolicy, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/baselines", s.listBaselines)
@@ -124,11 +170,13 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("POST /api/v1/baselines/{id}/retire", s.requireRoles(s.retireBaseline, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/detection-jobs", s.listJobs)
 	protected.HandleFunc("POST /api/v1/detection-jobs", s.requireRoles(s.createJob, domain.RoleAdmin, domain.RoleOperator))
+	protected.HandleFunc("POST /api/v1/detection-jobs/{id}/cancel", s.requireRoles(s.cancelJob, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/incidents", s.listIncidents)
 	protected.HandleFunc("GET /api/v1/incidents/{id}", s.getIncident)
 	protected.HandleFunc("POST /api/v1/incidents/{id}/transition", s.requireRoles(s.transitionIncident, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/evidence", s.listEvidence)
 	protected.HandleFunc("GET /api/v1/evidence/{id}/download", s.downloadEvidence)
+	protected.HandleFunc("POST /api/v1/evidence/{id}/signed-url", s.requireRoles(s.signedEvidenceURL, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/alert-channels", s.listAlertChannels)
 	protected.HandleFunc("POST /api/v1/alert-channels", s.requireRoles(s.createAlertChannel, domain.RoleAdmin))
 	protected.HandleFunc("GET /api/v1/alert-deliveries", s.listAlertDeliveries)
@@ -145,6 +193,12 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("POST /api/v1/tenants", s.requireSuperAdmin(s.createTenant))
 	protected.HandleFunc("GET /api/v1/tenants/{id}", s.requireSuperAdmin(s.getTenant))
 	protected.HandleFunc("PATCH /api/v1/tenants/{id}", s.requireSuperAdmin(s.updateTenant))
+	protected.HandleFunc("DELETE /api/v1/tenants/{id}", s.requireSuperAdmin(s.deleteTenant))
+	protected.HandleFunc("GET /api/v1/users", s.requireRoles(s.listUsers, domain.RoleAdmin))
+	protected.HandleFunc("POST /api/v1/users", s.requireRoles(s.createUser, domain.RoleAdmin))
+	protected.HandleFunc("PATCH /api/v1/users/{id}", s.requireRoles(s.updateUser, domain.RoleAdmin))
+	protected.HandleFunc("POST /api/v1/users/{id}/password", s.requireRoles(s.resetUserPassword, domain.RoleAdmin))
+	protected.HandleFunc("POST /api/v1/auth/password", s.changeOwnPassword)
 
 	root.Handle("/api/v1/", s.authenticate(s.csrf(protected)))
 	return s.trace(root)
@@ -198,11 +252,28 @@ func (s *Server) login(writer http.ResponseWriter, request *http.Request) {
 		}
 		tenantID = tenant.ID
 	}
-	session, err := s.auth.Login(tenantID, strings.TrimSpace(input.Username), input.Password)
+	username := strings.TrimSpace(input.Username)
+	if err := s.loginGuard.BeforeLogin(request.Context(), tenantID, username, remoteIP(request)); err != nil {
+		var locked *auth.ErrAccountLocked
+		if errors.As(err, &locked) {
+			writeError(writer, request, http.StatusUnauthorized, "ACCOUNT_LOCKED", "账户已锁定，请稍后再试",
+				map[string]any{"retryAfterSeconds": int(locked.RetryAfter.Seconds())})
+			return
+		}
+		var limited *auth.ErrRateLimited
+		if errors.As(err, &limited) {
+			writer.Header().Set("Retry-After", strconv.Itoa(int(limited.RetryAfter.Seconds())))
+			writeError(writer, request, http.StatusTooManyRequests, "RATE_LIMITED", "请求过于频繁，请稍后再试", nil)
+			return
+		}
+	}
+	session, err := s.auth.Login(request.Context(), tenantID, username, input.Password)
 	if err != nil {
+		s.loginGuard.RecordFailure(request.Context(), tenantID, username)
 		writeError(writer, request, http.StatusUnauthorized, "INVALID_CREDENTIALS", "用户名或密码错误", nil)
 		return
 	}
+	s.loginGuard.RecordSuccess(request.Context(), tenantID, username)
 	http.SetCookie(writer, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    session.ID,
@@ -223,7 +294,7 @@ func (s *Server) session(writer http.ResponseWriter, request *http.Request) {
 
 func (s *Server) logout(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	s.auth.Delete(session.ID)
+	s.auth.Delete(request.Context(), session.ID)
 	http.SetCookie(writer, &http.Cookie{
 		Name: sessionCookie, Value: "", Path: "/", HttpOnly: true,
 		Secure: s.sessionSecure, SameSite: http.SameSiteLaxMode, MaxAge: -1,
@@ -234,17 +305,17 @@ func (s *Server) logout(writer http.ResponseWriter, request *http.Request) {
 
 func (s *Server) dashboard(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	assets, err := s.repository.ListAssets(session.User.TenantID)
+	assets, _, err := s.repository.ListAssets(session.User.TenantID, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list dashboard assets", err)
 		return
 	}
-	incidents, err := s.repository.ListIncidents(session.User.TenantID)
+	incidents, _, err := s.repository.ListIncidents(session.User.TenantID, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list dashboard incidents", err)
 		return
 	}
-	jobs, err := s.repository.ListJobs(session.User.TenantID)
+	jobs, _, err := s.repository.ListJobs(session.User.TenantID, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list dashboard jobs", err)
 		return
@@ -276,12 +347,19 @@ func (s *Server) dashboard(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) listAssets(writer http.ResponseWriter, request *http.Request) {
-	items, err := s.repository.ListAssets(principal(request).User.TenantID)
+	siteID := request.URL.Query().Get("siteId")
+	opts := listOptions(request)
+	if siteID != "" {
+		// A site-scoped listing is small; fetch unbounded so the post-filter
+		// cannot cross the keyset page boundary.
+		opts = store.ListOptions{}
+	}
+	items, nextCursor, err := s.repository.ListAssets(principal(request).User.TenantID, opts)
 	if err != nil {
 		s.repositoryFailure(writer, request, "list assets", err)
 		return
 	}
-	if siteID := request.URL.Query().Get("siteId"); siteID != "" {
+	if siteID != "" {
 		filtered := make([]domain.Asset, 0, len(items))
 		for _, asset := range items {
 			if asset.SiteID == siteID {
@@ -290,7 +368,7 @@ func (s *Server) listAssets(writer http.ResponseWriter, request *http.Request) {
 		}
 		items = filtered
 	}
-	writeList(writer, items)
+	writeList(writer, items, nextCursor)
 }
 
 func (s *Server) getAsset(writer http.ResponseWriter, request *http.Request) {
@@ -302,31 +380,75 @@ func (s *Server) getAsset(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, http.StatusOK, item)
 }
 
+// assetInput is the accepted shape for asset creation. It is shared by the
+// single-asset endpoint and the batch import endpoint so both go through
+// exactly the same validation.
+type assetInput struct {
+	Name               string                    `json:"name"`
+	URL                string                    `json:"url"`
+	Type               domain.AssetType          `json:"type"`
+	OwnerID            string                    `json:"ownerId"`
+	SiteID             string                    `json:"siteId"`
+	VerificationMethod domain.VerificationMethod `json:"verificationMethod"`
+}
+
 func (s *Server) createAsset(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	var input struct {
-		Name    string           `json:"name"`
-		URL     string           `json:"url"`
-		Type    domain.AssetType `json:"type"`
-		OwnerID string           `json:"ownerId"`
-		SiteID  string           `json:"siteId"`
-	}
+	var input assetInput
 	if !decodeJSON(writer, request, &input) {
 		return
 	}
-	parsed, _, err := s.guard.Validate(request.Context(), input.URL)
+	asset, code, message, err := s.buildAsset(request.Context(), session.User, input)
 	if err != nil {
-		writeError(writer, request, http.StatusBadRequest, "UNSAFE_TARGET", "目标 URL 不符合安全策略", nil)
+		status := http.StatusBadRequest
+		if code == "ASSET_EXISTS" {
+			status = http.StatusConflict
+		}
+		writeError(writer, request, status, code, message, nil)
 		return
 	}
-	if strings.TrimSpace(input.Name) == "" || !validAssetType(input.Type) {
-		writeError(writer, request, http.StatusBadRequest, "INVALID_ASSET", "资产名称或类型无效", nil)
+	if err := s.repository.CreateAsset(asset); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(writer, request, http.StatusConflict, "ASSET_EXISTS", "该 URL 已经登记", nil)
+			return
+		}
+		s.repositoryFailure(writer, request, "create asset", err)
 		return
+	}
+	if err := s.repository.UpsertPolicy(defaultPolicy(asset)); err != nil {
+		writeError(writer, request, http.StatusInternalServerError, "POLICY_CREATE_FAILED", "无法创建默认监测策略", nil)
+		return
+	}
+	s.appendAudit(request, session.User, "asset.create", "asset", asset.ID, "SUCCESS", map[string]any{"url": asset.URL, "siteId": asset.SiteID})
+	writeJSON(writer, http.StatusCreated, asset)
+}
+
+// buildAsset validates one asset definition and returns an unsaved domain.Asset
+// scoped to owner's tenant. Every failure is returned as a machine-readable
+// code plus a human-readable message; no state is written.
+func (s *Server) buildAsset(
+	ctx context.Context,
+	owner domain.User,
+	input assetInput,
+) (domain.Asset, string, string, error) {
+	parsed, _, err := s.guard.Validate(ctx, input.URL)
+	if err != nil {
+		return domain.Asset{}, "UNSAFE_TARGET", "目标 URL 不符合安全策略", err
+	}
+	if strings.TrimSpace(input.Name) == "" || !validAssetType(input.Type) {
+		return domain.Asset{}, "INVALID_ASSET", "资产名称或类型无效", errors.New("invalid asset name or type")
+	}
+	method := input.VerificationMethod
+	if method == "" {
+		method = domain.VerificationFile
+	}
+	if method != domain.VerificationFile && method != domain.VerificationDNS && method != domain.VerificationMeta {
+		return domain.Asset{}, "INVALID_ASSET", "资产验证方式无效", errors.New("invalid verification method")
 	}
 	now := time.Now().UTC()
 	asset := domain.Asset{
 		ID:                 identity.New(),
-		TenantID:           session.User.TenantID,
+		TenantID:           owner.TenantID,
 		SiteID:             input.SiteID,
 		Name:               strings.TrimSpace(input.Name),
 		URL:                canonicalURL(parsed),
@@ -334,32 +456,212 @@ func (s *Server) createAsset(writer http.ResponseWriter, request *http.Request) 
 		OwnerID:            input.OwnerID,
 		Enabled:            false,
 		VerificationStatus: domain.VerificationPending,
+		VerificationMethod: method,
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
 	if asset.OwnerID == "" {
-		asset.OwnerID = session.User.ID
-	} else if _, err := s.repository.GetUser(session.User.TenantID, asset.OwnerID); err != nil {
-		writeError(writer, request, http.StatusBadRequest, "INVALID_OWNER", "负责人不属于当前租户", nil)
-		return
+		asset.OwnerID = owner.ID
+	} else if _, err := s.repository.GetUser(owner.TenantID, asset.OwnerID); err != nil {
+		return domain.Asset{}, "INVALID_OWNER", "负责人不属于当前租户", err
 	}
 	if asset.SiteID != "" {
-		if _, err := s.repository.GetSite(session.User.TenantID, asset.SiteID); err != nil {
-			writeError(writer, request, http.StatusBadRequest, "INVALID_SITE", "站点不属于当前租户", nil)
-			return
+		if _, err := s.repository.GetSite(owner.TenantID, asset.SiteID); err != nil {
+			return domain.Asset{}, "INVALID_SITE", "站点不属于当前租户", err
 		}
 	}
-	if err := s.repository.CreateAsset(asset); err != nil {
-		writeError(writer, request, http.StatusConflict, "ASSET_EXISTS", "该 URL 已经登记", nil)
+	return asset, "", "", nil
+}
+
+// importAssets creates many assets from one request. Rows are independent: a
+// rejected row does not roll back the rows that succeeded, and the response
+// reports each row's outcome so the caller can retry only the failures. Every
+// row goes through buildAsset, so SSRF, ownership and tenant checks are
+// identical to the single-asset endpoint.
+func (s *Server) importAssets(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	var input struct {
+		Assets  []assetInput `json:"assets"`
+		DryRun  bool         `json:"dryRun"`
+		SiteID  string       `json:"siteId"`
+		OwnerID string       `json:"ownerId"`
+	}
+	if !decodeJSON(writer, request, &input) {
 		return
 	}
-	policy := defaultPolicy(asset)
-	if err := s.repository.UpsertPolicy(policy); err != nil {
-		writeError(writer, request, http.StatusInternalServerError, "POLICY_CREATE_FAILED", "无法创建默认监测策略", nil)
+	if len(input.Assets) == 0 {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_IMPORT", "导入内容为空", nil)
 		return
 	}
-	s.appendAudit(request, session.User, "asset.create", "asset", asset.ID, "SUCCESS", map[string]any{"url": asset.URL, "siteId": asset.SiteID})
-	writeJSON(writer, http.StatusCreated, asset)
+	if len(input.Assets) > maxImportRows {
+		writeError(writer, request, http.StatusBadRequest, "IMPORT_TOO_LARGE", "单次导入行数超过上限", map[string]any{"limit": maxImportRows})
+		return
+	}
+	type rowResult struct {
+		Index   int    `json:"index"`
+		AssetID string `json:"assetId,omitempty"`
+		Name    string `json:"name,omitempty"`
+		URL     string `json:"url,omitempty"`
+		Status  string `json:"status"`
+		Code    string `json:"code,omitempty"`
+		Message string `json:"message,omitempty"`
+	}
+	results := make([]rowResult, 0, len(input.Assets))
+	created := 0
+	for index, row := range input.Assets {
+		// Request-level defaults apply only when the row does not set them.
+		if row.SiteID == "" {
+			row.SiteID = input.SiteID
+		}
+		if row.OwnerID == "" {
+			row.OwnerID = input.OwnerID
+		}
+		asset, code, message, err := s.buildAsset(request.Context(), session.User, row)
+		if err != nil {
+			results = append(results, rowResult{Index: index, Name: row.Name, URL: row.URL, Status: "REJECTED", Code: code, Message: message})
+			continue
+		}
+		if input.DryRun {
+			results = append(results, rowResult{Index: index, Name: asset.Name, URL: asset.URL, Status: "VALIDATED"})
+			continue
+		}
+		if err := s.repository.CreateAsset(asset); err != nil {
+			status, code, message := "REJECTED", "IMPORT_FAILED", "无法写入资产"
+			if errors.Is(err, store.ErrConflict) {
+				code, message = "ASSET_EXISTS", "该 URL 已经登记"
+			}
+			results = append(results, rowResult{Index: index, Name: asset.Name, URL: asset.URL, Status: status, Code: code, Message: message})
+			continue
+		}
+		if err := s.repository.UpsertPolicy(defaultPolicy(asset)); err != nil {
+			results = append(results, rowResult{Index: index, Name: asset.Name, URL: asset.URL, Status: "REJECTED", Code: "POLICY_CREATE_FAILED", Message: "无法创建默认监测策略"})
+			continue
+		}
+		created++
+		results = append(results, rowResult{Index: index, AssetID: asset.ID, Name: asset.Name, URL: asset.URL, Status: "CREATED"})
+	}
+	s.appendAudit(request, session.User, "asset.import", "asset", "", "SUCCESS", map[string]any{
+		"rows": len(input.Assets), "created": created, "dryRun": input.DryRun,
+	})
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"dryRun": input.DryRun, "rows": len(input.Assets), "created": created, "results": results,
+	})
+}
+
+// exportAssets returns every asset in the caller's tenant as CSV or JSON. The
+// export is tenant-scoped from the session, never from a query parameter.
+func (s *Server) exportAssets(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	format := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("format")))
+	if format == "" {
+		format = "json"
+	}
+	if format != "json" && format != "csv" {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_FORMAT", "导出格式必须是 json 或 csv", nil)
+		return
+	}
+	// Export is an unbounded, explicit operation, so it bypasses the keyset page.
+	items, _, err := s.repository.ListAssets(session.User.TenantID, store.ListOptions{})
+	if err != nil {
+		s.repositoryFailure(writer, request, "export assets", err)
+		return
+	}
+	s.appendAudit(request, session.User, "asset.export", "asset", "", "SUCCESS", map[string]any{
+		"count": len(items), "format": format,
+	})
+	if format == "csv" {
+		writer.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		writer.Header().Set("Content-Disposition", `attachment; filename="assets.csv"`)
+		writer.Header().Set("X-Content-Type-Options", "nosniff")
+		writer.Header().Set("Cache-Control", "no-store")
+		csvWriter := csv.NewWriter(writer)
+		_ = csvWriter.Write([]string{"id", "name", "url", "type", "siteId", "ownerId", "enabled", "verificationStatus", "verificationMethod", "createdAt"})
+		for _, asset := range items {
+			_ = csvWriter.Write([]string{
+				asset.ID, asset.Name, asset.URL, string(asset.Type), asset.SiteID, asset.OwnerID,
+				strconv.FormatBool(asset.Enabled), string(asset.VerificationStatus), string(asset.VerificationMethod),
+				asset.CreatedAt.UTC().Format(time.RFC3339),
+			})
+		}
+		csvWriter.Flush()
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) deleteTenant(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	var input struct {
+		Confirm string `json:"confirm"`
+		Cascade bool   `json:"cascade"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	tenant, err := s.repository.GetTenant(request.PathValue("id"))
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	// Fail closed on the irreversible cases before touching any data. Deleting
+	// the caller's own tenant would also destroy the audit trail that records
+	// the deletion, so it is refused outright.
+	if tenant.ID == session.User.TenantID {
+		writeError(writer, request, http.StatusConflict, "TENANT_SELF_DELETE", "不能删除当前登录的租户", nil)
+		return
+	}
+	if tenant.ID == domain.DefaultTenantID {
+		writeError(writer, request, http.StatusConflict, "TENANT_PROTECTED", "默认租户不可删除", nil)
+		return
+	}
+	// The confirmation must echo the slug; the path already pins the ID.
+	if input.Confirm != tenant.Slug {
+		writeError(writer, request, http.StatusBadRequest, "CONFIRM_MISMATCH", "确认信息与租户标识不一致", map[string]any{"expected": "slug"})
+		return
+	}
+	counts, err := s.repository.CountTenantResources(tenant.ID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "count tenant resources", err)
+		return
+	}
+	total := 0
+	for _, count := range counts {
+		total += count
+	}
+	if total > 0 && !input.Cascade {
+		details := make(map[string]any, len(counts))
+		for kind, count := range counts {
+			details[kind] = count
+		}
+		writeError(writer, request, http.StatusConflict, "TENANT_NOT_EMPTY", "租户仍有关联数据，需显式级联删除", details)
+		return
+	}
+	// Audit before the delete so the record survives in the caller's tenant.
+	s.appendAudit(request, session.User, "tenant.delete", "tenant", tenant.ID, "SUCCESS", map[string]any{
+		"slug": tenant.Slug, "cascade": input.Cascade, "resources": counts,
+	})
+	deleteEvidenceObjects := s.evidence != nil
+	var skippedObjects int
+	if deleteEvidenceObjects {
+		items, _, listErr := s.repository.ListEvidence(tenant.ID, "", store.ListOptions{})
+		if listErr != nil {
+			s.repositoryFailure(writer, request, "list tenant evidence", listErr)
+			return
+		}
+		for _, item := range items {
+			if deleteErr := s.evidence.Delete(item.ObjectKey); deleteErr != nil {
+				skippedObjects++
+				s.logger.Warn("delete tenant evidence object failed", "evidence", item.ID, "error", deleteErr)
+			}
+		}
+	}
+	if err := s.repository.DeleteTenant(tenant.ID); err != nil {
+		s.repositoryFailure(writer, request, "delete tenant", err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"tenantId": tenant.ID, "deletedResources": counts, "orphanedEvidenceObjects": skippedObjects,
+	})
 }
 
 func (s *Server) updateAsset(writer http.ResponseWriter, request *http.Request) {
@@ -430,10 +732,10 @@ func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) 
 	}
 	if strings.ToUpper(input.Action) == "ISSUE" {
 		now := time.Now().UTC()
-		token := "webmonitoring-verification=" + identity.New()
+		value := "webmonitoring-verification=" + identity.New()
 		expires := now.Add(30 * time.Minute)
 		asset.VerificationToken = ""
-		asset.VerificationTokenHash = fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+		asset.VerificationTokenHash = fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
 		asset.VerificationIssuedAt = &now
 		asset.VerificationExpiresAt = &expires
 		asset.VerificationStatus = domain.VerificationPending
@@ -442,10 +744,8 @@ func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) 
 			writeError(writer, request, http.StatusInternalServerError, "ASSET_UPDATE_FAILED", "无法保存验证状态", nil)
 			return
 		}
-		s.appendAudit(request, session.User, "asset.verification.issue", "asset", asset.ID, "SUCCESS", nil)
-		writeJSON(writer, http.StatusOK, map[string]string{
-			"path": "/.well-known/webmonitoring-verification.txt", "content": token,
-		})
+		s.appendAudit(request, session.User, "asset.verification.issue", "asset", asset.ID, "SUCCESS", map[string]any{"method": assetMethod(asset)})
+		writeJSON(writer, http.StatusOK, verificationInstructions(asset, value))
 		return
 	}
 	if strings.ToUpper(input.Action) != "VERIFY" || (asset.VerificationToken == "" && asset.VerificationTokenHash == "") {
@@ -485,13 +785,64 @@ func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) 
 	writeJSON(writer, http.StatusOK, asset)
 }
 
+// suspendAsset stops monitoring a verified asset by moving it to SUSPENDED and
+// disabling it. Only a VERIFIED asset can be suspended; any other state is a
+// conflict. The scheduler and Service.Queue both skip non-verified/disabled
+// assets, so suspension immediately halts detection.
+func (s *Server) suspendAsset(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	asset, err := s.repository.GetAsset(session.User.TenantID, request.PathValue("id"))
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	if asset.VerificationStatus != domain.VerificationVerified {
+		writeError(writer, request, http.StatusConflict, "INVALID_ASSET_STATE", "仅已验证资产可暂停", nil)
+		return
+	}
+	asset.VerificationStatus = domain.VerificationSuspended
+	asset.Enabled = false
+	asset.UpdatedAt = time.Now().UTC()
+	if err := s.repository.UpdateAsset(asset); err != nil {
+		writeError(writer, request, http.StatusInternalServerError, "ASSET_UPDATE_FAILED", "无法暂停资产", nil)
+		return
+	}
+	s.appendAudit(request, session.User, "asset.suspend", "asset", asset.ID, "SUCCESS", nil)
+	writeJSON(writer, http.StatusOK, asset)
+}
+
+// resumeAsset returns a suspended asset to VERIFIED without re-enabling it.
+// Re-enabling goes through the existing PATCH path, which already requires the
+// asset to be VERIFIED.
+func (s *Server) resumeAsset(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	asset, err := s.repository.GetAsset(session.User.TenantID, request.PathValue("id"))
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	if asset.VerificationStatus != domain.VerificationSuspended {
+		writeError(writer, request, http.StatusConflict, "INVALID_ASSET_STATE", "仅已暂停资产可恢复", nil)
+		return
+	}
+	asset.VerificationStatus = domain.VerificationVerified
+	asset.Enabled = false
+	asset.UpdatedAt = time.Now().UTC()
+	if err := s.repository.UpdateAsset(asset); err != nil {
+		writeError(writer, request, http.StatusInternalServerError, "ASSET_UPDATE_FAILED", "无法恢复资产", nil)
+		return
+	}
+	s.appendAudit(request, session.User, "asset.resume", "asset", asset.ID, "SUCCESS", nil)
+	writeJSON(writer, http.StatusOK, asset)
+}
+
 func (s *Server) listSites(writer http.ResponseWriter, request *http.Request) {
-	items, err := s.repository.ListSites(principal(request).User.TenantID)
+	items, nextCursor, err := s.repository.ListSites(principal(request).User.TenantID, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list sites", err)
 		return
 	}
-	writeList(writer, items)
+	writeList(writer, items, nextCursor)
 }
 
 func (s *Server) getSite(writer http.ResponseWriter, request *http.Request) {
@@ -584,12 +935,12 @@ func (s *Server) updateSite(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) listTenants(writer http.ResponseWriter, request *http.Request) {
-	items, err := s.repository.ListTenants()
+	items, nextCursor, err := s.repository.ListTenants(listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list tenants", err)
 		return
 	}
-	writeList(writer, items)
+	writeList(writer, items, nextCursor)
 }
 
 func (s *Server) getTenant(writer http.ResponseWriter, request *http.Request) {
@@ -660,8 +1011,9 @@ func (s *Server) updateTenant(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	var input struct {
-		Name *string `json:"name"`
-		Slug *string `json:"slug"`
+		Name     *string `json:"name"`
+		Slug     *string `json:"slug"`
+		Disabled *bool   `json:"disabled"`
 	}
 	if !decodeJSON(writer, request, &input) {
 		return
@@ -677,6 +1029,15 @@ func (s *Server) updateTenant(writer http.ResponseWriter, request *http.Request)
 		}
 		tenant.Slug = slug
 	}
+	if input.Disabled != nil {
+		// Fail closed: the platform's own tenant and the caller's tenant must
+		// stay administrable, otherwise a single request can lock everyone out.
+		if *input.Disabled && (tenant.ID == domain.DefaultTenantID || tenant.ID == session.User.TenantID) {
+			writeError(writer, request, http.StatusConflict, "TENANT_PROTECTED", "默认租户或当前登录租户不可停用", nil)
+			return
+		}
+		tenant.Disabled = *input.Disabled
+	}
 	if err := s.repository.UpdateTenant(tenant); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(writer, request, http.StatusConflict, "TENANT_EXISTS", "租户标识已存在", nil)
@@ -685,17 +1046,213 @@ func (s *Server) updateTenant(writer http.ResponseWriter, request *http.Request)
 		s.repositoryFailure(writer, request, "update tenant", err)
 		return
 	}
-	s.appendAudit(request, session.User, "tenant.update", "tenant", tenant.ID, "SUCCESS", nil)
+	s.appendAudit(request, session.User, "tenant.update", "tenant", tenant.ID, "SUCCESS", map[string]any{"disabled": tenant.Disabled})
 	writeJSON(writer, http.StatusOK, tenant)
 }
 
+func (s *Server) listUsers(writer http.ResponseWriter, request *http.Request) {
+	items, err := s.repository.ListUsers(principal(request).User.TenantID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "list users", err)
+		return
+	}
+	writeList(writer, items, "")
+}
+
+func (s *Server) createUser(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	var input struct {
+		Username string      `json:"username"`
+		Password string      `json:"password"`
+		Role     domain.Role `json:"role"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	username := strings.TrimSpace(input.Username)
+	if username == "" || len(input.Password) < 12 {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_USER", "用户名或密码不满足要求", nil)
+		return
+	}
+	// Tenant admins may only provision operational or auditor accounts; admin and
+	// platform super-admin accounts are created elsewhere (tenant bootstrap).
+	if input.Role != domain.RoleOperator && input.Role != domain.RoleAuditor {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_ROLE", "仅可创建 OPERATOR 或 AUDITOR 用户", nil)
+		return
+	}
+	hash, err := security.HashPassword(input.Password)
+	if err != nil {
+		s.logger.Error("hash user password", "error", err)
+		writeError(writer, request, http.StatusBadRequest, "INVALID_PASSWORD", "密码不满足要求", nil)
+		return
+	}
+	now := time.Now().UTC()
+	user := domain.User{
+		ID: identity.New(), TenantID: session.User.TenantID, Username: username,
+		PasswordHash: hash, Role: input.Role, CreatedAt: now,
+	}
+	if err := s.repository.CreateUser(user); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(writer, request, http.StatusConflict, "USER_EXISTS", "用户名已存在", nil)
+			return
+		}
+		s.repositoryFailure(writer, request, "create user", err)
+		return
+	}
+	s.appendAudit(request, session.User, "user.create", "user", user.ID, "SUCCESS", map[string]any{"username": user.Username, "role": string(user.Role)})
+	writeJSON(writer, http.StatusCreated, user)
+}
+
+func (s *Server) updateUser(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	user, err := s.repository.GetUser(session.User.TenantID, request.PathValue("id"))
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	// The bootstrap SUPER_ADMIN is a platform account, not tenant-managed.
+	if user.Role == domain.RoleSuperAdmin {
+		writeError(writer, request, http.StatusForbidden, "SUPER_ADMIN_PROTECTED", "不能修改平台超级管理员", nil)
+		return
+	}
+	wasEnabledAdmin := user.Role == domain.RoleAdmin && !user.Disabled
+	var input struct {
+		Username *string      `json:"username"`
+		Role     *domain.Role `json:"role"`
+		Disabled *bool        `json:"disabled"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	if input.Username != nil && strings.TrimSpace(*input.Username) != "" {
+		user.Username = strings.TrimSpace(*input.Username)
+	}
+	if input.Role != nil {
+		if !validUserRole(*input.Role) {
+			writeError(writer, request, http.StatusBadRequest, "INVALID_ROLE", "角色无效", nil)
+			return
+		}
+		user.Role = *input.Role
+	}
+	if input.Disabled != nil {
+		user.Disabled = *input.Disabled
+	}
+	// Fail closed: an admin cannot disable or demote themselves.
+	if user.ID == session.User.ID && (user.Disabled || user.Role != session.User.Role) {
+		writeError(writer, request, http.StatusConflict, "SELF_DEMOTION", "不能禁用或降级自己", nil)
+		return
+	}
+	// A tenant must always retain at least one enabled admin.
+	if wasEnabledAdmin && (user.Disabled || user.Role != domain.RoleAdmin) {
+		if remaining, countErr := s.countOtherEnabledAdmins(session.User.TenantID, user.ID); countErr == nil && remaining == 0 {
+			writeError(writer, request, http.StatusConflict, "LAST_ADMIN", "租户内至少需保留一名启用的管理员", nil)
+			return
+		}
+	}
+	if err := s.repository.UpdateUser(user); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(writer, request, http.StatusConflict, "USER_EXISTS", "用户名已存在", nil)
+			return
+		}
+		s.repositoryFailure(writer, request, "update user", err)
+		return
+	}
+	s.appendAudit(request, session.User, "user.update", "user", user.ID, "SUCCESS", map[string]any{"role": string(user.Role), "disabled": user.Disabled})
+	writeJSON(writer, http.StatusOK, user)
+}
+
+func (s *Server) resetUserPassword(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	user, err := s.repository.GetUser(session.User.TenantID, request.PathValue("id"))
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	if user.Role == domain.RoleSuperAdmin {
+		writeError(writer, request, http.StatusForbidden, "SUPER_ADMIN_PROTECTED", "不能修改平台超级管理员", nil)
+		return
+	}
+	var input struct {
+		Password string `json:"password"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	if len(input.Password) < 12 {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_PASSWORD", "密码至少 12 位", nil)
+		return
+	}
+	hash, err := security.HashPassword(input.Password)
+	if err != nil {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_PASSWORD", "密码不满足要求", nil)
+		return
+	}
+	user.PasswordHash = hash
+	if err := s.repository.UpdateUser(user); err != nil {
+		s.repositoryFailure(writer, request, "reset user password", err)
+		return
+	}
+	s.appendAudit(request, session.User, "user.password.reset", "user", user.ID, "SUCCESS", nil)
+	writeJSON(writer, http.StatusNoContent, nil)
+}
+
+func (s *Server) changeOwnPassword(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	var input struct {
+		CurrentPassword string `json:"currentPassword"`
+		NewPassword     string `json:"newPassword"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	if !security.VerifyPassword(session.User.PasswordHash, input.CurrentPassword) {
+		writeError(writer, request, http.StatusUnauthorized, "INVALID_PASSWORD", "当前密码不正确", nil)
+		return
+	}
+	if len(input.NewPassword) < 12 {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_PASSWORD", "密码至少 12 位", nil)
+		return
+	}
+	hash, err := security.HashPassword(input.NewPassword)
+	if err != nil {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_PASSWORD", "密码不满足要求", nil)
+		return
+	}
+	user := session.User
+	user.PasswordHash = hash
+	if err := s.repository.UpdateUser(user); err != nil {
+		s.repositoryFailure(writer, request, "change password", err)
+		return
+	}
+	s.appendAudit(request, session.User, "auth.password.change", "user", user.ID, "SUCCESS", nil)
+	writeJSON(writer, http.StatusNoContent, nil)
+}
+
+func (s *Server) countOtherEnabledAdmins(tenantID, excludeID string) (int, error) {
+	users, err := s.repository.ListUsers(tenantID)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, user := range users {
+		if user.ID != excludeID && user.Role == domain.RoleAdmin && !user.Disabled {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func validUserRole(role domain.Role) bool {
+	return role == domain.RoleAdmin || role == domain.RoleOperator || role == domain.RoleAuditor
+}
+
 func (s *Server) listPolicies(writer http.ResponseWriter, request *http.Request) {
-	items, err := s.repository.ListPolicies(principal(request).User.TenantID)
+	items, nextCursor, err := s.repository.ListPolicies(principal(request).User.TenantID, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list policies", err)
 		return
 	}
-	writeList(writer, items)
+	writeList(writer, items, nextCursor)
 }
 
 func (s *Server) updatePolicy(writer http.ResponseWriter, request *http.Request) {
@@ -755,12 +1312,12 @@ func (s *Server) updatePolicy(writer http.ResponseWriter, request *http.Request)
 }
 
 func (s *Server) listBaselines(writer http.ResponseWriter, request *http.Request) {
-	items, err := s.repository.ListBaselines(principal(request).User.TenantID, request.URL.Query().Get("assetId"))
+	items, nextCursor, err := s.repository.ListBaselines(principal(request).User.TenantID, request.URL.Query().Get("assetId"), listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list baselines", err)
 		return
 	}
-	writeList(writer, items)
+	writeList(writer, items, nextCursor)
 }
 
 func (s *Server) approveBaseline(writer http.ResponseWriter, request *http.Request) {
@@ -806,12 +1363,12 @@ func (s *Server) changeBaselineStatus(writer http.ResponseWriter, request *http.
 }
 
 func (s *Server) listJobs(writer http.ResponseWriter, request *http.Request) {
-	items, err := s.repository.ListJobs(principal(request).User.TenantID)
+	items, nextCursor, err := s.repository.ListJobs(principal(request).User.TenantID, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list jobs", err)
 		return
 	}
-	writeList(writer, items)
+	writeList(writer, items, nextCursor)
 }
 
 func (s *Server) createJob(writer http.ResponseWriter, request *http.Request) {
@@ -832,14 +1389,43 @@ func (s *Server) createJob(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, http.StatusAccepted, job)
 }
 
+// cancelJob transitions a QUEUED or RUNNING job to CANCELLED. Jobs already in a
+// terminal state (SUCCEEDED/FAILED/TIMED_OUT) are a conflict. Cancellation of a
+// RUNNING job is best-effort: Process re-reads the status before its final
+// write so CANCELLED wins over a late SUCCEEDED.
+func (s *Server) cancelJob(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	id := request.PathValue("id")
+	if _, err := s.repository.GetJob(session.User.TenantID, id); err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	changed, err := s.repository.CancelJob(session.User.TenantID, id)
+	if err != nil {
+		s.repositoryFailure(writer, request, "cancel detection job", err)
+		return
+	}
+	if !changed {
+		writeError(writer, request, http.StatusConflict, "INVALID_JOB_STATE", "仅排队或运行中的任务可取消", nil)
+		return
+	}
+	job, err := s.repository.GetJob(session.User.TenantID, id)
+	if err != nil {
+		s.repositoryFailure(writer, request, "reload cancelled detection job", err)
+		return
+	}
+	s.appendAudit(request, session.User, "detection.cancel", "detection_job", id, "SUCCESS", nil)
+	writeJSON(writer, http.StatusOK, job)
+}
+
 func (s *Server) listIncidents(writer http.ResponseWriter, request *http.Request) {
-	incidents, err := s.repository.ListIncidents(principal(request).User.TenantID)
+	incidents, nextCursor, err := s.repository.ListIncidents(principal(request).User.TenantID, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list incidents", err)
 		return
 	}
 	s.updateIncidentMetrics(incidents)
-	writeList(writer, incidents)
+	writeList(writer, incidents, nextCursor)
 }
 
 func (s *Server) updateIncidentMetrics(incidents []domain.Incident) {
@@ -928,12 +1514,12 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 }
 
 func (s *Server) listEvidence(writer http.ResponseWriter, request *http.Request) {
-	items, err := s.repository.ListEvidence(principal(request).User.TenantID, request.URL.Query().Get("assetId"))
+	items, nextCursor, err := s.repository.ListEvidence(principal(request).User.TenantID, request.URL.Query().Get("assetId"), listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list evidence", err)
 		return
 	}
-	writeList(writer, items)
+	writeList(writer, items, nextCursor)
 }
 
 func (s *Server) downloadEvidence(writer http.ResponseWriter, request *http.Request) {
@@ -959,6 +1545,83 @@ func (s *Server) downloadEvidence(writer http.ResponseWriter, request *http.Requ
 	s.appendAudit(request, session.User, "evidence.download", "evidence", item.ID, "SUCCESS", nil)
 }
 
+// signedEvidenceURL issues a short-lived download URL for an evidence object.
+// S3 objects receive a presigned object URL; local objects receive a signed
+// control-plane URL that still passes the ReadVerified integrity check.
+func (s *Server) signedEvidenceURL(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	item, err := s.repository.GetEvidence(session.User.TenantID, request.PathValue("id"))
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	expiresAt := time.Now().UTC().Add(s.signedURLTTL)
+	urlValue, err := s.signedURLFor(request.Context(), session.User.TenantID, item, expiresAt)
+	if err != nil {
+		s.appendAudit(request, session.User, "evidence.signed_url.issued", "evidence", item.ID, "FAILED", map[string]any{"reason": "signing_failed"})
+		writeError(writer, request, http.StatusInternalServerError, "SIGNED_URL_FAILED", "无法签发短时下载链接", nil)
+		return
+	}
+	s.appendAudit(request, session.User, "evidence.signed_url.issued", "evidence", item.ID, "SUCCESS", nil)
+	writeJSON(writer, http.StatusOK, map[string]string{
+		"url":       urlValue,
+		"expiresAt": expiresAt.UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *Server) signedURLFor(ctx context.Context, tenantID string, item domain.Evidence, expiresAt time.Time) (string, error) {
+	if presigner, ok := s.evidence.(evidence.URLPresigner); ok {
+		return presigner.PresignedGetURL(ctx, item.ObjectKey, s.signedURLTTL)
+	}
+	if s.signedURLSigner == nil {
+		return "", errors.New("signed URLs are not configured")
+	}
+	message := tenantID + "|" + item.ID + "|" + strconv.FormatInt(expiresAt.Unix(), 10)
+	return "/api/v1/evidence/signed/" + s.signedURLSigner.Encode(message), nil
+}
+
+// downloadSignedEvidence serves a local-store evidence object for a valid,
+// unexpired signed token. The token itself is the authorization; the object is
+// still verified against its size and SHA-256 metadata before streaming.
+func (s *Server) downloadSignedEvidence(writer http.ResponseWriter, request *http.Request) {
+	if s.signedURLSigner == nil {
+		s.notFound(writer, request)
+		return
+	}
+	message, ok := s.signedURLSigner.Decode(request.PathValue("token"))
+	if !ok {
+		s.notFound(writer, request)
+		return
+	}
+	parts := strings.SplitN(message, "|", 3)
+	if len(parts) != 3 {
+		s.notFound(writer, request)
+		return
+	}
+	tenantID, evidenceID := parts[0], parts[1]
+	expiryUnix, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || time.Now().UTC().Unix() > expiryUnix {
+		s.notFound(writer, request)
+		return
+	}
+	item, err := s.repository.GetEvidence(tenantID, evidenceID)
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	content, err := evidence.ReadVerified(s.evidence, item)
+	if err != nil {
+		writeError(writer, request, http.StatusNotFound, "EVIDENCE_MISSING", "证据文件不存在", nil)
+		return
+	}
+	writer.Header().Set("Content-Type", item.MediaType)
+	writer.Header().Set("Content-Length", strconv.Itoa(len(content)))
+	writer.Header().Set("Content-Disposition", `attachment; filename="`+item.ID+safeExtension(item.Kind)+`"`)
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	writer.Header().Set("Cache-Control", "no-store")
+	_, _ = writer.Write(content)
+}
+
 func (s *Server) listAlertChannels(writer http.ResponseWriter, request *http.Request) {
 	items, err := s.repository.ListAlertChannels(principal(request).User.TenantID)
 	if err != nil {
@@ -968,7 +1631,7 @@ func (s *Server) listAlertChannels(writer http.ResponseWriter, request *http.Req
 	for index := range items {
 		items[index].URL = redactEndpoint(items[index].URL)
 	}
-	writeList(writer, items)
+	writeList(writer, items, "")
 }
 
 func (s *Server) listAlertDeliveries(writer http.ResponseWriter, request *http.Request) {
@@ -980,12 +1643,12 @@ func (s *Server) listAlertDeliveries(writer http.ResponseWriter, request *http.R
 			return
 		}
 	}
-	items, err := s.repository.ListAlertDeliveries(session.User.TenantID, incidentID)
+	items, nextCursor, err := s.repository.ListAlertDeliveries(session.User.TenantID, incidentID, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list alert deliveries", err)
 		return
 	}
-	writeList(writer, items)
+	writeList(writer, items, nextCursor)
 }
 
 func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request) {
@@ -1007,7 +1670,7 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 		writeError(writer, request, http.StatusBadRequest, "INVALID_SEVERITY", "风险等级无效", nil)
 		return
 	}
-	assets, err := s.repository.ListAssets(session.User.TenantID)
+	assets, _, err := s.repository.ListAssets(session.User.TenantID, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list report assets", err)
 		return
@@ -1026,7 +1689,7 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 			verifiedAssets++
 		}
 	}
-	jobs, err := s.repository.ListJobs(session.User.TenantID)
+	jobs, _, err := s.repository.ListJobs(session.User.TenantID, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list report jobs", err)
 		return
@@ -1044,7 +1707,7 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 			failedJobs++
 		}
 	}
-	incidents, err := s.repository.ListIncidents(session.User.TenantID)
+	incidents, _, err := s.repository.ListIncidents(session.User.TenantID, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list report incidents", err)
 		return
@@ -1075,7 +1738,7 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 			}
 		}
 	}
-	deliveries, err := s.repository.ListAlertDeliveries(session.User.TenantID, "")
+	deliveries, _, err := s.repository.ListAlertDeliveries(session.User.TenantID, "", store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list report deliveries", err)
 		return
@@ -1135,18 +1798,21 @@ func validSeverity(value domain.Severity) bool {
 func (s *Server) createAlertChannel(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
 	var input struct {
-		Name    string `json:"name"`
-		Type    string `json:"type"`
-		URL     string `json:"url"`
-		Secret  string `json:"secret"`
-		Enabled bool   `json:"enabled"`
+		Name       string `json:"name"`
+		Type       string `json:"type"`
+		URL        string `json:"url"`
+		Recipients string `json:"recipients"`
+		Secret     string `json:"secret"`
+		Enabled    bool   `json:"enabled"`
 	}
 	if !decodeJSON(writer, request, &input) {
 		return
 	}
 	input.Type = strings.ToUpper(input.Type)
-	if input.Type != "WEBHOOK" && input.Type != "WECHAT_WORK" {
-		writeError(writer, request, http.StatusBadRequest, "INVALID_CHANNEL", "渠道类型必须是 WEBHOOK 或 WECHAT_WORK", nil)
+	switch input.Type {
+	case "WEBHOOK", "WECHAT_WORK", "DINGTALK", "EMAIL":
+	default:
+		writeError(writer, request, http.StatusBadRequest, "INVALID_CHANNEL", "渠道类型必须是 WEBHOOK、WECHAT_WORK、DINGTALK 或 EMAIL", nil)
 		return
 	}
 	input.Name = strings.TrimSpace(input.Name)
@@ -1154,14 +1820,22 @@ func (s *Server) createAlertChannel(writer http.ResponseWriter, request *http.Re
 		writeError(writer, request, http.StatusBadRequest, "INVALID_CHANNEL", "渠道名称不能为空", nil)
 		return
 	}
-	if _, _, err := s.guard.Validate(request.Context(), input.URL); err != nil {
+	if input.Type == "EMAIL" {
+		if recipients, ok := normalizeRecipients(input.Recipients); !ok {
+			writeError(writer, request, http.StatusBadRequest, "INVALID_CHANNEL", "邮件渠道必须提供有效的收件人地址", nil)
+			return
+		} else {
+			input.Recipients = recipients
+		}
+		input.URL = ""
+	} else if _, _, err := s.guard.Validate(request.Context(), input.URL); err != nil {
 		writeError(writer, request, http.StatusBadRequest, "UNSAFE_WEBHOOK", "通知地址不符合安全策略", nil)
 		return
 	}
 	now := time.Now().UTC()
 	channel := domain.AlertChannel{
 		ID: identity.New(), TenantID: session.User.TenantID, Name: input.Name,
-		Type: input.Type, URL: input.URL, Secret: input.Secret, Enabled: input.Enabled,
+		Type: input.Type, URL: input.URL, Recipients: input.Recipients, Secret: input.Secret, Enabled: input.Enabled,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.repository.CreateAlertChannel(channel); err != nil {
@@ -1173,15 +1847,41 @@ func (s *Server) createAlertChannel(writer http.ResponseWriter, request *http.Re
 	writeJSON(writer, http.StatusCreated, channel)
 }
 
+// normalizeRecipients validates and canonicalizes a comma-separated recipient
+// list for EMAIL alert channels. It returns the normalized list and whether
+// every entry is a plausible email address.
+func normalizeRecipients(raw string) (string, bool) {
+	parts := strings.Split(raw, ",")
+	normalized := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		at := strings.Index(part, "@")
+		if at <= 0 || at == len(part)-1 || strings.ContainsAny(part, " \t\r\n") {
+			return "", false
+		}
+		normalized = append(normalized, part)
+	}
+	if len(normalized) == 0 {
+		return "", false
+	}
+	return strings.Join(normalized, ","), true
+}
+
 func (s *Server) listAudits(writer http.ResponseWriter, request *http.Request) {
-	items, err := s.repository.ListAudits(principal(request).User.TenantID)
+	items, nextCursor, err := s.repository.ListAudits(principal(request).User.TenantID, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list audit events", err)
 		return
 	}
-	writeList(writer, items)
+	writeList(writer, items, nextCursor)
 }
 
+// runRetentionMaintenance is the authorized manual trigger. It delegates to the
+// same maintenance.Runner the background loop uses, so a dry run here reports
+// exactly what the scheduled pass would do.
 func (s *Server) runRetentionMaintenance(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
 	var input struct {
@@ -1190,61 +1890,21 @@ func (s *Server) runRetentionMaintenance(writer http.ResponseWriter, request *ht
 	if !decodeJSON(writer, request, &input) {
 		return
 	}
-	now := time.Now().UTC()
-	expiredEvidence, err := s.repository.ListExpiredEvidence(session.User.TenantID, now)
+	result, err := s.retention.RunTenant(request.Context(), session.User.TenantID, input.Execute)
 	if err != nil {
-		s.repositoryFailure(writer, request, "list expired evidence", err)
+		s.repositoryFailure(writer, request, "run retention maintenance", err)
 		return
-	}
-	result := map[string]any{
-		"dryRun":             !input.Execute,
-		"expiredEvidence":    len(expiredEvidence),
-		"deletedEvidence":    0,
-		"protectedEvidence":  0,
-		"failedEvidence":     0,
-		"deletedAuditEvents": 0,
-		"failureReasons":     []string{},
-	}
-	if input.Execute {
-		failures := make([]string, 0)
-		for _, item := range expiredEvidence {
-			referenced, refErr := s.repository.IsEvidenceReferenced(session.User.TenantID, item.ID)
-			if refErr != nil {
-				result["failedEvidence"] = result["failedEvidence"].(int) + 1
-				failures = append(failures, "evidence reference check failed")
-				continue
-			}
-			if referenced {
-				result["protectedEvidence"] = result["protectedEvidence"].(int) + 1
-				continue
-			}
-			if deleteErr := s.evidence.Delete(item.ObjectKey); deleteErr != nil {
-				result["failedEvidence"] = result["failedEvidence"].(int) + 1
-				failures = append(failures, "evidence object deletion failed")
-				continue
-			}
-			if deleteErr := s.repository.DeleteEvidence(session.User.TenantID, item.ID); deleteErr != nil {
-				result["failedEvidence"] = result["failedEvidence"].(int) + 1
-				failures = append(failures, "evidence metadata deletion failed")
-				continue
-			}
-			result["deletedEvidence"] = result["deletedEvidence"].(int) + 1
-		}
-		deletedAudits, deleteErr := s.repository.DeleteAuditsBefore(
-			session.User.TenantID, now.Add(-s.auditRetention),
-		)
-		if deleteErr != nil {
-			failures = append(failures, "audit deletion failed")
-		} else {
-			result["deletedAuditEvents"] = deletedAudits
-		}
-		result["failureReasons"] = failures
 	}
 	action := "maintenance.retention.dry_run"
 	if input.Execute {
 		action = "maintenance.retention.execute"
 	}
-	s.appendAudit(request, session.User, action, "retention", session.User.TenantID, "SUCCESS", result)
+	s.appendAudit(request, session.User, action, "retention", session.User.TenantID, "SUCCESS", map[string]any{
+		"dryRun": result.DryRun, "expiredEvidence": result.ExpiredEvidence,
+		"deletedEvidence": result.DeletedEvidence, "protectedEvidence": result.ProtectedEvidence,
+		"failedEvidence": result.FailedEvidence, "deletedAuditEvents": result.DeletedAuditEvents,
+		"failureReasons": result.FailureReasons,
+	})
 	writeJSON(writer, http.StatusOK, result)
 }
 
@@ -1341,7 +2001,22 @@ func (s *Server) streamEvents(writer http.ResponseWriter, request *http.Request)
 	}
 }
 
+// checkVerification dispatches the VERIFY action to the method selected at
+// asset creation. Every method compares the SHA-256 of the published value
+// against VerificationTokenHash using a constant-time comparison, and all
+// network access for FILE/META goes through the SSRF-guarded checker.
 func (s *Server) checkVerification(ctx context.Context, asset domain.Asset) error {
+	switch assetMethod(asset) {
+	case domain.VerificationDNS:
+		return s.checkDNSVerification(ctx, asset)
+	case domain.VerificationMeta:
+		return s.checkMetaVerification(ctx, asset)
+	default:
+		return s.checkFileVerification(ctx, asset)
+	}
+}
+
+func (s *Server) checkFileVerification(ctx context.Context, asset domain.Asset) error {
 	base, err := url.Parse(asset.URL)
 	if err != nil {
 		return err
@@ -1358,16 +2033,93 @@ func (s *Server) checkVerification(ctx context.Context, asset domain.Asset) erro
 	if err != nil {
 		return err
 	}
-	token := strings.TrimSpace(string(result.RawHTML))
-	hash := sha256.Sum256([]byte(token))
+	if result.Snapshot.StatusCode != http.StatusOK || !s.verificationMatches(asset, string(result.RawHTML)) {
+		return errors.New("verification token mismatch")
+	}
+	return nil
+}
+
+func (s *Server) checkMetaVerification(ctx context.Context, asset domain.Asset) error {
+	checker := detection.NewChecker(s.guard)
+	result, err := checker.Check(ctx, asset, domain.MonitorPolicy{
+		TimeoutSeconds: 15, MaxResponseBytes: 1 << 20,
+	})
+	if err != nil {
+		return err
+	}
+	if result.Snapshot.StatusCode != http.StatusOK {
+		return errors.New("verification target unavailable")
+	}
+	if value := detection.FindMetaVerification(result.RawHTML); value == "" || !s.verificationMatches(asset, value) {
+		return errors.New("verification token mismatch")
+	}
+	return nil
+}
+
+func (s *Server) checkDNSVerification(ctx context.Context, asset domain.Asset) error {
+	host, err := verificationHostname(asset.URL)
+	if err != nil {
+		return err
+	}
+	records, err := s.guard.Resolver.LookupTXT(ctx, "_webmonitoring-verify."+host)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if s.verificationMatches(asset, record) {
+			return nil
+		}
+	}
+	return errors.New("verification token mismatch")
+}
+
+// verificationMatches reports whether a published value matches the issued
+// token, comparing hashes in constant time. When VerificationTokenHash is empty
+// it falls back to hashing the in-memory VerificationToken (legacy path).
+func (s *Server) verificationMatches(asset domain.Asset, candidate string) bool {
 	expected := asset.VerificationTokenHash
 	if expected == "" {
 		expected = fmt.Sprintf("%x", sha256.Sum256([]byte(asset.VerificationToken)))
 	}
-	if result.Snapshot.StatusCode != http.StatusOK || subtle.ConstantTimeCompare([]byte(fmt.Sprintf("%x", hash)), []byte(expected)) != 1 {
-		return errors.New("verification token mismatch")
+	hash := sha256.Sum256([]byte(strings.TrimSpace(candidate)))
+	return subtle.ConstantTimeCompare([]byte(fmt.Sprintf("%x", hash)), []byte(expected)) == 1
+}
+
+func assetMethod(asset domain.Asset) domain.VerificationMethod {
+	if asset.VerificationMethod == "" {
+		return domain.VerificationFile
 	}
-	return nil
+	return asset.VerificationMethod
+}
+
+func verificationHostname(rawURL string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	return parsed.Hostname(), nil
+}
+
+// verificationInstructions builds the ISSUE response for a verification method.
+// FILE keeps the legacy "path"/"content" keys so the existing console flow is
+// unchanged; DNS and META add their own keys.
+func verificationInstructions(asset domain.Asset, value string) map[string]string {
+	result := map[string]string{
+		"method":  string(assetMethod(asset)),
+		"content": value,
+	}
+	switch assetMethod(asset) {
+	case domain.VerificationDNS:
+		if host, err := verificationHostname(asset.URL); err == nil {
+			result["record"] = "_webmonitoring-verify." + host
+			result["recordType"] = "TXT"
+		}
+	case domain.VerificationMeta:
+		result["tag"] = `<meta name="webmonitoring-verification" content="` + value + `">`
+	default:
+		result["path"] = "/.well-known/webmonitoring-verification.txt"
+	}
+	return result
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
@@ -1377,7 +2129,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			writeError(writer, request, http.StatusUnauthorized, "AUTH_REQUIRED", "请先登录", nil)
 			return
 		}
-		session, ok := s.auth.Get(cookie.Value)
+		session, ok := s.auth.Get(request.Context(), cookie.Value)
 		if !ok {
 			writeError(writer, request, http.StatusUnauthorized, "SESSION_EXPIRED", "会话已失效", nil)
 			return
@@ -1430,16 +2182,35 @@ func (s *Server) trace(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		started := time.Now()
 		captured := &metricsResponseWriter{ResponseWriter: writer, status: http.StatusOK}
+		// The span wraps the whole request so downstream work (detection,
+		// notification) can attach itself to the same trace. When tracing is
+		// disabled the span is a no-op and the header below falls back to a
+		// locally generated request ID, exactly as before.
+		ctx, span := apiTracer.Start(request.Context(), spanName(request.Method, request.URL.Path),
+			trace.WithSpanKind(trace.SpanKindServer))
+		defer span.End()
+
 		traceID := request.Header.Get("X-Request-ID")
 		if traceID == "" {
-			traceID = identity.New()
+			if spanContext := span.SpanContext(); spanContext.IsValid() {
+				// Reuse the trace ID so the X-Request-ID a caller sees, the
+				// audit record, and the exported trace all agree.
+				traceID = spanContext.TraceID().String()
+			} else {
+				traceID = identity.New()
+			}
+			span.SetAttributes(attribute.String("http.request_id", traceID))
 		}
 		writer.Header().Set("X-Request-ID", traceID)
 		writer.Header().Set("Referrer-Policy", "no-referrer")
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("X-Frame-Options", "DENY")
 		writer.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-		next.ServeHTTP(captured, request.WithContext(context.WithValue(request.Context(), traceKey{}, traceID)))
+		next.ServeHTTP(captured, request.WithContext(context.WithValue(ctx, traceKey{}, traceID)))
+		span.SetAttributes(attribute.Int("http.response.status_code", captured.status))
+		if captured.status >= 500 {
+			span.SetStatus(codes.Error, http.StatusText(captured.status))
+		}
 		s.metrics.Inc("webmonitoring_http_requests_total", map[string]string{
 			"method": request.Method, "status": strconv.Itoa(captured.status),
 		})
@@ -1447,6 +2218,19 @@ func (s *Server) trace(next http.Handler) http.Handler {
 			"method": request.Method,
 		})
 	})
+}
+
+// spanName builds the exported span name for a request.
+//
+// The path is used as-is except for the one route whose path segment is itself a
+// credential: a signed evidence token is a bearer token, and exporting it as a
+// span name would write it into the tracing backend. That segment is replaced by
+// its route placeholder.
+func spanName(method, path string) string {
+	if strings.HasPrefix(path, "/api/v1/evidence/signed/") {
+		return method + " /api/v1/evidence/signed/{token}"
+	}
+	return method + " " + path
 }
 
 type metricsResponseWriter struct {
@@ -1512,6 +2296,14 @@ func principal(request *http.Request) auth.Session {
 func traceID(request *http.Request) string {
 	value, _ := request.Context().Value(traceKey{}).(string)
 	return value
+}
+
+func remoteIP(request *http.Request) string {
+	host, _, err := net.SplitHostPort(request.RemoteAddr)
+	if err != nil {
+		return request.RemoteAddr
+	}
+	return host
 }
 
 func sessionResponse(session auth.Session) map[string]any {
@@ -1600,8 +2392,8 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(writer).Encode(value)
 }
 
-func writeList[T any](writer http.ResponseWriter, items []T) {
-	writeJSON(writer, http.StatusOK, map[string]any{"items": items, "nextCursor": ""})
+func writeList[T any](writer http.ResponseWriter, items []T, nextCursor string) {
+	writeJSON(writer, http.StatusOK, map[string]any{"items": items, "nextCursor": nextCursor})
 }
 
 func writeError(
@@ -1623,4 +2415,14 @@ func parseLimit(request *http.Request) int {
 		return 50
 	}
 	return limit
+}
+
+func parseCursor(request *http.Request) string {
+	return request.URL.Query().Get("cursor")
+}
+
+// listOptions builds the pagination options for a list handler. The tenant
+// filter is always derived from the authenticated principal, never the request.
+func listOptions(request *http.Request) store.ListOptions {
+	return store.ListOptions{Limit: parseLimit(request), Cursor: parseCursor(request)}
 }

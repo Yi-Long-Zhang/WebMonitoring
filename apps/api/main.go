@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"webmonitoring/internal/api"
@@ -24,6 +26,7 @@ import (
 	"webmonitoring/internal/notify"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
+	"webmonitoring/internal/telemetry"
 )
 
 const defaultTenant = "00000000-0000-4000-8000-000000000001"
@@ -37,7 +40,20 @@ func main() {
 	if err := config.ValidateProductionAPI(os.Getenv); err != nil {
 		log.Fatalf("invalid production configuration: %v", err)
 	}
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	// Tracing is opt-in. A failure to set it up is logged and swallowed: the
+	// control plane must start even when the collector is unreachable.
+	shutdownTelemetry, err := telemetry.Setup(ctx, "webmonitoring-api", os.Getenv, logger)
+	if err != nil {
+		logger.Warn("telemetry setup failed; continuing without tracing", "error", err)
+		shutdownTelemetry = func(context.Context) error { return nil }
+	}
+	defer func() {
+		if shutdownErr := shutdownTelemetry(context.Background()); shutdownErr != nil {
+			logger.Warn("telemetry shutdown failed", "error", shutdownErr)
+		}
+	}()
 	repository, closeRepository := buildRepository(ctx, logger)
 	defer closeRepository()
 	seedAdmin(repository)
@@ -61,6 +77,13 @@ func main() {
 		int(envInt64("ALERT_MAX_ATTEMPTS", 3)),
 		time.Duration(envInt64("ALERT_RETRY_BASE_MILLISECONDS", 250))*time.Millisecond,
 	)
+	notifier.SetSMTP(notify.SMTPConfig{
+		Host:     os.Getenv("SMTP_HOST"),
+		Port:     config.PositiveInt(os.Getenv, "SMTP_PORT", 25),
+		Username: os.Getenv("SMTP_USERNAME"),
+		Password: os.Getenv("SMTP_PASSWORD"),
+		From:     os.Getenv("SMTP_FROM"),
+	})
 	detectionService := detection.NewService(
 		repository, evidenceStore, httpChecker, browserChecker, notifier, broker, logger,
 	)
@@ -99,14 +122,31 @@ func main() {
 	}
 	defer closeQueue()
 	authService := auth.NewService(repository, 12*time.Hour)
+	if redisAddress := os.Getenv("REDIS_ADDR"); redisAddress != "" {
+		authService.SetSessionStore(auth.NewRedisSessionStore(redisAddress))
+	}
+	loginMaxFailures := config.PositiveInt(os.Getenv, "LOGIN_MAX_FAILURES", 5)
+	loginLockout := time.Duration(config.PositiveInt(os.Getenv, "LOGIN_LOCKOUT_MINUTES", 15)) * time.Minute
+	var loginGuard *auth.LoginGuard
+	if os.Getenv("REDIS_ADDR") != "" {
+		loginGuard = auth.NewRedisLoginGuard(os.Getenv("REDIS_ADDR"), loginMaxFailures, loginLockout)
+	} else {
+		loginGuard = auth.NewMemoryLoginGuard(loginMaxFailures, loginLockout)
+	}
 	sessionSecure, _ := strconv.ParseBool(env("SESSION_SECURE", "false"))
 	server := api.NewServer(
 		repository, authService, detectionService, evidenceStore, guard, broker, logger, sessionSecure,
 	)
+	server.SetLoginGuard(loginGuard)
 	server.SetRetentionPolicy(
 		config.PositiveInt(os.Getenv, "EVIDENCE_RETENTION_DAYS", config.DefaultEvidenceRetentionDays),
 		config.PositiveInt(os.Getenv, "AUDIT_RETENTION_DAYS", config.DefaultAuditRetentionDays),
 	)
+	if secret := os.Getenv("ALERT_SECRET_KEY"); secret != "" {
+		if signer, err := security.NewSignedURLSigner(secret); err == nil {
+			server.SetSignedURLs(signer, config.PositiveInt(os.Getenv, "EVIDENCE_SIGNED_URL_TTL_SECONDS", 300))
+		}
+	}
 	detectionService.SetMetrics(server.Metrics())
 	notifier.SetMetrics(server.Metrics())
 	if detectionQueue != nil {
@@ -147,6 +187,14 @@ func main() {
 	scheduler := detection.NewScheduler(repository, detectionService, logger)
 	go scheduler.Run(ctx)
 
+	// Retention runs in the control plane rather than every worker, so evidence
+	// is swept once per interval regardless of how many workers are running.
+	if interval := time.Duration(envInt64("RETENTION_INTERVAL_HOURS", 24)) * time.Hour; interval > 0 {
+		go server.RetentionRunner().RunDaily(ctx, interval)
+	} else {
+		logger.Warn("background retention disabled; only the manual endpoint will run it")
+	}
+
 	address := env("HTTP_ADDR", ":8080")
 	logger.Info("api listening", "address", address)
 	httpServer := &http.Server{
@@ -157,8 +205,18 @@ func main() {
 		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 	}
-	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("api server stopped", "error", err)
+			stop()
+		}
+	}()
+	<-ctx.Done()
+	logger.Info("api shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("graceful shutdown failed", "error", err)
 	}
 }
 

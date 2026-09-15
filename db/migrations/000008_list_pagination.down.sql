@@ -1,0 +1,10 @@
+DROP INDEX IF EXISTS tenants_keyset_idx;
+DROP INDEX IF EXISTS assets_keyset_idx;
+DROP INDEX IF EXISTS sites_keyset_idx;
+DROP INDEX IF EXISTS monitor_policies_keyset_idx;
+DROP INDEX IF EXISTS baseline_versions_keyset_idx;
+DROP INDEX IF EXISTS detection_jobs_keyset_idx;
+DROP INDEX IF EXISTS evidence_keyset_idx;
+DROP INDEX IF EXISTS incidents_keyset_idx;
+DROP INDEX IF EXISTS alert_deliveries_keyset_idx;
+DROP INDEX IF EXISTS audit_events_keyset_idx;

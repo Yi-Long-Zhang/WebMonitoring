@@ -13,7 +13,7 @@ import (
 	"webmonitoring/internal/identity"
 )
 
-const RuleVersion = "builtin-2026-09-11.1"
+const RuleVersion = "builtin-2026-09-15.1"
 
 func Compare(before, after domain.Snapshot, trustedDomains []string, evidenceIDs []string) []domain.Signal {
 	signals := make([]domain.Signal, 0)
@@ -73,6 +73,31 @@ func Compare(before, after domain.Snapshot, trustedDomains []string, evidenceIDs
 	if !formsEqual(before.Forms, after.Forms) {
 		add("FORM_CHANGED", domain.SeverityHigh, "页面表单提交目标或方法发生变化", before.Forms, after.Forms)
 	}
+	if !sameStringSet(before.ResolvedIPs, after.ResolvedIPs) {
+		add("RESOLVED_IP_CHANGED", domain.SeverityHigh, "目标解析 IP 发生变化", before.ResolvedIPs, after.ResolvedIPs)
+	}
+	if before.TLSFingerprint != "" && before.TLSFingerprint != after.TLSFingerprint {
+		add("TLS_FINGERPRINT_CHANGED", domain.SeverityHigh, "TLS 证书指纹发生变化", before.TLSFingerprint, after.TLSFingerprint)
+	}
+	for _, resource := range addedStrings(before.ResourceRequests, after.ResourceRequests) {
+		severity := domain.SeverityMedium
+		if !isTrustedURL(resource, after.URL, trustedDomains) {
+			severity = domain.SeverityHigh
+		}
+		add("RESOURCE_ADDED", severity, "页面新增外部资源请求", nil, resource)
+	}
+	for _, popup := range addedStrings(before.Popups, after.Popups) {
+		add("POPUP_ADDED", domain.SeverityHigh, "页面新增弹窗", nil, popup)
+	}
+	for _, dialog := range addedStrings(before.Dialogs, after.Dialogs) {
+		add("DIALOG_ADDED", domain.SeverityMedium, "页面新增对话框", nil, dialog)
+	}
+	for _, download := range addedStrings(before.Downloads, after.Downloads) {
+		add("DOWNLOAD_ADDED", domain.SeverityMedium, "页面新增下载", nil, download)
+	}
+	if before.ScreenshotHash != "" && after.ScreenshotHash != "" && before.ScreenshotHash != after.ScreenshotHash {
+		add("SCREENSHOT_CHANGED", domain.SeverityMedium, "页面渲染截图发生变化", before.ScreenshotHash, after.ScreenshotHash)
+	}
 	return signals
 }
 
@@ -107,6 +132,22 @@ func fingerprint(kind string, before, after any) string {
 	payload, _ := json.Marshal([]any{kind, before, after})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	set := make(map[string]struct{}, len(left))
+	for _, value := range left {
+		set[value] = struct{}{}
+	}
+	for _, value := range right {
+		if _, ok := set[value]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func addedStrings(before, after []string) []string {

@@ -102,6 +102,10 @@ internal/
 - HTML、脚本、链接、表单和 iframe 的静态解析。
 - 内容规范化、摘要和差异信号。
 
+HTTP 无渲染，快照中的 `popups`、`dialogs`、`downloads`、`screenshotHash` 明确留空
+（`resourceRequests` 由静态资源清单近似，仅脚本/样式表/图片/iframe 引用）；这些
+字段只有浏览器 Worker 才产出，跨模式对比时应忽略缺失侧的空值。
+
 ### Browser Worker
 
 只在页面需要执行 JavaScript、截图或行为分析时使用：
@@ -128,6 +132,37 @@ internal/
 数据库保存证据元数据和摘要；对象存储保存原始文件。证据对象命名不得包含
 客户敏感信息。当前访问必须经过控制面认证、租户校验和完整性校验；生产阶段
 仍需补充短期签名或等价的短时访问凭证。
+
+### 可观测性
+
+指标由自研 registry 提供，控制面和 Worker 各自暴露 Prometheus 抓取端点
+`/metrics`；这是文档化的运维接口，不随 OpenTelemetry 的引入而改变。
+
+Trace 是**附加且默认关闭**的（`internal/telemetry`）。只有设置
+`OTEL_EXPORTER_OTLP_ENDPOINT` 才创建导出器；未设置时全局 provider 保持 SDK
+no-op，所有 span 调用退化为几个纳秒，行为与引入前完全一致。端点、头部、TLS
+和压缩由 OTLP/HTTP 导出器自行读取标准 `OTEL_*` 环境变量，代码内不硬编码采集
+地址；采样率由 `OTEL_TRACES_SAMPLER_ARG` 控制，缺省全采。初始化失败只记录
+告警，不阻止进程启动。
+
+已埋点位置：
+
+- HTTP 中间件 server span，覆盖整个请求（方法 + 路径）。
+- `detection.process`：任务消费，带 `tenant_id`/`job_id`/`asset_id`/`mode`。
+- `checker.http`：HTTP 检测出站请求。
+- `notify.send`：单个告警渠道投递。
+
+`X-Request-ID` 与导出的 trace ID 一致（未启用追踪时为本地生成），审计记录沿用
+同一 ID，因此日志、审计和 trace 可以互相定位。
+
+span 属性只记录租户、任务、资产、渠道类型这类标识。客户 URL、DingTalk 签名、
+Webhook 凭据、邮件收件人和页面内容都不写入 span——trace 会导出到外部采集器。
+`GET /api/v1/evidence/signed/{token}` 的 token 属于凭据，因此该路由的 span 名
+使用路由占位符而不是真实路径。
+
+**已知缺口**：队列消息体只包含任务 JSON，不携带 W3C `traceparent`。Worker 的
+span 与产生该任务的 API 请求因此不是同一个 trace，只能通过 `job_id`/`asset_id`
+属性关联。跨进程 trace 关联需要把 trace 上下文放进队列信封，属于后续工作。
 
 ## 6. API 约定
 
