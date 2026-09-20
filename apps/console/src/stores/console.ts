@@ -149,6 +149,14 @@ export const useConsoleStore = defineStore("console", () => {
     await audits.loadFirst();
   }
 
+  // A bulk import adds rows to the head of the same (createdAt DESC, id DESC)
+  // ordering, so the accumulated pages are dropped rather than merged into --
+  // the same reason applyAuditFilters forgets first.
+  async function reloadAssets() {
+    assets.forget();
+    await assets.loadFirst();
+  }
+
   const pages = { assets, sites, policies, baselines, incidents, jobs, evidence, alertDeliveries, audits, tenants };
   type PageKey = keyof typeof pages;
 
@@ -189,5 +197,6 @@ export const useConsoleStore = defineStore("console", () => {
     isLoadingMore,
     loadMore,
     applyAuditFilters,
+    reloadAssets,
   };
 });

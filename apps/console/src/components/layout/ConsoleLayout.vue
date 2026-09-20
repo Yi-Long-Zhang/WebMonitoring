@@ -15,7 +15,10 @@ import ChannelsPage from "../../pages/ChannelsPage.vue";
 import AuditsPage from "../../pages/AuditsPage.vue";
 import TenantsPage from "../../pages/TenantsPage.vue";
 import PolicyDialog from "../monitoring/PolicyDialog.vue";
+import AssetImportDialog from "../monitoring/AssetImportDialog.vue";
 import { useMonitoringActions } from "../../features/monitoring/actions";
+import { exportAssets } from "../../services/api/client";
+import { saveBlob } from "../../services/download";
 import { roleLabel as roleLabelFor } from "../../app/permissions";
 import { CHANNEL_LABELS, channelNeeds } from "../../app/channels";
 import { useSessionStore } from "../../stores/session";
@@ -32,6 +35,7 @@ const data = useConsoleStore();
 const actions = useMonitoringActions();
 const activeView = ref<View>("overview");
 const showAssetDialog = ref(false);
+const showImportDialog = ref(false);
 const showChannelDialog = ref(false);
 const showPolicyDialog = ref(false);
 const showSiteDialog = ref(false);
@@ -152,6 +156,17 @@ async function createChannel() {
 }
 async function signOut() { await session.signOut(); eventStream?.close(); await router.replace("/login"); }
 
+// The server writes the CSV so field escaping has one implementation; the export
+// is an operator-initiated snapshot, so it is named with the date it was taken.
+async function exportAssetList() {
+  try {
+    const blob = await exportAssets("csv");
+    const stamp = new Date().toISOString().slice(0, 10);
+    saveBlob(blob, `assets-${stamp}.csv`);
+  } catch (error) { reportError(error, "导出失败"); }
+}
+async function onImported() { showImportDialog.value = false; await data.reloadAssets(); }
+
 onMounted(async () => {
   if (!session.isAuthenticated && !(await session.restore())) { await router.replace("/login"); return; }
   await refresh();
@@ -176,7 +191,7 @@ onUnmounted(() => eventStream?.close());
     <main class="main-content">
       <Topbar :title="viewTitle" :loading="data.loading" @refresh="refresh" />
       <OverviewPage v-if="activeView === 'overview'" :dashboard="data.dashboard" :report-summary="data.reportSummary" :assets="data.assets" :incidents="data.incidents" :asset-map="assetMap" @navigate="navigate" />
-      <AssetsPage v-else-if="activeView === 'assets'" :assets="data.assets" :policies="data.policies" :can-operate="session.canOperate" :has-more="data.hasMore('assets')" :loading-more="data.isLoadingMore('assets')" @load-more="data.loadMore('assets')" @create="showAssetDialog = true" @verify="verify" @toggle="toggle" @detect="detect" @policy="editPolicy" />
+      <AssetsPage v-else-if="activeView === 'assets'" :assets="data.assets" :policies="data.policies" :can-operate="session.canOperate" :can-admin="session.canAdmin" :has-more="data.hasMore('assets')" :loading-more="data.isLoadingMore('assets')" @load-more="data.loadMore('assets')" @create="showAssetDialog = true" @verify="verify" @toggle="toggle" @detect="detect" @policy="editPolicy" @import="showImportDialog = true" @export="exportAssetList" />
       <SitesPage v-else-if="activeView === 'sites'" :sites="data.sites" :can-admin="session.canAdmin" :has-more="data.hasMore('sites')" :loading-more="data.isLoadingMore('sites')" @load-more="data.loadMore('sites')" @create="openSiteCreate" @edit="openSiteEdit" />
       <BaselinesPage v-else-if="activeView === 'baselines'" :baselines="data.baselines" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('baselines')" :loading-more="data.isLoadingMore('baselines')" @load-more="data.loadMore('baselines')" @review="review" @retire="retireBaseline" />
       <IncidentsPage v-else-if="activeView === 'incidents'" :incidents="data.incidents" :evidence="data.evidence" :deliveries="data.alertDeliveries" :asset-map="assetMap" :can-operate="session.canOperate" :timeline-key="timelineKey" :users="data.users" :on-comment="comment" :has-more="data.hasMore('incidents')" :loading-more="data.isLoadingMore('incidents')" @load-more="data.loadMore('incidents')" @transition="transition" />
@@ -205,6 +220,7 @@ onUnmounted(() => eventStream?.close());
       <template #footer><el-button @click="showAssetDialog = false">取消</el-button><el-button type="primary" @click="createAsset">创建并授权</el-button></template>
     </el-dialog>
     <PolicyDialog v-model="showPolicyDialog" :asset="policyAsset" :policy="editingPolicy" @save="savePolicy" />
+    <AssetImportDialog v-if="showImportDialog" @imported="onImported" @close="showImportDialog = false" />
     <el-dialog v-model="showChannelDialog" title="新增告警渠道" width="520px">
       <el-form label-position="top"><el-form-item label="渠道名称"><el-input v-model="channelForm.name" placeholder="例如：安全运营群" /></el-form-item><el-form-item label="渠道类型"><el-radio-group v-model="channelForm.type"><el-radio-button value="WECHAT_WORK">企业微信</el-radio-button><el-radio-button value="WEBHOOK">Webhook</el-radio-button></el-radio-group></el-form-item><el-form-item label="通知地址"><el-input v-model="channelForm.url" type="password" show-password autocomplete="off" placeholder="https://..." /></el-form-item><el-form-item v-if="channelForm.type === 'WEBHOOK'" label="签名密钥"><el-input v-model="channelForm.secret" type="password" show-password autocomplete="new-password" /></el-form-item><el-form-item label="创建后启用"><el-switch v-model="channelForm.enabled" /></el-form-item></el-form>
       <template #footer><el-button @click="showChannelDialog = false">取消</el-button><el-button type="primary" @click="createChannel">创建渠道</el-button></template>
