@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"webmonitoring/internal/config"
 )
 
 // ErrAccountLocked is returned when an account has exceeded the allowed number
@@ -207,7 +209,8 @@ type redisLoginState struct {
 }
 
 func newRedisLoginState(addr string) *redisLoginState {
-	return &redisLoginState{client: redis.NewClient(&redis.Options{Addr: addr})}
+	host, password := config.ParseRedisAddress(addr)
+	return &redisLoginState{client: redis.NewClient(&redis.Options{Addr: host, Password: password})}
 }
 
 func (s *redisLoginState) Incr(ctx context.Context, key string) (int64, error) {

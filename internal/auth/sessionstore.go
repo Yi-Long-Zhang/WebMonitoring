@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"webmonitoring/internal/config"
 )
 
 // sessionRecord is the slim, storage-friendly representation of a session.
@@ -67,7 +69,8 @@ type redisSessionStore struct {
 // NewRedisSessionStore returns a SessionStore backed by Redis at addr, shared
 // across replicas. The client connects lazily.
 func NewRedisSessionStore(addr string) SessionStore {
-	return &redisSessionStore{client: redis.NewClient(&redis.Options{Addr: addr})}
+	host, password := config.ParseRedisAddress(addr)
+	return &redisSessionStore{client: redis.NewClient(&redis.Options{Addr: host, Password: password})}
 }
 
 func (s *redisSessionStore) key(id string) string {

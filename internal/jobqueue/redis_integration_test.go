@@ -9,15 +9,20 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"webmonitoring/internal/config"
 )
 
 func TestRedisAcknowledgementReclaimAndDeadLetter(t *testing.T) {
+	// REDIS_TEST_ADDR may carry credentials (redis://:password@host:port), which is
+	// what the queue sees in a deployment with requirepass set.
 	address := os.Getenv("REDIS_TEST_ADDR")
 	if address == "" {
 		t.Skip("REDIS_TEST_ADDR is not configured")
 	}
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: address})
+	host, password := config.ParseRedisAddress(address)
+	client := redis.NewClient(&redis.Options{Addr: host, Password: password})
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Fatalf("Redis integration test unavailable: %v", err)
 	}
@@ -34,7 +39,7 @@ func TestRedisAcknowledgementReclaimAndDeadLetter(t *testing.T) {
 		if queue != nil {
 			_ = queue.Close()
 		}
-		cleanupClient := redis.NewClient(&redis.Options{Addr: address})
+		cleanupClient := redis.NewClient(&redis.Options{Addr: host, Password: password})
 		_ = cleanupClient.Del(context.Background(), stream, stream+deadLetterSuffix).Err()
 		_ = cleanupClient.Close()
 	})

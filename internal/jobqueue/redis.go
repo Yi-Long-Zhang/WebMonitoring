@@ -10,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"webmonitoring/internal/config"
 	"webmonitoring/internal/domain"
 	"webmonitoring/internal/metrics"
 	"webmonitoring/internal/security"
@@ -41,7 +42,11 @@ func NewAlertRedis(ctx context.Context, address, group string) (*Redis, error) {
 }
 
 func newStream(ctx context.Context, address, stream, group string) (*Redis, error) {
-	client := redis.NewClient(&redis.Options{Addr: address})
+	// The address may carry credentials (redis://:password@host:port). The
+	// password has to be passed to the client: requirepass in the server config
+	// alone would make every connection here fail.
+	addr, password := config.ParseRedisAddress(address)
+	client := redis.NewClient(&redis.Options{Addr: addr, Password: password})
 	if err := client.Ping(ctx).Err(); err != nil {
 		return nil, fmt.Errorf("connect redis: %w", err)
 	}

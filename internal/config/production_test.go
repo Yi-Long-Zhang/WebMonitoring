@@ -27,7 +27,7 @@ func TestValidateProductionAPIRejectsDefaults(t *testing.T) {
 
 func TestValidateProductionAPIAcceptsExplicitSecrets(t *testing.T) {
 	values := map[string]string{
-		"APP_ENV": "production", "POSTGRES_DSN": "postgres://wm:strong-db-password-123@db:5432/webmonitoring",
+		"APP_ENV": "production", "POSTGRES_DSN": "postgres://wm:strong-db-password-123@db:5432/webmonitoring?sslmode=require",
 		"REDIS_ADDR": "redis:6379", "S3_ENDPOINT": "http://minio:9000", "S3_ACCESS_KEY": "strong-access-key",
 		"S3_SECRET_KEY": "strong-object-secret-123", "BROWSER_WORKER_URL": "http://browser-worker:8081",
 		"BROWSER_WORKER_TOKEN": "strong-worker-token-123", "ALERT_SECRET_KEY": base64.StdEncoding.EncodeToString(make([]byte, 32)),
@@ -44,7 +44,7 @@ func TestValidateProductionAPIAcceptsExplicitSecrets(t *testing.T) {
 func workerEnv() map[string]string {
 	return map[string]string{
 		"APP_ENV":               "production",
-		"POSTGRES_DSN":          "postgres://wm:strong-db-password-123@db:5432/webmonitoring",
+		"POSTGRES_DSN":          "postgres://wm:strong-db-password-123@db:5432/webmonitoring?sslmode=require",
 		"REDIS_ADDR":            "redis:6379",
 		"S3_ENDPOINT":           "http://minio:9000",
 		"S3_ACCESS_KEY":         "strong-access-key",
@@ -103,7 +103,7 @@ func TestValidateProductionWorkerEndpointTransport(t *testing.T) {
 // below varies only the key material.
 func productionEnvWithSecrets() map[string]string {
 	return map[string]string{
-		"APP_ENV": "production", "POSTGRES_DSN": "postgres://wm:strong-db-password-123@db:5432/webmonitoring",
+		"APP_ENV": "production", "POSTGRES_DSN": "postgres://wm:strong-db-password-123@db:5432/webmonitoring?sslmode=require",
 		"REDIS_ADDR": "redis:6379", "S3_ENDPOINT": "http://minio:9000", "S3_ACCESS_KEY": "strong-access-key",
 		"S3_SECRET_KEY": "strong-object-secret-123", "BROWSER_WORKER_URL": "http://browser-worker:8081",
 		"BROWSER_WORKER_TOKEN": "strong-worker-token-123",
@@ -173,5 +173,80 @@ func TestValidateProductionRequiresKeyMaterial(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ALERT_SECRET_KEY or ALERT_SECRET_KEYS") {
 		t.Fatalf("error does not name both variables: %v", err)
+	}
+}
+
+// Transport encryption is enforced, not merely documented: a production
+// deployment left on sslmode=disable fails to start, naming the variable that
+// carries the setting.
+func TestValidateProductionRejectsUnencryptedDatabaseTransport(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://wm:strong-db-password-123@db:5432/webmonitoring",
+		"postgres://wm:strong-db-password-123@db:5432/webmonitoring?sslmode=disable",
+	} {
+		values := productionEnvWithSecrets()
+		values["ALERT_SECRET_KEY"] = keyMaterial(1)
+		values["POSTGRES_DSN"] = dsn
+		err := ValidateProductionAPI(func(name string) string { return values[name] })
+		if err == nil {
+			t.Fatalf("DSN %q was accepted", dsn)
+		}
+		if !strings.Contains(err.Error(), "sslmode") || !strings.Contains(err.Error(), "POSTGRES_SSLMODE") {
+			t.Fatalf("error does not name the setting: %v", err)
+		}
+	}
+}
+
+// A Redis password is only required when the address carries one, so the bare
+// host:port form the integration tests and a single-node dev stack use keeps
+// working. Once a deployment opts in, a weak password is refused.
+func TestValidateProductionRedisPassword(t *testing.T) {
+	cases := []struct {
+		address string
+		wantErr bool
+	}{
+		{"redis:6379", false},
+		{"redis://:a-strong-redis-password@redis:6379/0", false},
+		{"rediss://:a-strong-redis-password@redis:6379/0", false},
+		{"redis://:webmonitoring@redis:6379/0", true},
+		{"redis://:short@redis:6379/0", true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.address, func(t *testing.T) {
+			values := productionEnvWithSecrets()
+			values["ALERT_SECRET_KEY"] = keyMaterial(1)
+			values["REDIS_ADDR"] = testCase.address
+			err := ValidateProductionAPI(func(name string) string { return values[name] })
+			if testCase.wantErr && err == nil {
+				t.Fatal("weak redis credentials were accepted")
+			}
+			if !testCase.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+// The parser is shared by the two job queues, the session store and the login
+// limiter, so its two accepted forms are pinned here.
+func TestParseRedisAddress(t *testing.T) {
+	cases := []struct {
+		raw      string
+		addr     string
+		password string
+	}{
+		{"redis:6379", "redis:6379", ""},
+		{"127.0.0.1:6379", "127.0.0.1:6379", ""},
+		{"redis://:hunter2-long-enough@redis:6379/0", "redis:6379", "hunter2-long-enough"},
+		{"rediss://:hunter2-long-enough@redis:6379", "redis:6379", "hunter2-long-enough"},
+		{"redis://redis:6379", "redis:6379", ""},
+		{"  redis:6379  ", "redis:6379", ""},
+	}
+	for _, testCase := range cases {
+		addr, password := ParseRedisAddress(testCase.raw)
+		if addr != testCase.addr || password != testCase.password {
+			t.Fatalf("ParseRedisAddress(%q) = %q, %q; want %q, %q",
+				testCase.raw, addr, password, testCase.addr, testCase.password)
+		}
 	}
 }

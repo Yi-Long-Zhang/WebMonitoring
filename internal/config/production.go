@@ -23,6 +23,7 @@ const (
 	defaultAdminPassword         = "change-me-before-production"
 	defaultDatabasePass          = "webmonitoring"
 	defaultObjectSecret          = "replace-with-a-random-secret"
+	defaultRedisPassword         = "webmonitoring"
 	defaultWorkerToken           = "replace-with-a-random-token"
 	DefaultEvidenceRetentionDays = 90
 	DefaultAuditRetentionDays    = 365
@@ -100,6 +101,7 @@ func validateCommon(get func(string) string) []error {
 	failures = append(failures, validateMinLength(get, "S3_SECRET_KEY", 16)...)
 	failures = append(failures, validateMinLength(get, "BROWSER_WORKER_TOKEN", 16)...)
 	failures = append(failures, validateSecretKeys(get)...)
+	failures = append(failures, validateRedisCredentials(get)...)
 	failures = append(failures, validateSMTP(get)...)
 	return failures
 }
@@ -243,6 +245,29 @@ func validateDatabaseDSN(raw string) []error {
 		return []error{errors.New("POSTGRES_DSN must not use the default database password")}
 	} else if len([]byte(password)) < 16 {
 		return []error{errors.New("POSTGRES_DSN password must be at least 16 bytes in production")}
+	}
+	// Refusing sslmode=disable is what actually enforces transport encryption;
+	// documenting it does not. Compose sets POSTGRES_SSLMODE for exactly this,
+	// and the TLS overlay turns it to verify-full.
+	if mode := parsed.Query().Get("sslmode"); mode == "" || mode == "disable" {
+		return []error{errors.New("POSTGRES_DSN must set sslmode other than disable in production (POSTGRES_SSLMODE in the compose environment)")}
+	}
+	return nil
+}
+
+// validateRedisCredentials requires a real password when REDIS_ADDR carries
+// credentials. Demanding it only in the credentialed form leaves the bare
+// host:port form -- used by the integration tests and a single-node dev stack --
+// working unchanged, so nothing has to change until a deployment opts in.
+func validateRedisCredentials(get func(string) string) []error {
+	_, password := ParseRedisAddress(get("REDIS_ADDR"))
+	switch {
+	case password == "":
+		return nil
+	case password == defaultRedisPassword:
+		return []error{errors.New("REDIS_ADDR password must not be the default in production")}
+	case len(password) < 16:
+		return []error{errors.New("REDIS_ADDR password must be at least 16 characters in production")}
 	}
 	return nil
 }
