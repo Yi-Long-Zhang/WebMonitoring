@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
   packages: write
+  # Required by cosign's keyless signing (the OIDC token is what replaces a
+  # long-lived signing key) and by the provenance attestation buildx generates.
+  id-token: write
+  attestations: write
+  # Required to upload the Trivy report as a SARIF result.
+  security-events: write
 
 jobs:
   images:
@@ -39,6 +45,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -48,3 +55,39 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # BuildKit writes an SPDX SBOM and SLSA provenance as registry
+          # attestations next to the image digest. No extra tooling, and it
+          # records what went in rather than only what came out.
+          provenance: mode=max
+          sbom: true
+      # Keyless: the workflow's OIDC identity is the signer, so there is no key
+      # material in secrets to leak or rotate. Verify with
+      #   cosign verify ghcr.io/<repo>/<app>@<digest> \
+      #     --certificate-identity-regexp '^https://github.com/<repo>/' \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the published image
+        run: cosign sign --yes ghcr.io/${{ github.repository }}/${{ matrix.app.name }}@${{ steps.build.outputs.digest }}
+      # Scans the published image rather than the build context, so base-image
+      # packages are covered too. ignore-unfixed keeps the gate actionable: the
+      # bases are golang, node, nginx, distroless and the Playwright image, and
+      # an unfixed base CVE would otherwise block every release forever.
+      - name: Scan for vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          image-ref: ghcr.io/${{ github.repository }}/${{ matrix.app.name }}:${{ steps.meta.outputs.version }}
+          format: sarif
+          output: trivy-${{ matrix.app.name }}.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Upload the scan report
+        # always(): the step above fails the job on a finding, and the report is
+        # most useful precisely when that happens.
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.app.name }}.sarif
