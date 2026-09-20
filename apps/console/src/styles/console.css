@@ -51,6 +51,11 @@ button, input { font: inherit; }
 .panel { overflow: hidden; background: var(--panel); border: 1px solid var(--line); }
 .panel.wide { min-width: 0; }
 .list-footer { display: flex; justify-content: center; padding: 14px 24px 18px; border-top: 1px solid #eef1f5; }
+.audit-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 16px 20px; margin-bottom: 18px; }
+.audit-filters .filter-input { width: 260px; }
+.audit-filters .filter-select { width: 200px; }
+.audit-filters .filter-select.narrow { width: 130px; }
+.audit-filters .filter-range { width: 380px; }
 .panel-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 22px 24px 17px; }
 .panel-header h2 { margin: 7px 0 0; color: var(--ink); font-size: 17px; letter-spacing: 0; }
 .panel-header .el-button { color: var(--teal); }

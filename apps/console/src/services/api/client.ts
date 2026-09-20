@@ -218,7 +218,21 @@ export function createAlertChannel(input: {
   });
 }
 
-export function getAuditEvents(params: PageParams = {}) {
+// AuditFilterParams mirrors the narrowing query parameters GET /audit-events
+// accepts. Every field is optional and an absent one means "do not filter on
+// this dimension". `action` is an exact match -- the server does not do prefix
+// search -- and `from`/`to` are an inclusive RFC3339 range.
+export type AuditFilterParams = PageParams & {
+  actorId?: string;
+  action?: string;
+  resourceType?: string;
+  resourceId?: string;
+  result?: string;
+  from?: string;
+  to?: string;
+};
+
+export function getAuditEvents(params: AuditFilterParams = {}) {
   return request<ListResponse<AuditEvent>>(`/audit-events${listQuery(params)}`);
 }
 
