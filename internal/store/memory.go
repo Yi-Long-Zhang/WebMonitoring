@@ -883,6 +883,38 @@ func (m *MemoryRepository) CreateAlertChannel(channel domain.AlertChannel) error
 	return nil
 }
 
+func (m *MemoryRepository) GetAlertChannel(tenantID, id string) (domain.AlertChannel, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	channel, ok := m.channels[tenantKey(tenantID, id)]
+	if !ok {
+		return domain.AlertChannel{}, ErrNotFound
+	}
+	return channel, nil
+}
+
+func (m *MemoryRepository) UpdateAlertChannel(channel domain.AlertChannel) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := tenantKey(channel.TenantID, channel.ID)
+	if _, ok := m.channels[key]; !ok {
+		return ErrNotFound
+	}
+	m.channels[key] = channel
+	return nil
+}
+
+func (m *MemoryRepository) DeleteAlertChannel(tenantID, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := tenantKey(tenantID, id)
+	if _, ok := m.channels[key]; !ok {
+		return ErrNotFound
+	}
+	delete(m.channels, key)
+	return nil
+}
+
 func (m *MemoryRepository) ListAlertChannels(tenantID string) ([]domain.AlertChannel, error) {
 	result, err := m.ListAlertChannelsWithSecrets(tenantID)
 	if err != nil {
