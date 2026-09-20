@@ -263,13 +263,13 @@ func buildEvidenceStore(ctx context.Context, dataDir string) (evidence.Store, er
 	if endpoint == "" {
 		return evidence.NewLocalStore(filepath.Join(dataDir, "evidence"))
 	}
-	return evidence.NewS3Store(
-		ctx,
-		endpoint,
-		os.Getenv("S3_ACCESS_KEY"),
-		os.Getenv("S3_SECRET_KEY"),
-		env("S3_BUCKET", "evidence"),
-	)
+	return evidence.NewS3Store(ctx, evidence.S3Options{
+		Endpoint:  endpoint,
+		AccessKey: os.Getenv("S3_ACCESS_KEY"),
+		SecretKey: os.Getenv("S3_SECRET_KEY"),
+		Bucket:    env("S3_BUCKET", "evidence"),
+		Region:    os.Getenv("S3_REGION"),
+	})
 }
 
 func buildRepository(ctx context.Context, logger *slog.Logger) (store.Repository, func()) {

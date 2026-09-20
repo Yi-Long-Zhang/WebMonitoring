@@ -54,13 +54,13 @@ func main() {
 	}
 	repository.SetJobLease(config.JobLease(os.Getenv, store.JobLease))
 	defer repository.Close()
-	evidenceStore, err := evidence.NewS3Store(
-		ctx,
-		required("S3_ENDPOINT"),
-		required("S3_ACCESS_KEY"),
-		required("S3_SECRET_KEY"),
-		env("S3_BUCKET", "evidence"),
-	)
+	evidenceStore, err := evidence.NewS3Store(ctx, evidence.S3Options{
+		Endpoint:  required("S3_ENDPOINT"),
+		AccessKey: required("S3_ACCESS_KEY"),
+		SecretKey: required("S3_SECRET_KEY"),
+		Bucket:    env("S3_BUCKET", "evidence"),
+		Region:    os.Getenv("S3_REGION"),
+	})
 	if err != nil {
 		log.Fatal(err)
 	}

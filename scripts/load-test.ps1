@@ -27,12 +27,27 @@
 .\scripts\load-test.ps1 -KeepRunning
 .EXAMPLE
 .\scripts\load-test.ps1 -AssetCount 60 -Tenants 3 -MinimumJobsPerSecond 2
+.EXAMPLE
+# 浏览器模式：每个 http-worker 副本一次只消费一个任务，所以吞吐由副本数决定。
+# 已实测：100 资产 / 2 租户 / 3 副本 -> 85.2 秒，1.17 任务/秒。
+.\scripts\load-test.ps1 -Mode BROWSER -AssetCount 100 -Tenants 2 -HttpWorkers 3 `
+    -MinimumJobsPerSecond 1 -TimeoutSeconds 1800
 #>
 param(
     [int]$AssetCount = 100,
     [int]$Tenants = 2,
     [int]$TimeoutSeconds = 300,
     [double]$MinimumJobsPerSecond = 1.0,
+    # BROWSER drives a real Playwright context per check, so it must be run at a
+    # much smaller -AssetCount with a much larger -TimeoutSeconds and a floor
+    # measured for that mode rather than the HTTP default. The measured value is
+    # recorded in docs/operations.md.
+    [ValidateSet("HTTP", "BROWSER")][string]$Mode = "HTTP",
+    # Each http-worker replica consumes one job at a time (XReadGroup Count:1,
+    # processed synchronously), so the browser-mode wall clock is dominated by
+    # this number and not by the browser worker. Measured 2026-09-20: a single
+    # replica ran 12 browser checks in 309s, about 25s per check.
+    [int]$HttpWorkers = 1,
     [switch]$KeepRunning
 )
 
@@ -194,8 +209,12 @@ $slices = @()
 $assetsByLabel = @{}
 try {
     Invoke-Compose @("config") | Out-Null
-    Invoke-Compose @("up", "-d", "--build",
-        "postgres", "redis", "minio", "migrate", "browser-worker", "smoke-target", "api", "http-worker") | Out-Null
+    $upArguments = @("up", "-d", "--build",
+        "postgres", "redis", "minio", "migrate", "browser-worker", "smoke-target", "api", "http-worker")
+    if ($HttpWorkers -gt 1) {
+        $upArguments += @("--scale", "http-worker=$HttpWorkers")
+    }
+    Invoke-Compose $upArguments | Out-Null
     foreach ($service in @("postgres", "redis", "minio", "browser-worker", "migrate", "smoke-target", "api", "http-worker")) {
         Wait-Healthy $service
     }
@@ -283,13 +302,35 @@ try {
         }
     }
 
-    # --- 7. 单轮 HTTP 检测 -------------------------------------------------
+    Write-Host "consumers: http-worker x$HttpWorkers, mode=$Mode"
+
+    # --- 7. 单轮检测（-Mode 选择 HTTP 或 BROWSER）--------------------------
     $jobIds = @()
     foreach ($slice in $slices) {
         foreach ($asset in $assetsByLabel[$slice.Label]) {
-            $job = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/detection-jobs" `
-                -WebSession $slice.Session -Headers $slice.Csrf -ContentType "application/json" `
-                -Body "{`"assetId`":`"$($asset.assetId)`",`"mode`":`"HTTP`"}"
+            $job = $null
+            try {
+                $job = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/detection-jobs" `
+                    -WebSession $slice.Session -Headers $slice.Csrf -ContentType "application/json" `
+                    -Body "{`"assetId`":`"$($asset.assetId)`",`"mode`":`"$Mode`"}"
+            } catch {
+                # The control plane's scheduler also queues a check for every
+                # asset that has none, on a 30s tick. On a long setup phase --
+                # 100 assets take a while to verify -- it can win the race, and
+                # this POST is then rejected by the active-job index from
+                # migration 000012 with JOB_REJECTED. That is the same check
+                # being queued, not a failure, so adopt the job already in
+                # flight instead of treating the scheduler as an error.
+                $inFlight = @(Get-AllPages "$apiBase/api/v1/detection-jobs" $slice.Session) |
+                    Where-Object {
+                        $_.assetId -eq $asset.assetId -and $_.mode -eq $Mode -and
+                        $_.status -in @("QUEUED", "RUNNING")
+                    } | Select-Object -First 1
+                if (-not $inFlight) {
+                    throw "排入 $($asset.assetId) 的 $Mode 检测任务失败，且找不到在途任务"
+                }
+                $job = $inFlight
+            }
             $jobIds += $job.id
         }
     }
@@ -326,8 +367,9 @@ try {
         throw "检测任务未全部成功：$summary"
     }
     $rate = [math]::Round($jobIds.Count / [math]::Max($elapsed.TotalSeconds, 1), 2)
+    Write-Host "$Mode throughput: $rate jobs/s over $($jobIds.Count) assets"
     if ($rate -lt $MinimumJobsPerSecond) {
-        throw "检测吞吐 $rate 任务/秒，低于下限 $MinimumJobsPerSecond 任务/秒"
+        throw "$Mode 检测吞吐 $rate 任务/秒，低于下限 $MinimumJobsPerSecond 任务/秒"
     }
 
     # --- 8. 证据完整性与无假阳性事件 ---------------------------------------

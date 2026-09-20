@@ -122,7 +122,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\compose-smoke.ps1
 | 主链路 smoke | 登录/资产验证/基线审批/HTTP+Browser 检测/事件/证据/报告/控制台 E2E/重启持久化 | `.\scripts\compose-smoke.ps1` |
 | 安全边界 smoke | P0-1 登录锁定（N 次失败后即使密码正确也返回 `ACCOUNT_LOCKED`，且不影响其他账户）、P1-5 keyset 分页（`limit`+`cursor` 无重复无遗漏）、P1-6 资产暂停/恢复（暂停后排队返回 `JOB_REJECTED`，恢复不自动启用）、P1-7 任务取消（终态为 `CANCELLED`，迟到结果不得覆盖） | 同上，`compose-smoke.ps1` 已内置 |
 | 浏览器登录态 smoke | P4-06/P4-07 浏览器模式登录态：smoke-target 上另起一个 cookie 门控的 `smoke-login` host，同一资产在**无** `AuthConfig` 时快照须是登录页（负控），**有**时须是受保护页 | 同上，`compose-smoke.ps1` 已内置 |
-| 100 资产压测 | 跨租户播种、真实 FILE 所有权验证、单轮 HTTP 检测吞吐、任务无丢失、证据完整、未批准基线无假阳性 | `.\scripts\load-test.ps1` |
+| 100 资产压测 | 跨租户播种、真实 FILE 所有权验证、单轮检测吞吐、任务无丢失、证据完整、未批准基线无假阳性。`-Mode BROWSER` 为浏览器模式 | `.\scripts\load-test.ps1`（HTTP）、`-Mode BROWSER -HttpWorkers 3`（浏览器） |
 | 多副本演练 | 调度器跨副本排队不重复（任务数等于资产数）、无重复 `(tenant, asset, mode)`、每个 worker 副本一个唯一消费者身份。`-Mode BROWSER` 时断言的是浏览器任务数（余量最薄，需小规模并放宽超时） | `.\scripts\multi-replica-drill.ps1`；变异检查 `-DropActiveJobIndex` 必须失败 |
 | 备份恢复演练 | 数据库 dump、evidence bucket 清单、恢复后 `/readyz` 与证据校验 | `.\scripts\compose-backup.ps1`、`.\scripts\compose-restore.ps1`（见 [backup-restore-rehearsal.md](backup-restore-rehearsal.md)） |
 
@@ -146,6 +146,35 @@ powershell -ExecutionPolicy Bypass -File .\scripts\compose-smoke.ps1
 压测脚本每次运行都为每个分片新建租户（slug 带运行 ID），不复用内置的 `default`
 租户：Compose 具名卷会跨运行保留，复用 default 会让"每个租户只看到自己的资产"这类
 计数断言取决于上一次运行的残留数据，脚本就不再可重复。
+
+### 浏览器模式压测（已实测）
+
+```powershell
+.\scripts\load-test.ps1 -Mode BROWSER -AssetCount 100 -Tenants 2 -HttpWorkers 3 `
+    -MinimumJobsPerSecond 1 -TimeoutSeconds 1800
+```
+
+2026-09-20 实测结果：
+
+```
+assets          : 100 across 2 tenant(s)
+verified+enabled: 100
+detection jobs  : 100 SUCCEEDED
+wall clock      : 85.2s
+throughput      : 1.17 jobs/s
+evidence items  : 500
+incidents       : 0 (expected 0 before baseline approval)
+```
+
+**吞吐由 `-HttpWorkers` 决定，不是由 browser-worker 决定。** 每个 http-worker 副本
+一次只消费一个任务：`internal/jobqueue/redis.go` 用 `XReadGroup Count: 1` 并在循环里
+同步处理，所以吞吐 ≈ 副本数 ÷ 单次检测耗时。扩容 `browser-worker` 不会提高吞吐。
+（单副本 12 资产的一次小规模测量是 0.04 任务/秒，但那个数字被固定开销主导，不适合
+当作单次检测耗时来推算。）
+
+`-Mode BROWSER` 下脚本会容忍调度器抢先排队：控制面每 30 秒给没有在途任务的资产排一次
+检测，长准备阶段里它会赢得竞争，此时手工 POST 会因迁移 000012 的活跃任务唯一索引返回
+`JOB_REJECTED`。那是同一个检测被排队，不是失败，脚本改为接管已经在途的任务。
 
 ```powershell
 # 默认 100 资产 / 2 租户 / 吞吐下限 1 任务每秒 / 超时 300 秒

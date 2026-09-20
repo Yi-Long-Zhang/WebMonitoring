@@ -35,19 +35,30 @@ Playwright E2E、100 资产跨租户 HTTP 压测、备份恢复校验），记�
 
 当前不应视为生产完成：
 
-- **多副本（HA）不支持**：调度器 30 秒轮询、保留策略清理和 Worker 消费者身份
-  都没有跨副本协调，多副本会重复排队检测任务、重复清扫证据。当前只支持单个
-  控制面副本和单个 HTTP Worker 实例。
-- 细粒度权限、任意租户数据的跨租户可见与审批工作流（super-admin 当前仅限
-  租户 CRUD 与播种租户管理员）。
-- Secret Manager 集成：当前凭据由 `ALERT_SECRET_KEY` 单一主密钥加密，没有密钥
-  版本和轮换路径，轮换该密钥会导致已存密文不可解密。
-- 控制台接线：keyset 分页、任务取消、钉钉/邮件渠道创建、租户启停、基线快照
-  预览等后端已具备的能力尚未接入界面；列表默认只显示第一页。
-- 部署形态：只有单机 Docker Compose，没有 Kubernetes；无 TLS 终止、除
-  browser-worker 外无 CPU/内存限制；Compose 中 Redis 未设密码、PostgreSQL 使用
-  `sslmode=disable`。
-- 真实 100 资产浏览器压测、多副本演练和外部对象存储验证尚未执行。
+- 细粒度权限、资源级授权与双人审批。角色矩阵已收敛到单一来源，详见
+  [docs/README.md](docs/README.md)。
+- 外部 KMS/Vault 集成与密钥再加密扫描。凭据加密已支持密钥版本与轮换
+  （`ALERT_SECRET_KEYS` + `security.Keyring`），**仍缺**把存量密文重写为最新版本的
+  那次扫描。
+- 控制台接线：资产导入导出、用户管理、证据短时签名 URL 和租户删除仍只在 API 层；
+  keyset 分页、任务取消、钉钉/邮件渠道、租户启停、权限收口、基线快照预览与审计筛选
+  已于 2026-09-20 接入界面。
+- 部署形态：只有单机 Docker Compose，没有 Kubernetes。Compose 已加固（全服务
+  CPU/内存限制、日志轮转、`no-new-privileges`、Redis 可设密码、生产拒绝
+  `sslmode=disable`），并提供了 nginx TLS 终止 overlay。
+- **外部对象存储验证尚未执行**：需要真实 S3 凭据，步骤见
+  [docs/object-storage-rehearsal.md](docs/object-storage-rehearsal.md)。
+
+已经实测通过的部分（2026-09-20）：
+
+- **多副本演练已跑通**：`--scale api=2 --scale http-worker=3` 下 40 资产对应 40 个检测任务、
+  0 个重复的 `(tenant, asset, mode)` 分组；同一次运行删掉活跃任务唯一索引后演练如期失败。
+- **100 资产浏览器压测已跑通**：2 租户、100 个 BROWSER 任务全部成功、500 条证据、
+  85.2 秒、1.17 任务/秒（3 个 http-worker 副本）。
+- 冒烟栈内覆盖浏览器登录态检测（cookie 门控 fixture 的正负两步断言）。
+
+后续：`ReapTimedOut` 不校验任务持有者，当前靠 `JOB_LEASE_SECONDS > 270` 的强制不等式
+保证安全。若策略超时将来变成无上限，应改成 worker 心跳 + 按 `last_heartbeat_at` 回收。
 
 ## 本地嵌入模式
 
