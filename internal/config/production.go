@@ -44,6 +44,11 @@ func ValidateProductionAPI(get func(string) string) error {
 	if get("ADMIN_PASSWORD") == defaultAdminPassword {
 		failures = append(failures, errors.New("ADMIN_PASSWORD must be changed in production"))
 	}
+	// ADMIN_PASSWORD is checked here rather than in validateCommon, which the
+	// worker also calls: the worker never reads it, and the compose worker
+	// service does not set it, so validating it there stopped the worker tier
+	// from starting in production.
+	failures = append(failures, validateMinLength(get, "ADMIN_PASSWORD", 12)...)
 	failures = append(failures, validateCommon(get)...)
 	failures = append(failures, validateDatabaseDSN(get("POSTGRES_DSN"))...)
 	return errors.Join(failures...)
@@ -84,7 +89,6 @@ func validateCommon(get func(string) string) []error {
 	failures = append(failures, validateMinLength(get, "S3_ACCESS_KEY", 8)...)
 	failures = append(failures, validateMinLength(get, "S3_SECRET_KEY", 16)...)
 	failures = append(failures, validateMinLength(get, "BROWSER_WORKER_TOKEN", 16)...)
-	failures = append(failures, validateMinLength(get, "ADMIN_PASSWORD", 12)...)
 	key, err := base64.StdEncoding.DecodeString(get("ALERT_SECRET_KEY"))
 	if err != nil || len(key) != 32 {
 		failures = append(failures, errors.New("ALERT_SECRET_KEY must be a base64-encoded 32-byte key"))

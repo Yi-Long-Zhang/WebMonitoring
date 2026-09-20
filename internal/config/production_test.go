@@ -37,3 +37,36 @@ func TestValidateProductionAPIAcceptsExplicitSecrets(t *testing.T) {
 		t.Fatalf("unexpected validation error: %v", err)
 	}
 }
+
+// workerEnv is the production environment of the http-worker service. It
+// deliberately omits ADMIN_PASSWORD, which the worker never reads and the
+// compose worker service does not set.
+func workerEnv() map[string]string {
+	return map[string]string{
+		"APP_ENV":               "production",
+		"POSTGRES_DSN":          "postgres://wm:strong-db-password-123@db:5432/webmonitoring",
+		"REDIS_ADDR":            "redis:6379",
+		"S3_ENDPOINT":           "http://minio:9000",
+		"S3_ACCESS_KEY":         "strong-access-key",
+		"S3_SECRET_KEY":         "strong-object-secret-123",
+		"ALERT_SECRET_KEY":      base64.StdEncoding.EncodeToString(make([]byte, 32)),
+		"BROWSER_WORKER_URL":    "http://browser-worker:8081",
+		"BROWSER_WORKER_TOKEN":  "strong-worker-token-123",
+		"WORKER_ID":             "worker-under-test",
+		"SESSION_SECURE":        "true",
+		"ALLOW_PRIVATE_TARGETS": "false",
+	}
+}
+
+// validateCommon used to check ADMIN_PASSWORD for the API and the worker alike.
+// The worker does not read the variable and its compose service does not set
+// it, so the shared check stopped the worker tier from starting in production.
+func TestValidateProductionWorkerDoesNotRequireAdminPassword(t *testing.T) {
+	values := workerEnv()
+	if _, present := values["ADMIN_PASSWORD"]; present {
+		t.Fatal("fixture must leave ADMIN_PASSWORD unset to cover the regression")
+	}
+	if err := ValidateProductionWorker(func(name string) string { return values[name] }); err != nil {
+		t.Fatalf("worker must start without ADMIN_PASSWORD: %v", err)
+	}
+}
