@@ -2,6 +2,7 @@ package detection
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -69,16 +70,25 @@ func (s *Scheduler) schedule(tenantID string) {
 		if err != nil || inMaintenanceWindow(policy, now) {
 			continue
 		}
-		if due(asset.ID, "HTTP", policy.HTTPIntervalSeconds, jobs, now) {
-			if _, err := s.service.Queue(tenantID, asset.ID, "HTTP"); err != nil {
-				s.logger.Warn("schedule HTTP check", "asset_id", asset.ID, "error", err)
-			}
-		}
-		if due(asset.ID, "BROWSER", policy.BrowserIntervalSeconds, jobs, now) {
-			if _, err := s.service.Queue(tenantID, asset.ID, "BROWSER"); err != nil {
-				s.logger.Warn("schedule browser check", "asset_id", asset.ID, "error", err)
-			}
-		}
+		s.queueIfDue(tenantID, asset.ID, "HTTP", policy.HTTPIntervalSeconds, jobs, now)
+		s.queueIfDue(tenantID, asset.ID, "BROWSER", policy.BrowserIntervalSeconds, jobs, now)
+	}
+}
+
+// queueIfDue enqueues a check when its interval has elapsed.
+//
+// ErrJobAlreadyActive is expected here rather than exceptional. due() reads the
+// job table and the insert happens afterwards, so a second control-plane replica
+// can queue the same asset in between; the partial unique index from migration
+// 000012 rejects the loser. Logging that at warn on every 30s tick would bury
+// real scheduling failures, so it is a silent no-op.
+func (s *Scheduler) queueIfDue(tenantID, assetID, mode string, intervalSeconds int, jobs []domain.DetectionJob, now time.Time) {
+	if !due(assetID, mode, intervalSeconds, jobs, now) {
+		return
+	}
+	if _, err := s.service.Queue(tenantID, assetID, mode); err != nil &&
+		!errors.Is(err, store.ErrJobAlreadyActive) {
+		s.logger.Warn("schedule detection check", "asset_id", assetID, "mode", mode, "error", err)
 	}
 }
 
@@ -91,8 +101,7 @@ func due(assetID, mode string, intervalSeconds int, jobs []domain.DetectionJob, 
 		if job.AssetID == assetID && job.Mode == mode && job.CreatedAt.After(latest) {
 			latest = job.CreatedAt
 		}
-		if job.AssetID == assetID && job.Mode == mode &&
-			(job.Status == domain.JobQueued || job.Status == domain.JobRunning) {
+		if job.AssetID == assetID && job.Mode == mode && job.Status.IsActive() {
 			return false
 		}
 	}

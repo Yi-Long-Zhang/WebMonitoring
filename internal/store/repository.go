@@ -10,6 +10,12 @@ import (
 var (
 	ErrNotFound = errors.New("resource not found")
 	ErrConflict = errors.New("resource conflicts with existing state")
+	// ErrJobAlreadyActive reports that a QUEUED or RUNNING detection job
+	// already exists for the same tenant, asset and mode. Callers treat it as
+	// an idempotent no-op rather than a failure: the scheduler decides a check
+	// is due by reading the job table, so concurrent control-plane replicas can
+	// reach the same decision for the same asset and both try to queue it.
+	ErrJobAlreadyActive = errors.New("detection job already queued or running")
 )
 
 // JobLease is how long a detection job may run before its RUNNING claim is

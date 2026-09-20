@@ -10,10 +10,13 @@ import (
 func TestCancelJobOnlyTerminatesQueuedOrRunning(t *testing.T) {
 	repository := NewMemoryRepository()
 	now := time.Now().UTC()
+	// Each job gets its own asset because migration 000012 allows at most one
+	// QUEUED or RUNNING job per (tenant, asset, mode); two active jobs on the
+	// same asset is no longer a reachable state.
 	for _, job := range []domain.DetectionJob{
-		{ID: "queued", TenantID: "tenant", AssetID: "asset", Mode: "HTTP", Status: domain.JobQueued, CreatedAt: now},
-		{ID: "running", TenantID: "tenant", AssetID: "asset", Mode: "HTTP", Status: domain.JobRunning, CreatedAt: now, StartedAt: &now},
-		{ID: "succeeded", TenantID: "tenant", AssetID: "asset", Mode: "HTTP", Status: domain.JobSucceeded, CreatedAt: now},
+		{ID: "queued", TenantID: "tenant", AssetID: "asset-queued", Mode: "HTTP", Status: domain.JobQueued, CreatedAt: now},
+		{ID: "running", TenantID: "tenant", AssetID: "asset-running", Mode: "HTTP", Status: domain.JobRunning, CreatedAt: now, StartedAt: &now},
+		{ID: "succeeded", TenantID: "tenant", AssetID: "asset-succeeded", Mode: "HTTP", Status: domain.JobSucceeded, CreatedAt: now},
 	} {
 		if err := repository.CreateJob(job); err != nil {
 			t.Fatal(err)
@@ -42,10 +45,12 @@ func TestReapTimedOutOnlyReapsStaleRunning(t *testing.T) {
 	now := time.Now().UTC()
 	staleStart := now.Add(-10 * time.Minute)
 	freshStart := now.Add(-time.Minute)
+	// Distinct assets: two RUNNING jobs and a QUEUED job cannot share one asset
+	// under the active-job index from migration 000012.
 	for _, job := range []domain.DetectionJob{
-		{ID: "stale", TenantID: "tenant", AssetID: "asset", Mode: "HTTP", Status: domain.JobRunning, CreatedAt: now, StartedAt: &staleStart},
-		{ID: "fresh", TenantID: "tenant", AssetID: "asset", Mode: "HTTP", Status: domain.JobRunning, CreatedAt: now, StartedAt: &freshStart},
-		{ID: "queued", TenantID: "tenant", AssetID: "asset", Mode: "HTTP", Status: domain.JobQueued, CreatedAt: now},
+		{ID: "stale", TenantID: "tenant", AssetID: "asset-stale", Mode: "HTTP", Status: domain.JobRunning, CreatedAt: now, StartedAt: &staleStart},
+		{ID: "fresh", TenantID: "tenant", AssetID: "asset-fresh", Mode: "HTTP", Status: domain.JobRunning, CreatedAt: now, StartedAt: &freshStart},
+		{ID: "queued", TenantID: "tenant", AssetID: "asset-queued", Mode: "HTTP", Status: domain.JobQueued, CreatedAt: now},
 	} {
 		if err := repository.CreateJob(job); err != nil {
 			t.Fatal(err)

@@ -64,6 +64,15 @@ const (
 	JobCancelled JobStatus = "CANCELLED"
 )
 
+// IsActive reports whether the job still occupies its asset's slot for a mode.
+// Migration 000012 allows at most one QUEUED or RUNNING job per tenant, asset
+// and mode, so every place that reasons about "in flight" must agree on this
+// set: the scheduler before queueing, the memory store when mirroring the
+// index, and the SQL predicate itself.
+func (s JobStatus) IsActive() bool {
+	return s == JobQueued || s == JobRunning
+}
+
 type IncidentStatus string
 
 const (
