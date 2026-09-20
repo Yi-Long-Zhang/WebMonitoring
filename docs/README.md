@@ -83,8 +83,11 @@
   前缀，主密钥取最高版本。**仍缺的是把存量密文重写为最新版本的再加密扫描** ——
   它只是一次需要授权的维护操作。仍未接入外部 KMS/Vault。
 - 完整多租户运营管理。
-- 部署形态：只有单机 Compose，无 Kubernetes、无 TLS 终止、除 browser-worker 外无
-  CPU/内存限制，Compose 中 Redis 未设密码、PostgreSQL 使用 `sslmode=disable`。
+- 部署形态：只有单机 Compose，无 Kubernetes、无 TLS 终止。Compose 已于 2026-09-20
+  加固：全部服务有 CPU/内存限制、日志轮转和 `no-new-privileges`，MinIO 不再向宿主机
+  暴露端口，`REDIS_PASSWORD` 可启用 `requirepass`（应用侧已有对应支持），
+  `POSTGRES_SSLMODE` 控制数据库 TLS 且生产环境拒绝 `disable`。
+  仍未做的是 TLS 终止（见下一条）和外部 KMS。
 - 真实 100 资产 **浏览器** 压测和备份恢复实机演练；控制台 Playwright E2E
   已纳入 Compose smoke，并已于 2026-09-15 在本机实跑通过（见
   [operations.md](operations.md) 的验收清单和 [backup-restore-rehearsal.md](backup-restore-rehearsal.md)）。

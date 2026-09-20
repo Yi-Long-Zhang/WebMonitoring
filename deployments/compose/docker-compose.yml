@@ -1,3 +1,12 @@
+# Every service caps its logs. Without this a stack that runs for months fills
+# the host disk with container logs, and the failure lands on whichever service
+# writes most rather than on the one that is unhealthy.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -7,6 +16,13 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-webmonitoring}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    # Postgres uses shared memory for parallel queries and sorting; the 64 MB
+    # container default is a real bottleneck under load.
+    shm_size: 512mb
+    mem_limit: 2g
+    cpus: 2
+    restart: unless-stopped
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U webmonitoring"]
       interval: 5s
@@ -15,11 +31,24 @@ services:
 
   redis:
     image: redis:8-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    # Setting REDIS_PASSWORD turns on requirepass. The application must then
+    # carry the same password in REDIS_ADDR (redis://:password@redis:6379);
+    # a mismatch fails closed at startup rather than degrading silently.
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-}"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     volumes:
       - redis-data:/data
+    mem_limit: 1g
+    cpus: 1
+    restart: unless-stopped
+    logging: *default-logging
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # REDISCLI_AUTH rather than -a: -a puts the password in the process
+      # arguments, where anything that can read /proc can see it. The conditional
+      # keeps the password-less development stack working -- redis-cli with an
+      # empty REDISCLI_AUTH would still send AUTH and be rejected.
+      test: ["CMD-SHELL", "[ -z \"$$REDIS_PASSWORD\" ] && redis-cli ping || REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -31,10 +60,11 @@ services:
       network: ${BUILD_NETWORK:-default}
     command: ["up"]
     environment:
-      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:-webmonitoring}@postgres:5432/webmonitoring?sslmode=disable
+      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:-webmonitoring}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
     depends_on:
       postgres: { condition: service_healthy }
     restart: "no"
+    logging: *default-logging
 
   minio:
     image: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
@@ -44,9 +74,15 @@ services:
       MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-replace-with-a-random-secret}
     volumes:
       - minio-data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+    # No published ports. Everything that talks to MinIO -- the API, the workers
+    # and the mc client used by the backup rehearsal -- runs inside the Compose
+    # network, so exposing the object store, and especially its admin console, to
+    # the host served no purpose. The three drill overlays already reset these
+    # ports; this makes the base file agree with them.
+    mem_limit: 1g
+    cpus: 1
+    restart: unless-stopped
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
@@ -56,6 +92,8 @@ services:
   # MinIO client used by the backup/restore rehearsal. It lives behind a profile
   # so `up` never starts it, and it runs inside the Compose network so the scripts
   # need neither a host `mc` install nor a published MinIO port.
+  # Publish the object store's console the same way if an operator needs it:
+  # add a service with the same image and `profiles: ["tools"]`.
   mc:
     image: quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     profiles: ["tools"]
@@ -78,6 +116,10 @@ services:
       - no-new-privileges:true
     mem_limit: 2g
     cpus: 2
+    # Every BROWSER-mode check calls this worker synchronously, so a crashed
+    # worker makes those checks fail until someone restarts it by hand.
+    restart: unless-stopped
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:8081/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
@@ -119,8 +161,9 @@ services:
       # Empty endpoint keeps tracing off; set it to an OTLP/HTTP collector to enable.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1}
-      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:-webmonitoring}@postgres:5432/webmonitoring?sslmode=disable
-      REDIS_ADDR: redis:6379
+      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:-webmonitoring}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
+      # Set REDIS_ADDR to redis://:password@redis:6379 when REDIS_PASSWORD is set.
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-webmonitoring}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-replace-with-a-random-secret}
@@ -133,7 +176,13 @@ services:
       migrate: { condition: service_completed_successfully }
     ports:
       - "8080:8080"
+    mem_limit: 1g
+    cpus: 2
+    # read_only is deliberately not set: the API writes DATA_DIR.
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
+    logging: *default-logging
 
   http-worker:
     build:
@@ -147,8 +196,9 @@ services:
       WORKER_ID: ${WORKER_ID:-}
       SESSION_SECURE: ${SESSION_SECURE:-false}
       ALLOW_PRIVATE_TARGETS: ${ALLOW_PRIVATE_TARGETS:-false}
-      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:-webmonitoring}@postgres:5432/webmonitoring?sslmode=disable
-      REDIS_ADDR: redis:6379
+      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:-webmonitoring}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
+      # Set REDIS_ADDR to redis://:password@redis:6379 when REDIS_PASSWORD is set.
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-webmonitoring}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-replace-with-a-random-secret}
@@ -182,7 +232,13 @@ services:
       minio: { condition: service_healthy }
       browser-worker: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
+    mem_limit: 1g
+    cpus: 2
+    # read_only is deliberately not set: the worker writes DATA_DIR.
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
+    logging: *default-logging
 
   console:
     build:
@@ -193,6 +249,12 @@ services:
       api: { condition: service_healthy }
     ports:
       - "8088:8080"
+    mem_limit: 256m
+    cpus: 1
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz >/dev/null"]
       interval: 10s
