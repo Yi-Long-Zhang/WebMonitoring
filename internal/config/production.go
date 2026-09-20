@@ -59,11 +59,19 @@ func ValidateProductionWorker(get func(string) string) error {
 		return nil
 	}
 	var failures []error
+	// WORKER_ID is deliberately not required. A value set once in the
+	// environment is shared by every replica under `--scale`, which is the
+	// collision that config.WorkerIdentity avoids by generating a per-process
+	// name; requiring it would push deployments back onto a fixed consumer.
 	failures = append(failures, validateRequired(get,
 		"POSTGRES_DSN", "REDIS_ADDR", "S3_ENDPOINT", "S3_ACCESS_KEY",
-		"S3_SECRET_KEY", "ALERT_SECRET_KEY", "WORKER_ID",
+		"S3_SECRET_KEY", "ALERT_SECRET_KEY",
 		"BROWSER_WORKER_URL", "BROWSER_WORKER_TOKEN",
 	)...)
+	if workerID := strings.TrimSpace(get("WORKER_ID")); legacyWorkerIDs[workerID] {
+		failures = append(failures, fmt.Errorf(
+			"WORKER_ID must not be %q: it is a fixed name shared by every replica, so scaled workers would reclaim each other's in-flight jobs; unset it to generate a per-process identity", workerID))
+	}
 	failures = append(failures, validateCommon(get)...)
 	failures = append(failures, validateDatabaseDSN(get("POSTGRES_DSN"))...)
 	return errors.Join(failures...)

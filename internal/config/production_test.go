@@ -38,9 +38,9 @@ func TestValidateProductionAPIAcceptsExplicitSecrets(t *testing.T) {
 	}
 }
 
-// workerEnv is the production environment of the http-worker service. It
-// deliberately omits ADMIN_PASSWORD, which the worker never reads and the
-// compose worker service does not set.
+// workerEnv is the production environment of the http-worker service. It omits
+// ADMIN_PASSWORD, which the worker never reads, and WORKER_ID, which the worker
+// generates per process so that scaled replicas do not share a consumer name.
 func workerEnv() map[string]string {
 	return map[string]string{
 		"APP_ENV":               "production",
@@ -52,7 +52,6 @@ func workerEnv() map[string]string {
 		"ALERT_SECRET_KEY":      base64.StdEncoding.EncodeToString(make([]byte, 32)),
 		"BROWSER_WORKER_URL":    "http://browser-worker:8081",
 		"BROWSER_WORKER_TOKEN":  "strong-worker-token-123",
-		"WORKER_ID":             "worker-under-test",
 		"SESSION_SECURE":        "true",
 		"ALLOW_PRIVATE_TARGETS": "false",
 	}

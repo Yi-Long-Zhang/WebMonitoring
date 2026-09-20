@@ -83,7 +83,9 @@ func main() {
 		Password: os.Getenv("SMTP_PASSWORD"),
 		From:     os.Getenv("SMTP_FROM"),
 	})
-	consumer := env("WORKER_ID", "worker-1")
+	// The consumer name must be unique per running worker: the group reclaims
+	// anything another consumer has held past QUEUE_MIN_IDLE_SECONDS.
+	consumer := config.WorkerIdentity(os.Getenv)
 	secretCipher, err := security.NewSecretCipher(required("ALERT_SECRET_KEY"))
 	if err != nil {
 		log.Fatal(err)

@@ -57,13 +57,12 @@
 
 当前明确不应描述为已完成或尚未完成部署验收：
 
-- **多副本（HA）不支持**：`internal/detection/scheduler.go` 的 30 秒轮询、
-  `internal/maintenance/retention.go` 的保留策略清理和 Worker 消费者身份都没有跨副本
-  协调。调度器的 `due()` 是“先读后判”，数据库对 `(tenant_id, asset_id, mode)` 也没有
-  唯一约束，因此多副本会重复排队检测任务；Compose 把 `WORKER_ID` 固定为
-  `http-worker-1`，`--scale` 后同名消费者会被 `XAutoClaim` 抢占在途消息并重复处理；
-  保留策略任务无锁且启动时立即全量执行一次，任何副本重启都会触发完整清扫。当前只支持
-  单个控制面副本和单个 HTTP Worker 实例。
+- **多副本（HA）仍不支持**：保留策略清理（`internal/maintenance/retention.go`）没有跨副本
+  租约，且启动时立即全量执行一次，任何副本重启都会触发完整清扫并重复删除证据对象与元数据。
+  检测任务的重复排队已由迁移 `000012` 的部分唯一索引 `detection_jobs_active_uidx` 解决，
+  Worker 消费者身份重名已由 `config.WorkerIdentity` 的每进程身份解决；在保留策略加锁之前
+  仍只支持单个控制面副本。另需确认 `ReapTimedOut` 的租约长于最慢的浏览器检测时长，它目前
+  不校验任务持有者。
 - **保留策略清理缺少审计**：定时清理（`RunAllTenants`）只记录日志，不写审计事件，
   只有手动端点 `POST /maintenance/retention` 会写。自动删除证据因此没有审计留痕。
 - **完整事件时间线**：`UpsertIncident` 的 `signals = EXCLUDED.signals` 会覆盖上一轮信号集，
