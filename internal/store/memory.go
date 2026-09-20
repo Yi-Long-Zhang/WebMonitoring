@@ -12,6 +12,8 @@ import (
 )
 
 type MemoryRepository struct {
+	// jobLease is the RUNNING claim lease. See Repository.JobLease.
+	jobLease  time.Duration
 	mu        sync.RWMutex
 	tenants   map[string]domain.Tenant
 	sites     map[string]domain.Site
@@ -32,6 +34,7 @@ type MemoryRepository struct {
 
 func NewMemoryRepository() *MemoryRepository {
 	repo := &MemoryRepository{
+		jobLease:   JobLease,
 		tenants:    make(map[string]domain.Tenant),
 		sites:      make(map[string]domain.Site),
 		users:      make(map[string]domain.User),
@@ -577,7 +580,7 @@ func (m *MemoryRepository) ClaimJob(tenantID, id string, startedAt time.Time) (b
 		return false, ErrNotFound
 	}
 	staleRunning := job.Status == domain.JobRunning &&
-		job.StartedAt != nil && job.StartedAt.Before(startedAt.Add(-JobLease))
+		job.StartedAt != nil && job.StartedAt.Before(startedAt.Add(-m.jobLease))
 	if job.Status != domain.JobQueued && !staleRunning {
 		return false, nil
 	}
@@ -951,6 +954,24 @@ func (m *MemoryRepository) AppendAudit(event domain.AuditEvent) error {
 	defer m.mu.Unlock()
 	m.audits = append(m.audits, event)
 	return nil
+}
+
+// JobLease reports the lease this repository enforces on a RUNNING claim.
+func (m *MemoryRepository) JobLease() time.Duration {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.jobLease
+}
+
+// SetJobLease replaces the default lease. A non-positive value is ignored so a
+// misread environment variable cannot make every claim immediately reclaimable.
+func (m *MemoryRepository) SetJobLease(lease time.Duration) {
+	if lease <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobLease = lease
 }
 
 func (m *MemoryRepository) ListAudits(tenantID string, filter AuditFilter, opts ListOptions) ([]domain.AuditEvent, string, error) {

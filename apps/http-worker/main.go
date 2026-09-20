@@ -52,6 +52,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	repository.SetJobLease(config.JobLease(os.Getenv, store.JobLease))
 	defer repository.Close()
 	evidenceStore, err := evidence.NewS3Store(
 		ctx,

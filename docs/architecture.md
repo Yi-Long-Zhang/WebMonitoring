@@ -205,15 +205,36 @@ span 与产生该任务的 API 请求因此不是同一个 trace，只能通过 
 调度器自己排队，再断言任务数等于资产数、没有重复的 `(tenant, asset, mode)`、每个 worker
 副本对应一个唯一消费者身份。
 
-当前状态是**部分验证**：脚本已就位，其中「每个 worker 副本一个唯一消费者」这一半已经在
-真实 `--scale api=2 --scale http-worker=3` 上验证过，并且做过变异检查（把 `WORKER_ID` 钉回
-`http-worker-1` 后三个副本确实注册成同一个消费者名）；但**完整演练尚未跑通**，因此
-「任务数等于资产数」这条端到端断言还没有实际执行过。调度器幂等的确定性证明目前来自单元
-测试（`TestConcurrentReplicasQueueOneJobPerAsset`，去掉约束立即失败），不是来自演练。
+当前状态是**已验证**。2026-09-20 在真实 `--scale api=2 --scale http-worker=3` 上首次跑通：
 
-在完整演练跑通之前，不要按多副本部署。
+```
+assets            : 40
+detection jobs    : 40 (expected 40)
+duplicate groups  : 0
+succeeded         : 40
+wall clock        : 12.2s
+worker consumers  : 3 个互不相同的名字
+```
 
-扩容前还需要把任务租约关系写进容量说明：`ReapTimedOut` 会把所有 `started_at` 早于
-`JobLease`（5 分钟）的 `RUNNING` 任务单方面置为 `TIMED_OUT`，`ClaimJob` 也允许抢占超过
-租约的任务，两者都不校验持有者。只要最慢的一次检测远短于租约就没有实际影响（浏览器
-Worker 的出站超时是 90 秒，HTTP 检测更短），但租约不能短于检测预算。
+同一次运行里做了两个变异检查，都如期失败，因此这些断言不是空转的：
+
+- `-DropActiveJobIndex`（先删掉迁移 000012 的唯一索引）：任务数 66、重复组 26，脚本以
+  退出码 1 报错。这条演练确实在测它声称要测的东西。
+- 更早的 `WORKER_ID` 变异（把消费者名钉回固定值）使三个副本注册成同一名字。
+
+**修复记录**：本演练在被首次执行前有一个致命缺陷 —— `Wait-Healthy` 用
+`docker compose ps -q`，而该命令默认不列出已退出的容器，一次性的 `migrate` 容器因此
+永远不可见，等待必然超时。它改用 `ps -aq` 后才有第一次通过。换句话说，这个脚本在
+2026-09-20 之前**不可能通过**，此前文档里「脚本已就位」的说法掩盖了这一点。
+
+任务租约关系现在被强制而不是靠手算。`ReapTimedOut` 会把所有 `started_at` 早于租约的
+`RUNNING` 任务单方面置为 `TIMED_OUT`，`ClaimJob` 也允许抢占超过租约的任务，**两者都不
+校验持有者** —— 所以保证不是「reaper 知道谁持有任务」，而是「没有合法检测能超过租约」。
+租约由 `JOB_LEASE_SECONDS` 配置（`store.JobLease()` 暴露给调度器，避免 reap 截止点与
+reclaim 截止点漂移），并且生产门禁要求它**严格大于** `3 × 90s = 270s`：一次检测受策略
+超时约束（上限 90 秒），而一次 BROWSER 检测会把这份预算花两次（登录页加载 + 目标页导航）。
+改动之前写在这里的那句「只要最慢的一次检测远短于租约就没有实际影响」就是被这个不等式
+替换掉的手算。
+
+若将来策略超时变成无上限，正确做法是改成 worker 周期性写 heartbeat、reaper 按
+`last_heartbeat_at` 回收 —— 那是构造上正确，但需要迁移、仓储方法和 worker 管线。

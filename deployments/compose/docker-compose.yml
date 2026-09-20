@@ -155,6 +155,11 @@ services:
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
+      # How long a RUNNING detection claim is honoured. Must exceed one second
+      # of the policy timeout: the cap is 90s and a BROWSER check spends it
+      # twice, so the production gate rejects anything at or below 270. The
+      # default here is well clear of that.
+      JOB_LEASE_SECONDS: ${JOB_LEASE_SECONDS:-600}
       EVIDENCE_RETENTION_DAYS: ${EVIDENCE_RETENTION_DAYS:-90}
       AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
       RETENTION_INTERVAL_HOURS: ${RETENTION_INTERVAL_HOURS:-24}
@@ -221,6 +226,11 @@ services:
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
+      # How long a RUNNING detection claim is honoured. Must exceed one second
+      # of the policy timeout: the cap is 90s and a BROWSER check spends it
+      # twice, so the production gate rejects anything at or below 270. The
+      # default here is well clear of that.
+      JOB_LEASE_SECONDS: ${JOB_LEASE_SECONDS:-600}
       EVIDENCE_RETENTION_DAYS: ${EVIDENCE_RETENTION_DAYS:-90}
       AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
       # Same collector as the API so a job's span joins the API's trace.

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func PositiveInt(get func(string) string, name string, fallback int) int {
@@ -102,6 +103,7 @@ func validateCommon(get func(string) string) []error {
 	failures = append(failures, validateMinLength(get, "BROWSER_WORKER_TOKEN", 16)...)
 	failures = append(failures, validateSecretKeys(get)...)
 	failures = append(failures, validateRedisCredentials(get)...)
+	failures = append(failures, validateJobLease(get)...)
 	failures = append(failures, validateSMTP(get)...)
 	return failures
 }
@@ -255,7 +257,39 @@ func validateDatabaseDSN(raw string) []error {
 	return nil
 }
 
-// validateRedisCredentials requires a real password when REDIS_ADDR carries
+// minJobLease is the shortest lease that can be provably safe, and the
+// derivation matters more than the number.
+//
+// One detection is bounded by the policy's TimeoutSeconds, which the API
+// refuses to accept above 90s. A BROWSER check spends that budget twice: once
+// loading the sign-in page and once navigating to the target. So the worst case
+// for a single job is three times the policy cap. A lease at or below that lets
+// a peer replica reap a job that is still working, and ReapTimedOut does not
+// check which replica owns a job -- this inequality is the entire guarantee.
+const minJobLease = 3 * 90 * time.Second
+
+// validateJobLease enforces that inequality instead of leaving it to a comment.
+// The alternative, a heartbeat column the reaper consults, would be correct by
+// construction but needs a migration, a repository method and worker plumbing;
+// it is the follow-up if a policy timeout ever becomes unbounded.
+func validateJobLease(get func(string) string) []error {
+	raw := strings.TrimSpace(get("JOB_LEASE_SECONDS"))
+	if raw == "" {
+		return nil
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil {
+		return []error{errors.New("JOB_LEASE_SECONDS must be an integer number of seconds")}
+	}
+	if time.Duration(seconds)*time.Second <= minJobLease {
+		return []error{fmt.Errorf(
+			"JOB_LEASE_SECONDS must be greater than %d: one detection is bounded by the policy timeout (max 90s) and a BROWSER check spends that budget twice, so a shorter lease lets a peer replica mark a job TIMED_OUT while it is still running",
+			int(minJobLease.Seconds()))}
+	}
+	return nil
+}
+
+// validateRedisCredentials requires// validateRedisCredentials requires a real password when REDIS_ADDR carries
 // credentials. Demanding it only in the credentialed form leaves the bare
 // host:port form -- used by the integration tests and a single-node dev stack --
 // working unchanged, so nothing has to change until a deployment opts in.

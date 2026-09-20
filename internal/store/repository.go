@@ -18,12 +18,25 @@ var (
 	ErrJobAlreadyActive = errors.New("detection job already queued or running")
 )
 
-// JobLease is how long a detection job may run before its RUNNING claim is
-// considered stale. ClaimJob reclaims stale RUNNING jobs and ReapTimedOut
-// moves them to TIMED_OUT, so a worker crash cannot leave a job RUNNING forever.
+// JobLease is the default for how long a detection job may run before its
+// RUNNING claim is considered stale. ClaimJob reclaims stale RUNNING jobs and
+// ReapTimedOut moves them to TIMED_OUT, so a worker crash cannot leave a job
+// RUNNING forever.
+//
+// It is only a default: an implementation returns its own value from JobLease()
+// so a deployment can widen it. The lease has to exceed the slowest possible
+// detection, and the scheduler's reap cutoff must equal the claim reclaim
+// cutoff exactly, or a peer replica can mark a job TIMED_OUT while it is still
+// working. Exposing it here is what keeps the two in step.
 const JobLease = 5 * time.Minute
 
 type Repository interface {
+	// JobLease reports the lease this repository enforces, and SetJobLease
+	// replaces the default. The scheduler reads the lease rather than importing
+	// the constant, so the reap cutoff cannot drift from the reclaim cutoff.
+	JobLease() time.Duration
+	SetJobLease(time.Duration)
+
 	ListTenants(opts ListOptions) ([]domain.Tenant, string, error)
 	GetTenant(tenantID string) (domain.Tenant, error)
 	GetTenantBySlug(slug string) (domain.Tenant, error)

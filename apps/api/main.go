@@ -282,6 +282,7 @@ func buildRepository(ctx context.Context, logger *slog.Logger) (store.Repository
 	if err != nil {
 		log.Fatal(err)
 	}
+	repository.SetJobLease(config.JobLease(os.Getenv, store.JobLease))
 	logger.Info("using PostgreSQL repository")
 	return repository, repository.Close
 }

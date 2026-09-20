@@ -123,7 +123,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\compose-smoke.ps1
 | 安全边界 smoke | P0-1 登录锁定（N 次失败后即使密码正确也返回 `ACCOUNT_LOCKED`，且不影响其他账户）、P1-5 keyset 分页（`limit`+`cursor` 无重复无遗漏）、P1-6 资产暂停/恢复（暂停后排队返回 `JOB_REJECTED`，恢复不自动启用）、P1-7 任务取消（终态为 `CANCELLED`，迟到结果不得覆盖） | 同上，`compose-smoke.ps1` 已内置 |
 | 浏览器登录态 smoke | P4-06/P4-07 浏览器模式登录态：smoke-target 上另起一个 cookie 门控的 `smoke-login` host，同一资产在**无** `AuthConfig` 时快照须是登录页（负控），**有**时须是受保护页 | 同上，`compose-smoke.ps1` 已内置 |
 | 100 资产压测 | 跨租户播种、真实 FILE 所有权验证、单轮 HTTP 检测吞吐、任务无丢失、证据完整、未批准基线无假阳性 | `.\scripts\load-test.ps1` |
-| 多副本演练 | 调度器跨副本排队不重复（任务数等于资产数）、无重复 `(tenant, asset, mode)`、每个 worker 副本一个唯一消费者身份 | `.\scripts\multi-replica-drill.ps1` |
+| 多副本演练 | 调度器跨副本排队不重复（任务数等于资产数）、无重复 `(tenant, asset, mode)`、每个 worker 副本一个唯一消费者身份。`-Mode BROWSER` 时断言的是浏览器任务数（余量最薄，需小规模并放宽超时） | `.\scripts\multi-replica-drill.ps1`；变异检查 `-DropActiveJobIndex` 必须失败 |
 | 备份恢复演练 | 数据库 dump、evidence bucket 清单、恢复后 `/readyz` 与证据校验 | `.\scripts\compose-backup.ps1`、`.\scripts\compose-restore.ps1`（见 [backup-restore-rehearsal.md](backup-restore-rehearsal.md)） |
 
 浏览器登录态断言用的是 `smoke-target` 容器上的第二个 nginx `server_name`
