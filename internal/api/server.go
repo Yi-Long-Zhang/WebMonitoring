@@ -1573,6 +1573,10 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 		s.notFound(writer, request)
 		return
 	}
+	// Captured before the handler rewrites it: a timeline entry needs both ends
+	// of the transition. Only scalar fields are assigned below, so a value copy
+	// is enough.
+	before := incident
 	var input struct {
 		Status     domain.IncidentStatus `json:"status"`
 		OwnerID    string                `json:"ownerId"`
@@ -1617,6 +1621,15 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 	if err := s.repository.UpdateIncident(incident); err != nil {
 		writeError(writer, request, http.StatusInternalServerError, "INCIDENT_UPDATE_FAILED", "无法更新事件", nil)
 		return
+	}
+	// The timeline entry is written before the audit and its failure does not
+	// fail the request: the status has already changed, so a 500 would tell the
+	// caller the transition did not happen when it did. Losing one entry is the
+	// lesser harm, and the audit record below still shows the action.
+	if err := s.repository.AppendIncidentEvent(
+		detection.IncidentTransitionEvent(before, incident, session.User, time.Now().UTC()),
+	); err != nil {
+		s.logger.Error("persist incident timeline entry failed", "incident_id", incident.ID, "error", err)
 	}
 	s.appendAudit(request, session.User, "incident.transition", "incident", incident.ID, "SUCCESS", map[string]any{"status": input.Status})
 	s.broker.Publish("incident.updated", incident)
