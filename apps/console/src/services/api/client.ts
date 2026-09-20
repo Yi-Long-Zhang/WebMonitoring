@@ -1,5 +1,5 @@
 import type {
-  AlertChannel, AlertDelivery, Asset, AuditEvent, Baseline, Dashboard, DetectionJob, Evidence, Incident, IncidentStatus, ListResponse, Policy, ReportSummary, Session, Site, Tenant, User,
+  AlertChannel, AlertDelivery, Asset, AuditEvent, Baseline, Dashboard, DetectionJob, Evidence, Incident, IncidentEvent, IncidentStatus, ListResponse, Policy, ReportSummary, Session, Site, Tenant, User,
 } from "../../types/domain";
 
 let csrfToken = "";
@@ -152,6 +152,15 @@ export function getIncidents() {
   return request<ListResponse<Incident>>("/incidents");
 }
 
+export function getIncidentTimeline(id: string, params: { limit?: number; cursor?: string } = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value) query.set(key, String(value));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<ListResponse<IncidentEvent>>(`/incidents/${encodeURIComponent(id)}/timeline${suffix}`);
+}
+
 export function getEvidence() {
   return request<ListResponse<Evidence>>("/evidence");
 }
@@ -198,10 +207,17 @@ export function getAuditEvents() {
   return request<ListResponse<AuditEvent>>("/audit-events");
 }
 
-export function transitionIncident(id: string, status: IncidentStatus, resolution = "") {
+export function transitionIncident(id: string, status: IncidentStatus, resolution = "", ownerId = "") {
   return request<Incident>(`/incidents/${id}/transition`, {
     method: "POST",
-    body: JSON.stringify({ status, resolution }),
+    body: JSON.stringify({ status, resolution, ownerId }),
+  });
+}
+
+export function addIncidentComment(id: string, note: string) {
+  return request<IncidentEvent>(`/incidents/${encodeURIComponent(id)}/comments`, {
+    method: "POST",
+    body: JSON.stringify({ note }),
   });
 }
 

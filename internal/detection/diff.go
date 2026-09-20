@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"webmonitoring/internal/domain"
 	"webmonitoring/internal/identity"
@@ -244,4 +245,34 @@ func ValidateTransition(from, to domain.IncidentStatus) error {
 		return fmt.Errorf("incident transition %s -> %s is not allowed", from, to)
 	}
 	return nil
+}
+
+// IncidentTransitionEvent folds one human disposition action into a single
+// timeline entry.
+//
+// One entry per request, not one per changed field: identity.New() returns a
+// random UUID, so entries written at the same instant would have no defined
+// order relative to each other, and the console renders status, owner and
+// resolution as one row anyway. The owner and the resolution travel in Details.
+//
+// The type is always STATUS_CHANGED because ValidateTransition rejects a
+// transition to the same status, so every call here changed the status.
+func IncidentTransitionEvent(before, after domain.Incident, actor domain.User, at time.Time) domain.IncidentEvent {
+	event := domain.IncidentEvent{
+		ID: identity.New(), TenantID: after.TenantID, IncidentID: after.ID,
+		Type: domain.IncidentEventStatusChanged, ActorID: actor.ID,
+		FromStatus: before.Status, ToStatus: after.Status,
+		Severity: after.Severity, CreatedAt: at,
+	}
+	details := map[string]any{}
+	if after.OwnerID != before.OwnerID {
+		details["ownerId"] = after.OwnerID
+	}
+	if after.Resolution != "" && after.Resolution != before.Resolution {
+		details["resolution"] = after.Resolution
+	}
+	if len(details) > 0 {
+		event.Details = details
+	}
+	return event
 }

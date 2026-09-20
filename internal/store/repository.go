@@ -81,6 +81,12 @@ type Repository interface {
 	UpdateIncident(domain.Incident) error
 	GetIncident(tenantID, id string) (domain.Incident, error)
 	ListIncidents(tenantID string, opts ListOptions) ([]domain.Incident, string, error)
+	// AppendIncidentEvent adds one entry to an incident's timeline. Entries are
+	// append-only by design: the incident row cannot hold its own history,
+	// because the upsert overwrites `signals` on every recurrence.
+	AppendIncidentEvent(domain.IncidentEvent) error
+	// ListIncidentEvents returns one incident's timeline, newest first.
+	ListIncidentEvents(tenantID, incidentID string, opts ListOptions) ([]domain.IncidentEvent, string, error)
 
 	CreateAlertChannel(domain.AlertChannel) error
 	ListAlertChannels(tenantID string) ([]domain.AlertChannel, error)

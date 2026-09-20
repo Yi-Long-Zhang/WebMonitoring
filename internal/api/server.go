@@ -181,6 +181,10 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("POST /api/v1/detection-jobs/{id}/cancel", s.requireRoles(s.cancelJob, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/incidents", s.listIncidents)
 	protected.HandleFunc("GET /api/v1/incidents/{id}", s.getIncident)
+	// Readable by every authenticated role, like getIncident: an auditor who can see
+	// an incident but not how it was handled cannot audit it.
+	protected.HandleFunc("GET /api/v1/incidents/{id}/timeline", s.listIncidentTimeline)
+	protected.HandleFunc("POST /api/v1/incidents/{id}/comments", s.requireRoles(s.addIncidentComment, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("POST /api/v1/incidents/{id}/transition", s.requireRoles(s.transitionIncident, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/evidence", s.listEvidence)
 	protected.HandleFunc("GET /api/v1/evidence/{id}/download", s.downloadEvidence)
@@ -1566,6 +1570,66 @@ func (s *Server) getIncident(writer http.ResponseWriter, request *http.Request) 
 	writeJSON(writer, http.StatusOK, item)
 }
 
+// addIncidentComment appends an operator's note to an incident's timeline.
+//
+// A comment is a timeline entry rather than a column on the incident: it is part
+// of the history, and a column would keep only the most recent note. The note
+// text is deliberately not copied into the audit record -- the audit says an
+// incident was commented on and by whom, the timeline holds what was said.
+func (s *Server) addIncidentComment(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	id := request.PathValue("id")
+	incident, err := s.repository.GetIncident(session.User.TenantID, id)
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	var input struct {
+		Note string `json:"note"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	note := strings.TrimSpace(input.Note)
+	length := len([]rune(note))
+	if length < 2 || length > 2000 {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_NOTE", "备注长度需在 2 到 2000 个字符之间", nil)
+		return
+	}
+	event := domain.IncidentEvent{
+		ID: identity.New(), TenantID: incident.TenantID, IncidentID: incident.ID,
+		Type: domain.IncidentEventCommented, ActorID: session.User.ID,
+		Details: map[string]any{"note": note}, CreatedAt: time.Now().UTC(),
+	}
+	if err := s.repository.AppendIncidentEvent(event); err != nil {
+		s.repositoryFailure(writer, request, "add incident comment", err)
+		return
+	}
+	s.appendAudit(request, session.User, "incident.comment", "incident", id, "SUCCESS", map[string]any{"length": length})
+	s.broker.Publish("incident.updated", incident)
+	writeJSON(writer, http.StatusCreated, event)
+}
+
+// listIncidentTimeline returns one incident's history, newest first.
+//
+// The incident is looked up first so a missing or cross-tenant id answers 404
+// rather than an empty list, which would otherwise be indistinguishable from an
+// incident that has no entries yet.
+func (s *Server) listIncidentTimeline(writer http.ResponseWriter, request *http.Request) {
+	tenantID := principal(request).User.TenantID
+	id := request.PathValue("id")
+	if _, err := s.repository.GetIncident(tenantID, id); err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	events, nextCursor, err := s.repository.ListIncidentEvents(tenantID, id, listOptions(request))
+	if err != nil {
+		s.repositoryFailure(writer, request, "list incident timeline", err)
+		return
+	}
+	writeList(writer, events, nextCursor)
+}
+
 func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
 	incident, err := s.repository.GetIncident(session.User.TenantID, request.PathValue("id"))
@@ -1573,6 +1637,10 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 		s.notFound(writer, request)
 		return
 	}
+	// Captured before the handler rewrites it: a timeline entry needs both ends
+	// of the transition. Only scalar fields are assigned below, so a value copy
+	// is enough.
+	before := incident
 	var input struct {
 		Status     domain.IncidentStatus `json:"status"`
 		OwnerID    string                `json:"ownerId"`
@@ -1617,6 +1685,15 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 	if err := s.repository.UpdateIncident(incident); err != nil {
 		writeError(writer, request, http.StatusInternalServerError, "INCIDENT_UPDATE_FAILED", "无法更新事件", nil)
 		return
+	}
+	// The timeline entry is written before the audit and its failure does not
+	// fail the request: the status has already changed, so a 500 would tell the
+	// caller the transition did not happen when it did. Losing one entry is the
+	// lesser harm, and the audit record below still shows the action.
+	if err := s.repository.AppendIncidentEvent(
+		detection.IncidentTransitionEvent(before, incident, session.User, time.Now().UTC()),
+	); err != nil {
+		s.logger.Error("persist incident timeline entry failed", "incident_id", incident.ID, "error", err)
 	}
 	s.appendAudit(request, session.User, "incident.transition", "incident", incident.ID, "SUCCESS", map[string]any{"status": input.Status})
 	s.broker.Publish("incident.updated", incident)

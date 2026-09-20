@@ -1,5 +1,6 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
+  addIncidentComment,
   approveBaseline,
   createAlertChannel,
   createAsset,
@@ -56,7 +57,9 @@ export function useMonitoringActions() {
     ElMessage.success(accepted ? "基线已批准" : "基线已拒绝");
   }
 
-  async function changeIncident(incident: Incident, status: Incident["status"]) {
+  // ownerId is applied together with the transition because the API validates a
+  // state change for every call; there is no owner-only endpoint to call.
+  async function changeIncident(incident: Incident, status: Incident["status"], ownerId = "") {
     let resolution = "";
     if (status === "RESOLVED" || status === "FALSE_POSITIVE") {
       try {
@@ -69,7 +72,7 @@ export function useMonitoringActions() {
         return;
       }
     }
-    await transitionIncident(incident.id, status, resolution);
+    await transitionIncident(incident.id, status, resolution, ownerId);
     await consoleStore.refresh();
     ElMessage.success("事件状态已更新");
   }
@@ -130,6 +133,11 @@ export function useMonitoringActions() {
     ElMessage.success("租户已更新");
   }
 
+  async function commentOnIncident(incident: Incident, note: string) {
+    await addIncidentComment(incident.id, note);
+    ElMessage.success("备注已记录");
+  }
+
   return {
     createNewAsset,
     verifyAssetOwnership,
@@ -137,6 +145,7 @@ export function useMonitoringActions() {
     startDetection,
     reviewBaseline,
     changeIncident,
+    commentOnIncident,
     savePolicy,
     retireBaseline,
     createNewAlertChannel,

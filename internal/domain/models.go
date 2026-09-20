@@ -287,6 +287,48 @@ type Incident struct {
 	LastSeenAt      time.Time      `json:"lastSeenAt"`
 	AcknowledgedAt  *time.Time     `json:"acknowledgedAt,omitempty"`
 	ResolvedAt      *time.Time     `json:"resolvedAt,omitempty"`
+	// JobID is the detection job that produced this round. It is input only:
+	// the store records it on the timeline entry and never writes it to the
+	// incident row, so it stays out of the JSON contract.
+	JobID string `json:"-"`
+}
+
+type IncidentEventType string
+
+const (
+	IncidentEventCreated       IncidentEventType = "CREATED"
+	IncidentEventRecurred      IncidentEventType = "RECURRED"
+	IncidentEventStatusChanged IncidentEventType = "STATUS_CHANGED"
+	IncidentEventOwnerAssigned IncidentEventType = "OWNER_ASSIGNED"
+	IncidentEventCommented     IncidentEventType = "COMMENTED"
+)
+
+// IncidentEvent is one append-only entry in an incident's timeline.
+//
+// It exists because the incident row cannot hold its own history: the upsert
+// overwrites `signals` on every recurrence, so before this the second and later
+// occurrences survived only as a counter. Signatures are per-occurrence here --
+// Signals is what was seen during that one detection, not the set that happens
+// to be current now.
+type IncidentEvent struct {
+	ID         string            `json:"id"`
+	TenantID   string            `json:"tenantId"`
+	IncidentID string            `json:"incidentId"`
+	Type       IncidentEventType `json:"type"`
+	// Empty when the detection worker wrote the entry on its own; an automated
+	// recurrence has no human actor behind it.
+	ActorID     string         `json:"actorId,omitempty"`
+	FromStatus  IncidentStatus `json:"fromStatus,omitempty"`
+	ToStatus    IncidentStatus `json:"toStatus,omitempty"`
+	Severity    Severity       `json:"severity,omitempty"`
+	Title       string         `json:"title,omitempty"`
+	Signals     []Signal       `json:"signals,omitempty"`
+	EvidenceIDs []string       `json:"evidenceIds,omitempty"`
+	// JobID links a detection-driven entry back to the job that produced it,
+	// which is what makes a timeline entry traceable to its run.
+	JobID     string         `json:"jobId,omitempty"`
+	Details   map[string]any `json:"details,omitempty"`
+	CreatedAt time.Time      `json:"createdAt"`
 }
 
 type AlertChannel struct {

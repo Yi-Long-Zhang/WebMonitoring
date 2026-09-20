@@ -8,22 +8,26 @@ import (
 	"time"
 
 	"webmonitoring/internal/domain"
+	"webmonitoring/internal/identity"
 )
 
 type MemoryRepository struct {
-	mu         sync.RWMutex
-	tenants    map[string]domain.Tenant
-	sites      map[string]domain.Site
-	users      map[string]domain.User
-	assets     map[string]domain.Asset
-	policies   map[string]domain.MonitorPolicy
-	baselines  map[string]domain.BaselineVersion
-	jobs       map[string]domain.DetectionJob
-	evidence   map[string]domain.Evidence
-	incidents  map[string]domain.Incident
-	channels   map[string]domain.AlertChannel
-	deliveries map[string]domain.AlertDelivery
-	audits     []domain.AuditEvent
+	mu        sync.RWMutex
+	tenants   map[string]domain.Tenant
+	sites     map[string]domain.Site
+	users     map[string]domain.User
+	assets    map[string]domain.Asset
+	policies  map[string]domain.MonitorPolicy
+	baselines map[string]domain.BaselineVersion
+	jobs      map[string]domain.DetectionJob
+	evidence  map[string]domain.Evidence
+	incidents map[string]domain.Incident
+	// incidentEvents is append-only, like audits: the timeline is a history, so
+	// entries are never rewritten or removed.
+	incidentEvents []domain.IncidentEvent
+	channels       map[string]domain.AlertChannel
+	deliveries     map[string]domain.AlertDelivery
+	audits         []domain.AuditEvent
 }
 
 func NewMemoryRepository() *MemoryRepository {
@@ -125,7 +129,8 @@ func (m *MemoryRepository) CountTenantResources(tenantID string) (map[string]int
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := map[string]int{"assets": 0, "sites": 0, "users": 0, "evidence": 0,
-		"incidents": 0, "baselines": 0, "jobs": 0, "alertChannels": 0, "auditEvents": 0}
+		"incidents": 0, "baselines": 0, "jobs": 0, "alertChannels": 0, "auditEvents": 0,
+		"incidentEvents": 0}
 	for _, site := range m.sites {
 		if site.TenantID == tenantID {
 			result["sites"]++
@@ -169,6 +174,11 @@ func (m *MemoryRepository) CountTenantResources(tenantID string) (map[string]int
 	for _, event := range m.audits {
 		if event.TenantID == tenantID {
 			result["auditEvents"]++
+		}
+	}
+	for _, event := range m.incidentEvents {
+		if event.TenantID == tenantID {
+			result["incidentEvents"]++
 		}
 	}
 	return result, nil
@@ -241,6 +251,13 @@ func (m *MemoryRepository) DeleteTenant(tenantID string) error {
 		}
 	}
 	m.audits = filtered
+	keptEvents := m.incidentEvents[:0]
+	for _, event := range m.incidentEvents {
+		if event.TenantID != tenantID {
+			keptEvents = append(keptEvents, event)
+		}
+	}
+	m.incidentEvents = keptEvents
 	return nil
 }
 
@@ -740,16 +757,76 @@ func (m *MemoryRepository) UpsertIncident(incident domain.Incident) (domain.Inci
 			current.LastSeenAt = incident.LastSeenAt
 			current.OccurrenceCount++
 			current.Signals = append([]domain.Signal(nil), incident.Signals...)
-			current.EvidenceIDs = appendUnique(current.EvidenceIDs, incident.EvidenceIDs...)
+			// Sorted, deduplicated merge, matching the jsonb aggregation the
+			// PostgreSQL implementation performs. The two stores must agree on
+			// content and order or the same input produces different incidents.
+			current.EvidenceIDs = sortedUnique(current.EvidenceIDs, incident.EvidenceIDs...)
+			// Monotonic, matching GREATEST in PostgreSQL: an incident does not
+			// quietly de-escalate because one recurrence looked milder.
 			if severityRank(incident.Severity) > severityRank(current.Severity) {
 				current.Severity = incident.Severity
 			}
 			m.incidents[key] = current
+			// Same critical section as the counter above, mirroring the single
+			// statement the PostgreSQL implementation uses. Two separate writes
+			// could interleave and lose the occurrence.
+			m.incidentEvents = append(m.incidentEvents,
+				occurrenceEvent(current, incident, domain.IncidentEventRecurred))
 			return cloneIncident(current), false, nil
 		}
 	}
 	m.incidents[tenantKey(incident.TenantID, incident.ID)] = cloneIncident(incident)
+	m.incidentEvents = append(m.incidentEvents,
+		occurrenceEvent(incident, incident, domain.IncidentEventCreated))
 	return cloneIncident(incident), true, nil
+}
+
+// occurrenceEvent builds the timeline entry for one detection round.
+//
+// Signals and EvidenceIDs come from the round, not from the merged incident:
+// `signals` on the incident row is overwritten every time, so what this round
+// saw exists nowhere else. Severity comes from the merged row because that is
+// the incident's risk level after this round.
+func occurrenceEvent(merged, round domain.Incident, eventType domain.IncidentEventType) domain.IncidentEvent {
+	return cloneIncidentEvent(domain.IncidentEvent{
+		ID: identity.New(), TenantID: merged.TenantID, IncidentID: merged.ID,
+		Type: eventType, Severity: merged.Severity, Title: round.Title,
+		Signals: round.Signals, EvidenceIDs: round.EvidenceIDs,
+		JobID: round.JobID, CreatedAt: round.CreatedAt,
+	})
+}
+
+// AppendIncidentEvent refuses an incident that does not exist in this tenant.
+// The PostgreSQL implementation gets the same answer from INSERT ... SELECT and
+// a zero row count; the foreign key would report 23503, which the API surfaces
+// as a 500 and which memory could not reproduce.
+func (m *MemoryRepository) AppendIncidentEvent(event domain.IncidentEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.incidents[tenantKey(event.TenantID, event.IncidentID)]; !ok {
+		return ErrNotFound
+	}
+	m.incidentEvents = append(m.incidentEvents, cloneIncidentEvent(event))
+	return nil
+}
+
+func (m *MemoryRepository) ListIncidentEvents(tenantID, incidentID string, opts ListOptions) ([]domain.IncidentEvent, string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]domain.IncidentEvent, 0)
+	for _, event := range m.incidentEvents {
+		if event.TenantID == tenantID && event.IncidentID == incidentID {
+			result = append(result, cloneIncidentEvent(event))
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	items, next := applyPage(result, opts, func(e domain.IncidentEvent) (time.Time, string) { return e.CreatedAt, e.ID })
+	return items, next, nil
 }
 
 func (m *MemoryRepository) UpdateIncident(incident domain.Incident) error {
@@ -976,6 +1053,43 @@ func appendUnique(existing []string, additions ...string) []string {
 		}
 	}
 	return existing
+}
+
+// sortedUnique merges two id lists without duplicates, in sorted order.
+//
+// Sorted rather than insertion-ordered so it matches the jsonb aggregation the
+// PostgreSQL upsert performs; the two stores must produce identical incident
+// rows for identical input, and only one of them can control the order.
+//
+// Deduplication covers the union, not just the additions. appendUnique alone
+// would miss a duplicate that was already inside `existing` (an incident row
+// written before any merge), which is exactly the case the aggregation in
+// PostgreSQL does collapse.
+func sortedUnique(existing []string, additions ...string) []string {
+	seen := make(map[string]struct{}, len(existing)+len(additions))
+	merged := make([]string, 0, len(existing)+len(additions))
+	for _, item := range append(append([]string(nil), existing...), additions...) {
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		merged = append(merged, item)
+	}
+	sort.Strings(merged)
+	return merged
+}
+
+func cloneIncidentEvent(event domain.IncidentEvent) domain.IncidentEvent {
+	event.Signals = append([]domain.Signal(nil), event.Signals...)
+	event.EvidenceIDs = append([]string(nil), event.EvidenceIDs...)
+	if event.Details != nil {
+		details := make(map[string]any, len(event.Details))
+		for key, value := range event.Details {
+			details[key] = value
+		}
+		event.Details = details
+	}
+	return event
 }
 
 func severityRank(value domain.Severity) int {

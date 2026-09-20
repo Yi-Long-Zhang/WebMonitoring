@@ -210,6 +210,32 @@ try {
     if ($incidents.items.Count -lt 1 -or $evidence.items.Count -lt 2) {
         throw "detection did not create incident and evidence"
     }
+    # --- P4-08 incident timeline --------------------------------------------
+    # The incident row's signals are overwritten on every recurrence, so the
+    # per-occurrence detail lives only on the timeline. Both write points are
+    # covered here: the detection that created the incident, and a transition.
+    $incidentId = $incidents.items[0].id
+    $timeline = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/incidents/$incidentId/timeline" -WebSession $session
+    if ($timeline.items.Count -lt 1) {
+        throw "detection did not record the incident on its timeline"
+    }
+    if ($timeline.items[0].type -ne "CREATED") {
+        throw "timeline entry 0 is $($timeline.items[0].type), expected CREATED"
+    }
+    if (-not $timeline.items[0].signals) {
+        throw "the CREATED entry carries no signals"
+    }
+
+    Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/incidents/$incidentId/transition" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" -Body '{"status":"ACKNOWLEDGED"}' | Out-Null
+    $timeline = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/incidents/$incidentId/timeline" -WebSession $session
+    if ($timeline.items.Count -lt 2 -or $timeline.items[0].type -ne "STATUS_CHANGED") {
+        throw "the transition was not recorded on the timeline"
+    }
+    if ($timeline.items[0].fromStatus -ne "OPEN" -or $timeline.items[0].toStatus -ne "ACKNOWLEDGED") {
+        throw "the transition entry records $($timeline.items[0].fromStatus) -> $($timeline.items[0].toStatus)"
+    }
+
     $reportPath = Join-Path $smokeRoot "incident.zip"
     Invoke-WebRequest -Uri "$apiBase/api/v1/reports/$($incidents.items[0].id)" `
         -WebSession $session -OutFile $reportPath | Out-Null

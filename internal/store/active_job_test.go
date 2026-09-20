@@ -12,12 +12,12 @@ import (
 	"webmonitoring/internal/identity"
 )
 
-// activeJobRepositories returns every repository the active-job invariant has to
+// testRepositories returns every repository the active-job invariant has to
 // hold for. The in-memory store mirrors the SQL partial unique index from
 // migration 000012, and the two must agree: otherwise the non-database test
 // suite accepts states PostgreSQL rejects, and the scheduler's error handling is
 // only exercised on one of them.
-func activeJobRepositories(t *testing.T) map[string]Repository {
+func testRepositories(t *testing.T) map[string]Repository {
 	t.Helper()
 	repositories := map[string]Repository{"memory": NewMemoryRepository()}
 	if dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN")); dsn != "" {
@@ -75,7 +75,7 @@ func newJob(tenantID, assetID, mode string, status domain.JobStatus) domain.Dete
 // active job for one asset. The queue envelope carries no idempotency key, so
 // without this constraint the duplicate is undetectable downstream.
 func TestCreateJobRejectsSecondActiveJob(t *testing.T) {
-	for name, repository := range activeJobRepositories(t) {
+	for name, repository := range testRepositories(t) {
 		t.Run(name, func(t *testing.T) {
 			tenantID, assetID := seedJobFixture(t, repository)
 
@@ -111,7 +111,7 @@ func TestCreateJobRejectsSecondActiveJob(t *testing.T) {
 // TestCreateJobIsolatesActiveJobsPerTenant guards the tenant boundary of the
 // constraint: the same asset id under two tenants is two distinct slots.
 func TestCreateJobIsolatesActiveJobsPerTenant(t *testing.T) {
-	for name, repository := range activeJobRepositories(t) {
+	for name, repository := range testRepositories(t) {
 		t.Run(name, func(t *testing.T) {
 			tenantID, assetID := seedJobFixture(t, repository)
 			if err := repository.CreateJob(newJob(tenantID, assetID, "HTTP", domain.JobQueued)); err != nil {
@@ -131,7 +131,7 @@ func TestCreateJobIsolatesActiveJobsPerTenant(t *testing.T) {
 // TestConcurrentCreateJobKeepsOneActiveJob races the insert the way two
 // control-plane replicas would. Exactly one writer may win.
 func TestConcurrentCreateJobKeepsOneActiveJob(t *testing.T) {
-	for name, repository := range activeJobRepositories(t) {
+	for name, repository := range testRepositories(t) {
 		t.Run(name, func(t *testing.T) {
 			tenantID, assetID := seedJobFixture(t, repository)
 			const writers = 8
