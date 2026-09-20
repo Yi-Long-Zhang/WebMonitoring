@@ -14,6 +14,7 @@ import EvidencePage from "../../pages/EvidencePage.vue";
 import ChannelsPage from "../../pages/ChannelsPage.vue";
 import AuditsPage from "../../pages/AuditsPage.vue";
 import TenantsPage from "../../pages/TenantsPage.vue";
+import UsersPage from "../../pages/UsersPage.vue";
 import PolicyDialog from "../monitoring/PolicyDialog.vue";
 import AssetImportDialog from "../monitoring/AssetImportDialog.vue";
 import { useMonitoringActions } from "../../features/monitoring/actions";
@@ -24,7 +25,7 @@ import { CHANNEL_LABELS, channelNeeds } from "../../app/channels";
 import { useSessionStore } from "../../stores/session";
 import { useConsoleStore } from "../../stores/console";
 import { connectEventStream } from "../../services/events/stream";
-import type { AlertChannel, Asset, AssetType, DetectionJob, Incident, Site, Tenant } from "../../types/domain";
+import type { AlertChannel, Asset, AssetType, DetectionJob, Incident, Site, Tenant, User } from "../../types/domain";
 import type { View } from "../../types/views";
 import { isView } from "../../types/views";
 
@@ -40,9 +41,13 @@ const showChannelDialog = ref(false);
 const showPolicyDialog = ref(false);
 const showSiteDialog = ref(false);
 const showTenantDialog = ref(false);
+const showUserDialog = ref(false);
+const showPasswordDialog = ref(false);
 const policyAsset = ref<Asset>();
 const editingSite = ref<Site>();
 const editingTenant = ref<Tenant>();
+const editingUser = ref<User>();
+const passwordUser = ref<User>();
 const assetForm = ref<{ name: string; url: string; type: AssetType; siteId: string }>({ name: "", url: "", type: "OFFICIAL", siteId: "" });
 const channelForm = ref<{ name: string; type: AlertChannel["type"]; url: string; recipients: string; secret: string; enabled: boolean }>({
   name: "", type: "WECHAT_WORK", url: "", recipients: "", secret: "", enabled: true,
@@ -51,6 +56,10 @@ const siteForm = ref<{ name: string; domain: string }>({ name: "", domain: "" })
 const tenantForm = ref<{ name: string; slug: string; adminUsername: string; adminPassword: string }>({
   name: "", slug: "", adminUsername: "admin", adminPassword: "",
 });
+const userForm = ref<{ username: string; password: string; role: User["role"]; disabled: boolean }>({
+  username: "", password: "", role: "OPERATOR", disabled: false,
+});
+const passwordForm = ref<{ password: string; confirm: string }>({ password: "", confirm: "" });
 let eventStream: EventSource | undefined;
 
 const assetMap = computed(() => new Map(data.assets.map((asset) => [asset.id, asset])));
@@ -58,7 +67,7 @@ const roleLabel = computed(() => roleLabelFor(session.user?.role));
 const editingPolicy = computed(() => policyAsset.value ? data.policies.find((policy) => policy.assetId === policyAsset.value?.id) : undefined);
 const viewTitle = computed(() => ({
   overview: "安全总览", assets: "资产中心", sites: "站点管理", baselines: "基线审批", incidents: "事件中心",
-  jobs: "检测任务", evidence: "证据中心", channels: "告警渠道", audits: "审计日志", tenants: "租户管理",
+  jobs: "检测任务", evidence: "证据中心", channels: "告警渠道", audits: "审计日志", tenants: "租户管理", users: "用户管理",
 }[activeView.value]));
 
 async function refresh() {
@@ -74,9 +83,12 @@ async function createAsset() {
 // bar about what is rendered.
 async function selectView(view: View) {
   activeView.value = view;
-  if (view === "tenants" && session.canSuperAdmin) {
-    try { await data.loadTenants(); } catch (error) { reportError(error, "加载租户失败"); }
-  }
+  try {
+    if (view === "tenants" && session.canSuperAdmin) await data.loadTenants();
+    // Same reason as tenants: the directory is not part of refresh(), and the
+    // reload after a write goes through the same call.
+    if (view === "users" && session.canAdmin) await data.loadUsers();
+  } catch (error) { reportError(error, "加载失败"); }
 }
 async function syncFromRoute() {
   const raw = route.params.view;
@@ -167,6 +179,43 @@ async function exportAssetList() {
 }
 async function onImported() { showImportDialog.value = false; await data.reloadAssets(); }
 
+function openUserCreate() { editingUser.value = undefined; userForm.value = { username: "", password: "", role: "OPERATOR", disabled: false }; showUserDialog.value = true; }
+function openUserEdit(user: User) { editingUser.value = user; userForm.value = { username: user.username, password: "", role: user.role, disabled: user.disabled }; showUserDialog.value = true; }
+function openPasswordReset(user: User) { passwordUser.value = user; passwordForm.value = { password: "", confirm: "" }; showPasswordDialog.value = true; }
+
+async function submitUser() {
+  const form = userForm.value;
+  try {
+    if (editingUser.value) {
+      // Only what changed, so an untouched role cannot re-trigger the server's
+      // LAST_ADMIN check on a rename or a disable.
+      const patch: Partial<Pick<User, "username" | "role" | "disabled">> = {};
+      if (form.username !== editingUser.value.username) patch.username = form.username;
+      if (form.role !== editingUser.value.role) patch.role = form.role;
+      if (form.disabled !== editingUser.value.disabled) patch.disabled = form.disabled;
+      if (Object.keys(patch).length === 0) { showUserDialog.value = false; return; }
+      await actions.saveUser(editingUser.value, patch);
+    } else {
+      await actions.createNewUser({ username: form.username, password: form.password, role: form.role });
+    }
+    // The password is dropped with the form rather than left in the ref after
+    // the write, so it does not outlive the request in memory.
+    userForm.value = { username: "", password: "", role: "OPERATOR", disabled: false };
+    showUserDialog.value = false;
+  } catch (error) { reportError(error, "保存用户失败"); }
+}
+
+async function submitPasswordReset() {
+  const user = passwordUser.value;
+  if (!user) return;
+  if (passwordForm.value.password !== passwordForm.value.confirm) { ElMessage.error("两次输入的密码不一致"); return; }
+  try {
+    await actions.resetUserPassword(user, passwordForm.value.password);
+    passwordForm.value = { password: "", confirm: "" };
+    showPasswordDialog.value = false;
+  } catch (error) { reportError(error, "重置密码失败"); }
+}
+
 onMounted(async () => {
   if (!session.isAuthenticated && !(await session.restore())) { await router.replace("/login"); return; }
   await refresh();
@@ -199,6 +248,7 @@ onUnmounted(() => eventStream?.close());
       <EvidencePage v-else-if="activeView === 'evidence'" :evidence="data.evidence" :assets="data.assets" :asset-map="assetMap" :has-more="data.hasMore('evidence')" :loading-more="data.isLoadingMore('evidence')" @load-more="data.loadMore('evidence')" />
       <ChannelsPage v-else-if="activeView === 'channels'" :channels="data.alertChannels" :can-admin="session.canAdmin" @create="showChannelDialog = true" />
       <TenantsPage v-else-if="activeView === 'tenants'" :tenants="data.tenants" :self-tenant-id="session.user?.tenantId || ''" :has-more="data.hasMore('tenants')" :loading-more="data.isLoadingMore('tenants')" @load-more="data.loadMore('tenants')" @create="openTenantCreate" @edit="openTenantEdit" @toggle="toggleTenant" />
+      <UsersPage v-else-if="activeView === 'users'" :users="data.users" :can-admin="session.canAdmin" :self-user-id="session.user?.id || ''" @create="openUserCreate" @edit="openUserEdit" @reset-password="openPasswordReset" />
       <!-- Explicit rather than a v-else fallback: with v-else any view key that
            matched nothing above would render the audit page, which is how an
            unknown hash segment used to reach the screen silently. -->
@@ -231,6 +281,32 @@ onUnmounted(() => eventStream?.close());
         <el-form-item label="域名"><el-input v-model="siteForm.domain" placeholder="example.com" /></el-form-item>
       </el-form>
       <template #footer><el-button @click="showSiteDialog = false">取消</el-button><el-button type="primary" @click="submitSite">保存站点</el-button></template>
+    </el-dialog>
+    <el-dialog v-model="showUserDialog" :title="editingUser ? '编辑用户' : '新增用户'" width="520px">
+      <el-form label-position="top">
+        <el-form-item label="用户名"><el-input v-model="userForm.username" autocomplete="off" /></el-form-item>
+        <!-- The create handler only accepts OPERATOR and AUDITOR; an ADMIN or
+             SUPER_ADMIN account is provisioned by tenant bootstrap, not here.
+             Edit offers ADMIN too, because promoting an existing OPERATOR is a
+             supported change (updateUser validates the full role set). -->
+        <el-form-item label="角色">
+          <el-select v-model="userForm.role">
+            <el-option label="安全运营" value="OPERATOR" />
+            <el-option label="审计只读" value="AUDITOR" />
+            <el-option v-if="editingUser" label="平台管理员" value="ADMIN" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="!editingUser" label="初始密码"><el-input v-model="userForm.password" type="password" show-password autocomplete="new-password" placeholder="至少 12 位" /></el-form-item>
+        <el-form-item v-else label="状态"><el-switch v-model="userForm.disabled" active-text="停用" inactive-text="启用" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="showUserDialog = false">取消</el-button><el-button type="primary" @click="submitUser">保存</el-button></template>
+    </el-dialog>
+    <el-dialog v-model="showPasswordDialog" title="重置密码" width="480px" @closed="passwordForm = { password: '', confirm: '' }">
+      <el-form label-position="top">
+        <el-form-item :label="`为 ${passwordUser?.username || ''} 设置新密码`"><el-input v-model="passwordForm.password" type="password" show-password autocomplete="new-password" placeholder="至少 12 位" /></el-form-item>
+        <el-form-item label="确认新密码"><el-input v-model="passwordForm.confirm" type="password" show-password autocomplete="new-password" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="showPasswordDialog = false">取消</el-button><el-button type="primary" @click="submitPasswordReset">重置</el-button></template>
     </el-dialog>
     <el-dialog v-model="showTenantDialog" :title="editingTenant ? '编辑租户' : '新增租户'" width="520px">
       <el-form label-position="top">

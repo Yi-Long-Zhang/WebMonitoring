@@ -10,6 +10,7 @@ import {
   Monitor,
   OfficeBuilding,
   SwitchButton,
+  User,
   WarningFilled,
 } from "@element-plus/icons-vue";
 import { canAdmin, canOperate, canSuperAdmin } from "../../app/permissions";
@@ -54,6 +55,11 @@ const emit = defineEmits<{
       <button v-if="canOperate(role)" :class="{ active: activeView === 'channels' }" @click="emit('navigate', 'channels')"><el-icon class="nav-icon"><Bell /></el-icon> 告警渠道</button>
       <button v-if="canOperate(role)" :class="{ active: activeView === 'audits' }" @click="emit('navigate', 'audits')"><el-icon class="nav-icon"><List /></el-icon> 审计日志</button>
       <button v-if="canSuperAdmin(role)" :class="{ active: activeView === 'tenants' }" @click="emit('navigate', 'tenants')"><el-icon class="nav-icon"><OfficeBuilding /></el-icon> 租户管理</button>
+      <!-- 用户管理 is gated on canAdmin because GET/POST/PATCH /users all require
+           RoleAdmin. It is NOT placed beside 租户管理 for the super admin only:
+           a tenant ADMIN is the one who provisions OPERATOR and AUDITOR accounts,
+           which the create handler restricts them to. -->
+      <button v-if="canAdmin(role)" :class="{ active: activeView === 'users' }" @click="emit('navigate', 'users')"><el-icon class="nav-icon"><User /></el-icon> 用户管理</button>
     </nav>
     <div class="sidebar-footer">
       <div class="status-dot"><span /> 检测服务运行中</div>
