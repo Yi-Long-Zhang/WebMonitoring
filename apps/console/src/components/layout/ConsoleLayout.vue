@@ -39,6 +39,8 @@ const activeView = ref<View>("overview");
 const showAssetDialog = ref(false);
 const showImportDialog = ref(false);
 const showChannelDialog = ref(false);
+const editingChannel = ref<AlertChannel>();
+const deletingChannel = ref<AlertChannel>();
 const showPolicyDialog = ref(false);
 const showSiteDialog = ref(false);
 const showTenantDialog = ref(false);
@@ -103,6 +105,12 @@ async function selectView(view: View) {
     // Same reason as tenants: the directory is not part of refresh(), and the
     // reload after a write goes through the same call.
     if (view === "users" && session.canAdmin) await data.loadUsers();
+    // The audit head page is loaded once during refresh(), so without this the
+    // screen keeps showing whatever it held when the app booted -- a tenant
+    // deleted later would never appear in the trail that records it. Reloaded
+    // rather than refreshed: the trail is append-only, and a full refresh would
+    // rescan every other list for rows this view does not show.
+    if (view === "audits") await data.reloadAudits();
   } catch (error) { reportError(error, "加载失败"); }
 }
 async function syncFromRoute() {
@@ -220,24 +228,72 @@ async function savePolicy(input: { httpIntervalSeconds: number; browserIntervalS
     reportError(error, "策略更新失败");
   }
 }
-async function createChannel() {
+function openChannelCreate() {
+  editingChannel.value = undefined;
+  channelForm.value = { name: "", type: "WECHAT_WORK", url: "", recipients: "", secret: "", enabled: true };
+  showChannelDialog.value = true;
+}
+
+// The URL and the secret are both left blank rather than prefilled. The server
+// redacts the address on the way out (path and query become "/...") and never
+// returns the credential at all, so neither value the list holds is the one the
+// row actually stores. Prefilling either would save the masked form back over
+// the real address -- an edit that renamed a channel would repoint it at "/..."
+// and the next alert would fail to deliver.
+function openChannelEdit(channel: AlertChannel) {
+  editingChannel.value = channel;
+  channelForm.value = {
+    name: channel.name, type: channel.type, url: "",
+    recipients: channel.recipients ?? "", secret: "", enabled: channel.enabled,
+  };
+  showChannelDialog.value = true;
+}
+
+// The address is required, so an edit that leaves it blank is rejected before
+// the request rather than sent as an empty URL. That is the tradeoff of not
+// echoing a redacted value: the operator re-supplies the destination. It is the
+// safer of the two, because a wrong destination fails loudly on the next alert
+// while a silently rewritten one keeps looking configured.
+function channelFormIncomplete(form: { type: AlertChannel["type"]; url: string; recipients: string }): string {
+  if (channelNeeds(form.type, "url") && form.url.trim() === "") return "请重新填写通知地址（列表不显示完整地址）";
+  if (channelNeeds(form.type, "recipients") && form.recipients.trim() === "") return "请填写收件人";
+  return "";
+}
+
+async function submitChannel() {
   const form = channelForm.value;
-  // Only the fields this channel type actually uses are transmitted. The dialog
-  // keeps whatever was typed when the operator switches type, and sending a stale
-  // URL or recipient list would hand the server credentials the chosen type does
-  // not use.
+  const payload = {
+    name: form.name,
+    type: form.type,
+    url: channelNeeds(form.type, "url") ? form.url : "",
+    recipients: channelNeeds(form.type, "recipients") ? form.recipients : "",
+    secret: channelNeeds(form.type, "secret") ? form.secret : "",
+    enabled: form.enabled,
+  };
+  // A blank secret on an edit means "leave the stored one alone" -- submitting
+  // the form without touching that field must not break the channel's alerting.
+  if (editingChannel.value) {
+    const incomplete = channelFormIncomplete(payload);
+    if (incomplete) { ElMessage.warning(incomplete); return; }
+    try {
+      await actions.saveAlertChannel(editingChannel.value.id, payload);
+      showChannelDialog.value = false;
+    } catch (error) { reportError(error, "更新告警渠道失败"); }
+    return;
+  }
   try {
-    await actions.createNewAlertChannel({
-      name: form.name,
-      type: form.type,
-      url: channelNeeds(form.type, "url") ? form.url : "",
-      recipients: channelNeeds(form.type, "recipients") ? form.recipients : "",
-      secret: channelNeeds(form.type, "secret") ? form.secret : "",
-      enabled: form.enabled,
-    });
+    await actions.createNewAlertChannel(payload);
     showChannelDialog.value = false;
-    channelForm.value = { name: "", type: "WECHAT_WORK", url: "", recipients: "", secret: "", enabled: true };
   } catch (error) { reportError(error, "创建告警渠道失败"); }
+}
+
+async function confirmChannelDelete() {
+  const channel = deletingChannel.value;
+  if (!channel) return;
+  try {
+    await actions.removeAlertChannel(channel);
+    deletingChannel.value = undefined;
+  } catch (error) { reportError(error, "删除告警渠道失败"); }
 }
 async function signOut() { await session.signOut(); eventStream?.close(); await router.replace("/login"); }
 
@@ -319,7 +375,7 @@ onUnmounted(() => eventStream?.close());
       <IncidentsPage v-else-if="activeView === 'incidents'" :incidents="data.incidents" :evidence="data.evidence" :deliveries="data.alertDeliveries" :asset-map="assetMap" :can-operate="session.canOperate" :timeline-key="timelineKey" :users="data.users" :on-comment="comment" :has-more="data.hasMore('incidents')" :loading-more="data.isLoadingMore('incidents')" @load-more="data.loadMore('incidents')" @transition="transition" />
       <JobsPage v-else-if="activeView === 'jobs'" :jobs="data.jobs" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('jobs')" :loading-more="data.isLoadingMore('jobs')" @load-more="data.loadMore('jobs')" @cancel="cancelDetectionJob" />
       <EvidencePage v-else-if="activeView === 'evidence'" :evidence="data.evidence" :assets="data.assets" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('evidence')" :loading-more="data.isLoadingMore('evidence')" @load-more="data.loadMore('evidence')" />
-      <ChannelsPage v-else-if="activeView === 'channels'" :channels="data.alertChannels" :can-admin="session.canAdmin" @create="showChannelDialog = true" />
+      <ChannelsPage v-else-if="activeView === 'channels'" :channels="data.alertChannels" :can-admin="session.canAdmin" @create="openChannelCreate" @edit="openChannelEdit" @remove="deletingChannel = $event" />
       <TenantsPage v-else-if="activeView === 'tenants'" :tenants="data.tenants" :self-tenant-id="session.user?.tenantId || ''" :default-tenant-id="DEFAULT_TENANT_ID" :can-delete="session.canSuperAdmin" :has-more="data.hasMore('tenants')" :loading-more="data.isLoadingMore('tenants')" @load-more="data.loadMore('tenants')" @create="openTenantCreate" @edit="openTenantEdit" @toggle="toggleTenant" @remove="openTenantDelete" />
       <UsersPage v-else-if="activeView === 'users'" :users="data.users" :can-admin="session.canAdmin" :self-user-id="session.user?.id || ''" @create="openUserCreate" @edit="openUserEdit" @reset-password="openPasswordReset" />
       <!-- Explicit rather than a v-else fallback: with v-else any view key that
@@ -345,9 +401,13 @@ onUnmounted(() => eventStream?.close());
     <PolicyDialog v-model="showPolicyDialog" :asset="policyAsset" :policy="editingPolicy" @save="savePolicy" />
     <AssetImportDialog v-if="showImportDialog" @imported="onImported" @close="showImportDialog = false" />
     <BaselineSnapshotDrawer v-if="previewBaseline" :baseline="previewBaseline" :loading="previewLoading" @close="closeBaselinePreview" />
-    <el-dialog v-model="showChannelDialog" title="新增告警渠道" width="520px">
-      <el-form label-position="top"><el-form-item label="渠道名称"><el-input v-model="channelForm.name" placeholder="例如：安全运营群" /></el-form-item><el-form-item label="渠道类型"><el-radio-group v-model="channelForm.type"><el-radio-button value="WECHAT_WORK">企业微信</el-radio-button><el-radio-button value="WEBHOOK">Webhook</el-radio-button></el-radio-group></el-form-item><el-form-item label="通知地址"><el-input v-model="channelForm.url" type="password" show-password autocomplete="off" placeholder="https://..." /></el-form-item><el-form-item v-if="channelForm.type === 'WEBHOOK'" label="签名密钥"><el-input v-model="channelForm.secret" type="password" show-password autocomplete="new-password" /></el-form-item><el-form-item label="创建后启用"><el-switch v-model="channelForm.enabled" /></el-form-item></el-form>
-      <template #footer><el-button @click="showChannelDialog = false">取消</el-button><el-button type="primary" @click="createChannel">创建渠道</el-button></template>
+    <el-dialog v-model="showChannelDialog" :title="editingChannel ? '编辑告警渠道' : '新增告警渠道'" width="520px">
+      <el-form label-position="top"><el-form-item label="渠道名称"><el-input v-model="channelForm.name" placeholder="例如：安全运营群" /></el-form-item><el-form-item label="渠道类型"><el-radio-group v-model="channelForm.type"><el-radio-button value="WECHAT_WORK">企业微信</el-radio-button><el-radio-button value="WEBHOOK">Webhook</el-radio-button></el-radio-group></el-form-item><el-form-item v-if="channelNeeds(channelForm.type, 'url')" :label="editingChannel ? '通知地址（必填，不显示原值）' : '通知地址'"><el-input v-model="channelForm.url" type="password" show-password autocomplete="off" :placeholder="editingChannel ? '请重新填写完整地址' : 'https://...'" /></el-form-item><el-form-item v-if="channelForm.type === 'WEBHOOK'" :label="editingChannel ? '签名密钥（留空则不修改）' : '签名密钥'"><el-input v-model="channelForm.secret" type="password" show-password autocomplete="new-password" :placeholder="editingChannel ? '留空则保留现有密钥' : ''" /></el-form-item><el-form-item :label="editingChannel ? '启用' : '创建后启用'"><el-switch v-model="channelForm.enabled" /></el-form-item></el-form>
+      <template #footer><el-button @click="showChannelDialog = false">取消</el-button><el-button type="primary" @click="submitChannel">{{ editingChannel ? "保存渠道" : "创建渠道" }}</el-button></template>
+    </el-dialog>
+    <el-dialog :model-value="Boolean(deletingChannel)" title="删除告警渠道" width="420px" @update:model-value="deletingChannel = undefined">
+      <p>删除后该渠道不再收到任何告警，已产生的投递记录会保留。</p>
+      <template #footer><el-button @click="deletingChannel = undefined">取消</el-button><el-button type="danger" @click="confirmChannelDelete">删除渠道</el-button></template>
     </el-dialog>
     <el-dialog v-model="showSiteDialog" :title="editingSite ? '编辑站点' : '新增站点'" width="520px">
       <el-form label-position="top">

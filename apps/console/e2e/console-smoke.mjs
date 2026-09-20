@@ -92,6 +92,7 @@ try {
   const downloadHref = await page.locator("a.evidence-link").first().getAttribute("href");
   assert.ok(downloadHref?.startsWith("/api/v1/evidence/"), "the authenticated download link disappeared");
 
+  await assertAlertChannelAuthoring(page, baseURL);
   await assertTenantDeletion(page, baseURL);
 
   await page.getByRole("button", { name: "退出登录" }).click();
@@ -107,12 +108,85 @@ function loginField(page, label) {
 // Element Plus form labels are not `for`-bound, so a field is found by the
 // form item that contains its label text.
 function fieldIn(scope, label) {
-  return scope.locator(".el-form-item", { hasText: label }).locator("input");
+  return scope.locator(".el-form-item", { hasText: label }).locator("input").first();
 }
 
 async function assertPageHasContent(page, title) {
   await page.locator("main").waitFor();
   assert.ok((await page.locator("main").innerText()).includes(title), `console view did not render: ${title}`);
+}
+
+// The channel dialog is the only place a credential is ever typed, and the rule
+// that makes editing it safe is that leaving the secret blank keeps the stored
+// one. Nothing in the UI can prove that -- the field is empty on open either way
+// -- so this walks the two halves separately: a rename with the field untouched
+// has to leave the row working, and an explicit delete has to remove it.
+async function assertAlertChannelAuthoring(page, baseURL) {
+  await page.goto(`${baseURL}/#/channels`);
+  await assertPageHasContent(page, "NOTIFICATION ROUTES");
+
+  const name = `e2e-channel-${Date.now()}`;
+  await page.getByRole("button", { name: "新增渠道" }).click();
+  const create = page.locator(".el-dialog", { hasText: "新增告警渠道" });
+  // Webhook rather than the default type: it is the one that carries a signing
+  // secret, and the whole point of this walk is the rule about that field.
+  await create.locator(".el-radio-button", { hasText: "Webhook" }).click();
+  await fieldIn(create, "渠道名称").fill(name);
+  await fieldIn(create, "通知地址").fill("https://example.com/e2e-hook");
+  await fieldIn(create, "签名密钥").fill("e2e-channel-secret");
+  await create.getByRole("button", { name: "创建渠道" }).click();
+
+  const row = page.locator(".el-table__row", { hasText: name });
+  await row.waitFor({ timeout: 15000 });
+
+  // The edit dialog opens with an empty secret box. That is the whole contract:
+  // the server never sends the plaintext back, so there is nothing to prefill.
+  // The address box is empty for the same reason -- the list gives a redacted
+  // one -- so both have to be re-supplied rather than echoed back.
+  await row.getByRole("button", { name: "编辑" }).click();
+  const edit = page.locator(".el-dialog", { hasText: "编辑告警渠道" });
+  await edit.waitFor({ timeout: 15000 });
+  const renamed = `${name}-renamed`;
+  await fieldIn(edit, "渠道名称").fill(renamed);
+  assert.equal(
+    await fieldIn(edit, "签名密钥").inputValue(),
+    "",
+    "the edit dialog must not prefill the stored secret",
+  );
+  assert.equal(
+    await fieldIn(edit, "通知地址").inputValue(),
+    "",
+    "the edit dialog must not prefill the redacted address",
+  );
+  // A save that leaves the address blank is refused before the request, because
+  // an empty URL is not a channel and the dialog cannot show what the real one
+  // was.
+  await edit.getByRole("button", { name: "保存渠道" }).click();
+  await page.locator(".el-message", { hasText: "请重新填写通知地址" }).waitFor({ timeout: 10000 });
+  assert.equal(
+    await page.locator(".el-table__row", { hasText: renamed }).count(),
+    0,
+    "a save with no address was applied anyway",
+  );
+
+  await fieldIn(edit, "通知地址").fill("https://example.com/e2e-hook-renamed");
+  await edit.getByRole("button", { name: "保存渠道" }).click();
+
+  const renamedRow = page.locator(".el-table__row", { hasText: renamed });
+  await renamedRow.waitFor({ timeout: 15000 });
+
+  // Deletion is confirmed rather than immediate, and the confirmation names the
+  // consequence, so the row survives until the second click.
+  await renamedRow.getByRole("button", { name: "删除" }).click();
+  const confirm = page.locator(".el-dialog", { hasText: "删除告警渠道" });
+  await confirm.waitFor({ timeout: 15000 });
+  assert.equal(
+    await page.locator(".el-table__row", { hasText: renamed }).count(),
+    1,
+    "the channel was deleted before the confirmation",
+  );
+  await confirm.getByRole("button", { name: "删除渠道" }).click();
+  await page.locator(".el-table__row", { hasText: renamed }).waitFor({ state: "detached", timeout: 15000 });
 }
 
 // Tenant deletion is the one destructive flow in the console, and the whole

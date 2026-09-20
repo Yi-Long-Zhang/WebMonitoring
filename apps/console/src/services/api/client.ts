@@ -248,6 +248,27 @@ export function createAlertChannel(input: {
   });
 }
 
+// An omitted `secret` keeps the stored credential. The server never returns the
+// plaintext, so the form cannot prefill it; a caller that means "do not change
+// it" has to leave the field out rather than send an empty string.
+export function updateAlertChannel(id: string, input: {
+  name: string;
+  type: AlertChannel["type"];
+  url: string;
+  recipients?: string;
+  secret?: string;
+  enabled: boolean;
+}) {
+  return request<AlertChannel>(`/alert-channels/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteAlertChannel(id: string) {
+  return request<void>(`/alert-channels/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 // AuditFilterParams mirrors the narrowing query parameters GET /audit-events
 // accepts. Every field is optional and an absent one means "do not filter on
 // this dimension". `action` is an exact match -- the server does not do prefix

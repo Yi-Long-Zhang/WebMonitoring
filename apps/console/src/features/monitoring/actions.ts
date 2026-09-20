@@ -8,6 +8,7 @@ import {
   createSite,
   createTenant,
   createUser,
+  deleteAlertChannel,
   deleteTenantDetailed,
   issueVerification,
   rejectBaseline,
@@ -15,6 +16,7 @@ import {
   retireBaseline as retireBaselineRequest,
   runDetection,
   transitionIncident,
+  updateAlertChannel,
   updateAsset,
   updatePolicy,
   updateSite,
@@ -124,6 +126,28 @@ export function useMonitoringActions() {
     ElMessage.success("告警渠道已创建");
   }
 
+  async function saveAlertChannel(id: string, input: {
+    name: string;
+    type: AlertChannel["type"];
+    url: string;
+    recipients: string;
+    secret: string;
+    enabled: boolean;
+  }) {
+    // An empty secret is dropped rather than sent: the server reads an absent
+    // field as "keep the stored credential", and it never hands the plaintext
+    // back, so sending "" would be indistinguishable from a deliberate erase.
+    await updateAlertChannel(id, input.secret === "" ? { ...input, secret: undefined } : input);
+    await consoleStore.refresh();
+    ElMessage.success("告警渠道已更新");
+  }
+
+  async function removeAlertChannel(channel: AlertChannel) {
+    await deleteAlertChannel(channel.id);
+    await consoleStore.refresh();
+    ElMessage.success(`告警渠道 ${channel.name} 已删除`);
+  }
+
   async function createNewSite(input: { name: string; domain: string }) {
     await createSite(input);
     await consoleStore.refresh();
@@ -218,6 +242,8 @@ export function useMonitoringActions() {
     retireBaseline,
     cancelDetectionJob,
     createNewAlertChannel,
+    saveAlertChannel,
+    removeAlertChannel,
     createNewSite,
     saveSite,
     createNewTenant,
