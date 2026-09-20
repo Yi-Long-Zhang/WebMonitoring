@@ -1120,11 +1120,50 @@ func (p *PostgresRepository) AppendAudit(event domain.AuditEvent) error {
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) ListAudits(tenantID string, opts ListOptions) ([]domain.AuditEvent, string, error) {
+func (p *PostgresRepository) ListAudits(tenantID string, filter AuditFilter, opts ListOptions) ([]domain.AuditEvent, string, error) {
 	args := []any{tenantID}
 	query := `SELECT id,tenant_id,COALESCE(actor_id::text,''),action,resource_type,resource_id,
 		result,trace_id,COALESCE(details,'{}'::jsonb),created_at
 		FROM audit_events WHERE tenant_id=$1`
+	// Every predicate below must be appended before paginateQuery runs: it
+	// numbers its cursor and limit placeholders from len(args), so a predicate
+	// added afterwards would bind to the wrong parameter.
+	//
+	// actor_id is cast explicitly because AppendAudit stores it through
+	// NULLIF($3,'')::uuid. Callers must reject a malformed value before reaching
+	// here; otherwise Postgres raises 22P02 and normalizePostgresError turns a
+	// bad filter into a 500.
+	if filter.ActorID != "" {
+		args = append(args, filter.ActorID)
+		query += fmt.Sprintf(" AND actor_id=$%d::uuid", len(args))
+	}
+	// Exact match, not prefix: the action values are a closed set the writers
+	// produce (asset.create, baseline.approved, incident.transition, ...), so a
+	// prefix search would be a different feature with a different index.
+	if filter.Action != "" {
+		args = append(args, filter.Action)
+		query += fmt.Sprintf(" AND action=$%d", len(args))
+	}
+	if filter.ResourceType != "" {
+		args = append(args, filter.ResourceType)
+		query += fmt.Sprintf(" AND resource_type=$%d", len(args))
+	}
+	if filter.ResourceID != "" {
+		args = append(args, filter.ResourceID)
+		query += fmt.Sprintf(" AND resource_id=$%d", len(args))
+	}
+	if filter.Result != "" {
+		args = append(args, filter.Result)
+		query += fmt.Sprintf(" AND result=$%d", len(args))
+	}
+	if !filter.From.IsZero() {
+		args = append(args, filter.From)
+		query += fmt.Sprintf(" AND created_at >= $%d", len(args))
+	}
+	if !filter.To.IsZero() {
+		args = append(args, filter.To)
+		query += fmt.Sprintf(" AND created_at <= $%d", len(args))
+	}
 	query, args = paginateQuery(query, args, opts, "created_at")
 	rows, err := p.pool.Query(context.Background(), query, args...)
 	if err != nil {

@@ -2210,6 +2210,17 @@ export interface operations {
             query?: {
                 limit?: components["parameters"]["Limit"];
                 cursor?: components["parameters"]["Cursor"];
+                /** @description 按操作者精确匹配。自动写入（保留策略清理）没有 actor，不会被任何 actorId 命中。 */
+                actorId?: string;
+                /** @description 按动作精确匹配，不支持前缀。 */
+                action?: string;
+                resourceType?: string;
+                resourceId?: string;
+                result?: "SUCCESS" | "FAILED" | "PARTIAL";
+                /** @description 闭区间下界。 */
+                from?: string;
+                /** @description 闭区间上界。早于 from 会被拒绝。 */
+                to?: string;
             };
             header?: never;
             path?: never;
@@ -2226,6 +2237,7 @@ export interface operations {
                     "application/json": components["schemas"]["AuditEventList"];
                 };
             };
+            400: components["responses"]["Error"];
         };
     };
     runRetentionMaintenance: {

@@ -604,12 +604,38 @@ paths:
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - name: actorId
+          in: query
+          description: 按操作者精确匹配。自动写入（保留策略清理）没有 actor，不会被任何 actorId 命中。
+          schema: { type: string, format: uuid }
+        - name: action
+          in: query
+          description: 按动作精确匹配，不支持前缀。
+          schema: { type: string }
+        - name: resourceType
+          in: query
+          schema: { type: string }
+        - name: resourceId
+          in: query
+          schema: { type: string }
+        - name: result
+          in: query
+          schema: { type: string, enum: [SUCCESS, FAILED, PARTIAL] }
+        - name: from
+          in: query
+          description: 闭区间下界。
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: 闭区间上界。早于 from 会被拒绝。
+          schema: { type: string, format: date-time }
       responses:
         "200":
           description: 审计列表
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AuditEventList" }
+        "400": { $ref: "#/components/responses/Error" }
   /maintenance/retention:
     post:
       operationId: runRetentionMaintenance

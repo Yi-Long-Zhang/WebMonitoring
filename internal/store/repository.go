@@ -96,6 +96,6 @@ type Repository interface {
 	ListAlertDeliveries(tenantID, incidentID string, opts ListOptions) ([]domain.AlertDelivery, string, error)
 
 	AppendAudit(domain.AuditEvent) error
-	ListAudits(tenantID string, opts ListOptions) ([]domain.AuditEvent, string, error)
+	ListAudits(tenantID string, filter AuditFilter, opts ListOptions) ([]domain.AuditEvent, string, error)
 	DeleteAuditsBefore(tenantID string, before time.Time) (int, error)
 }
