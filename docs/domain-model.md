@@ -81,6 +81,38 @@ Redis Streams，开发无 Redis 时可由 API 进程内执行。
 
 对一个或多个相关信号的聚合。事件是运营对象，不是单次 HTTP 请求。
 
+### IncidentEvent（事件时间线）
+
+事件行的 `signals` 在每次复现时被整体覆盖，因此它只描述**最近一轮**看到的内容；
+`occurrence_count` 说明复现了几次，但第二、第三次分别看到了什么，只存在于时间线里。
+
+时间线是 append-only 的（`incident_events`，迁移 `000013`），条目类型：
+
+```text
+CREATED          检测首次产生该事件，signals 为首轮信号集
+RECURRED         同一 fingerprint 再次命中，signals 为该轮信号集
+STATUS_CHANGED   状态流转，记录 from/to、操作者，负责人与处置说明在 details
+OWNER_ASSIGNED   预留：仅负责人变更（当前 API 不产生，指派随流转一并提交）
+COMMENTED        人工备注，正文在 details.note
+```
+
+写入者是 store 而不是调用方：只有它知道这一轮是「创建」还是「并入既有事件」，
+也只有它持有合并后事件的真实 ID（每轮生成的 ID 在冲突时被丢弃）。CREATED/RECURRED
+与 `occurrence_count` 的自增在同一条语句（PostgreSQL）或同一临界区（内存）内完成，
+中间崩溃不会丢掉条目。
+
+**回填**：迁移为已有事件补一条 `CREATED` 锚点，`signals` 留空并在 `details` 标记
+`backfilled` 与 `unrecordedOccurrences`。不能把幸存的信号集写进首次槽位——那是伪造
+一个从未发生过的记录，而且事后与真实记录无法区分。
+
+**保留策略**：时间线条目随事件生命周期，不参与保留期清理。`docs/security-model.md`
+把「变更、处置操作」归为不可静默修改的审计数据，而时间线记录的正是这些。需要控制
+体量时应使用写入侧上限（每事件保留最新 N 条），不要做按时间扫描的维护任务——那会把
+一个仍然开着的事件的中间历史挖掉。
+
+**排序**：按 `(created_at DESC, id DESC)`。同一毫秒内的多条记录之间顺序不保证，因为
+`id` 是随机 UUIDv4；生产环境的复现间隔是分钟级，不构成实际问题。
+
 ### Evidence
 
 原始或派生证据的元数据。原始证据必须具备对象摘要、媒体类型、大小、生成时间、
