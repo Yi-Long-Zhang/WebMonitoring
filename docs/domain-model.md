@@ -50,8 +50,15 @@ updated_at
 
 ### MonitorPolicy
 
-检测频率、超时、动态忽略、可信域名、维护窗口和告警策略。检测节点和登录态
-凭据配置尚未形成可用的领域流程。
+检测频率、超时、动态忽略、可信域名、维护窗口和告警策略，以及可选的登录态凭据
+配置（`AuthConfig`：登录地址、用户名字段、密码字段、附加字段和提交选择器）。
+
+登录态凭据以明文入参提交，落库前用 AES-256-GCM 加密（`internal/security/secrets.go`），
+关联数据为 `tenantID:assetID:auth`，防止密文跨租户或跨资产重放；读取策略时由
+`redactPolicy` 脱敏，响应不返回密文。登录地址在写入和检测两个阶段各做一次 SSRF 校验。
+
+浏览器 Worker 尚不支持登录态，遇到 `AuthConfig` 时失败关闭。检测节点配置仍未形成
+可用的领域流程。
 
 ### BaselineVersion
 

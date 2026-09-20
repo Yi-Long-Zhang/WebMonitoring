@@ -12,9 +12,13 @@ WebMonitoring 是一个面向私有化部署的网页篡改监测与安全事件
 
 - Go 控制面、Go HTTP Worker、Playwright 浏览器 Worker 和 Vue 3 控制台。
 - URL 安全校验、重定向复核、检测超时和响应大小限制。
+- 三种所有权验证：HTTP 文件令牌（FILE）、DNS TXT（DNS）和 HTML meta 标签（META）。
 - 候选基线、批准/拒绝/废弃、差异信号、事件聚合和处置状态。
 - HTML、快照和截图证据保存；下载和报告导出会校验大小及 SHA-256。
-- Webhook/企业微信通知、投递记录、重试和事件级去重。
+- 短时签名证据 URL、Webhook/企业微信/钉钉/邮件通知、投递记录、重试和事件级去重。
+- 登录态检测（HTTP 路径）：客户凭据 AES-256-GCM 加密、登录地址 SSRF 复核、
+  登录后抓取受保护页面；API 响应不泄露凭据。
+- 批量导入导出（JSON/CSV，逐行校验与部分失败）、用户/角色管理和受保护的租户删除。
 - 内存/本地证据开发模式，以及 PostgreSQL、Redis、MinIO Compose 路径。
 - 生产配置门禁、证据和审计保留策略、dry-run 清理以及备份恢复校验脚本。
 - 多租户：登录按租户 slug 进入对应租户、session 携带租户、调度器遍历所有租户，
@@ -23,15 +27,30 @@ WebMonitoring 是一个面向私有化部署的网页篡改监测与安全事件
 - 平台管理员（SUPER_ADMIN）：租户 CRUD，创建时播种该租户首个管理员账号。
 - PostgreSQL/Redis 集成测试、100 资产调度合成测试和 Compose smoke CI 门禁。
 
+单机 Compose 的验收演练已于 2026-09-15 在本机实跑通过（Compose smoke 含控制台
+Playwright E2E、100 资产跨租户 HTTP 压测、备份恢复校验），记录见
+[docs/operations.md](docs/operations.md) 和
+[docs/backup-restore-rehearsal.md](docs/backup-restore-rehearsal.md)。
+
 当前不应视为生产完成：
 
+- **多副本（HA）不支持**：调度器 30 秒轮询、保留策略清理和 Worker 消费者身份
+  都没有跨副本协调，多副本会重复排队检测任务、重复清扫证据。当前只支持单个
+  控制面副本和单个 HTTP Worker 实例。
+- **浏览器模式登录态检测**：仅 HTTP 路径支持，浏览器模式失败关闭
+  （`internal/browser/client.go`）。
+- **完整事件时间线**：事件只保留发生次数和最后发生时间，每次复现会覆盖上一轮
+  信号集；事件由检测 Worker 创建时不写审计记录，无法事后重建历史。
 - 细粒度权限、任意租户数据的跨租户可见与审批工作流（super-admin 当前仅限
   租户 CRUD 与播种租户管理员）。
-- DNS 或 HTML 元标签授权验证、登录态检测和 Secret Manager 集成。
-- 短时签名 URL、邮件/钉钉适配器、批量导入导出和租户硬删除。
-- 真实 100 资产 HTTP/Browser 压测和备份恢复实机演练；控制台 Playwright E2E
-  已纳入 Compose smoke，待 CI 或验收主机执行。
-- 本机 Docker Compose 实测尚未完成，需在 CI 或验收主机执行。
+- Secret Manager 集成：当前凭据由 `ALERT_SECRET_KEY` 单一主密钥加密，没有密钥
+  版本和轮换路径，轮换该密钥会导致已存密文不可解密。
+- 控制台接线：keyset 分页、任务取消、钉钉/邮件渠道创建、租户启停、基线快照
+  预览等后端已具备的能力尚未接入界面；列表默认只显示第一页。
+- 部署形态：只有单机 Docker Compose，没有 Kubernetes；无 TLS 终止、除
+  browser-worker 外无 CPU/内存限制；Compose 中 Redis 未设密码、PostgreSQL 使用
+  `sslmode=disable`。
+- 真实 100 资产浏览器压测、多副本演练和外部对象存储验证尚未执行。
 
 ## 本地嵌入模式
 
