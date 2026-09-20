@@ -17,7 +17,7 @@ import {
   getTenants,
   getUsers,
 } from "../services/api/client";
-import type { PageParams } from "../services/api/client";
+import type { AuditFilterParams, PageParams } from "../services/api/client";
 // The element types of the paged lists are inferred from the client function
 // signatures (getAssets returns ListResponse<Asset>), so only the types used
 // explicitly below are imported here.
@@ -69,7 +69,17 @@ function paged<T extends { id: string }>(fetch: (params: PageParams) => Promise<
     }
   }
 
-  return { items, nextCursor, loadingMore, loadFirst, loadMore };
+  // forget clears the accumulated pages so the next loadFirst starts clean.
+  // Required when the query itself changes: a new filter is a different result
+  // set, not a superset, so merging into the old tail would mix rows the caller
+  // just excluded into the answer.
+  function forget() {
+    items.value = [];
+    nextCursor.value = "";
+    extended.value = false;
+  }
+
+  return { items, nextCursor, loadingMore, loadFirst, loadMore, forget };
 }
 
 export const useConsoleStore = defineStore("console", () => {
@@ -82,7 +92,11 @@ export const useConsoleStore = defineStore("console", () => {
   const jobs = paged(getJobs);
   const evidence = paged(getEvidence);
   const alertDeliveries = paged(getAlertDeliveries);
-  const audits = paged(getAuditEvents);
+  // The audit list is the only one the operator can narrow, so it is the only
+  // one whose query the store has to remember: refresh() re-fetches it on every
+  // SSE event and must keep the filter the operator chose.
+  const auditFilters = ref<AuditFilterParams>({});
+  const audits = paged((params: PageParams) => getAuditEvents({ ...params, ...auditFilters.value }));
   const tenants = paged(getTenants);
   // Not paged: GET /alert-channels and GET /users take no limit or cursor, so
   // accepting a cursor here would silently ignore it. Both lists are naturally
@@ -126,6 +140,15 @@ export const useConsoleStore = defineStore("console", () => {
     users.value = userData.items;
   }
 
+  // applyAuditFilters replaces the narrowing and reloads from the top. The
+  // accumulated pages are dropped first: a filter selects a different set of
+  // rows, so the previous tail is not a page of the new result.
+  async function applyAuditFilters(next: AuditFilterParams) {
+    auditFilters.value = next;
+    audits.forget();
+    await audits.loadFirst();
+  }
+
   const pages = { assets, sites, policies, baselines, incidents, jobs, evidence, alertDeliveries, audits, tenants };
   type PageKey = keyof typeof pages;
 
@@ -165,5 +188,6 @@ export const useConsoleStore = defineStore("console", () => {
     hasMore,
     isLoadingMore,
     loadMore,
+    applyAuditFilters,
   };
 });

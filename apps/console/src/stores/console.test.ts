@@ -25,6 +25,17 @@ function installFetch() {
       if (url.pathname === "/api/v1/assets") {
         return json(assetPages[url.searchParams.get("cursor") ?? ""] ?? { items: [], nextCursor: "" });
       }
+      if (url.pathname === "/api/v1/audit-events") {
+        // A narrowed request is served from a different set, which is what makes
+        // a stale tail detectable: the filtered answer shares no id with the
+        // unfiltered one.
+        if (url.searchParams.get("action") === "asset.create") {
+          return json({ items: [{ id: "f1" }], nextCursor: "" });
+        }
+        const cursor = url.searchParams.get("cursor") ?? "";
+        if (cursor === "auc1") return json({ items: [{ id: "u3" }], nextCursor: "" });
+        return json({ items: [{ id: "u1" }, { id: "u2" }], nextCursor: "auc1" });
+      }
       if (url.pathname === "/api/v1/dashboard") return json({});
       if (url.pathname === "/api/v1/reports/summary") return json({});
       return json({ items: [], nextCursor: "" });
@@ -34,6 +45,10 @@ function installFetch() {
 
 function assetRequests() {
   return requested.filter((entry) => entry.path === "/api/v1/assets");
+}
+
+function auditRequests() {
+  return requested.filter((entry) => entry.path === "/api/v1/audit-events");
 }
 
 beforeEach(() => {
@@ -128,6 +143,34 @@ describe("console store pagination", () => {
     // duplicate the page.
     expect(assetRequests().filter((entry) => entry.params.get("cursor") === "c1")).toHaveLength(1);
     expect(store.assets.map((asset) => asset.id)).toEqual(["a1", "a2", "a3", "a4"]);
+  });
+
+  it("sends the chosen audit filter and drops the pages it no longer matches", async () => {
+    const store = useConsoleStore();
+    await store.refresh();
+    await store.loadMore("audits");
+    expect(store.audits.map((event) => event.id)).toEqual(["u1", "u2", "u3"]);
+
+    await store.applyAuditFilters({ action: "asset.create" });
+
+    const last = auditRequests().at(-1);
+    expect(last?.params.get("action")).toBe("asset.create");
+    // No cursor: a changed query restarts from the head.
+    expect(last?.params.get("cursor")).toBeNull();
+    // The narrowed answer replaced the list. Merging would have kept u1..u3,
+    // which the new filter excludes.
+    expect(store.audits.map((event) => event.id)).toEqual(["f1"]);
+  });
+
+  it("keeps the audit filter across an SSE-triggered refresh", async () => {
+    const store = useConsoleStore();
+    await store.applyAuditFilters({ action: "asset.create" });
+
+    // refresh() is the SSE callback; the operator's filter has to survive it.
+    await store.refresh();
+
+    expect(auditRequests().at(-1)?.params.get("action")).toBe("asset.create");
+    expect(store.audits.map((event) => event.id)).toEqual(["f1"]);
   });
 
   it("clears the loading flag when a refresh fails", async () => {
