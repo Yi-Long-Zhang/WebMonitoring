@@ -174,6 +174,13 @@ export function runDetection(assetId: string, mode: "HTTP" | "BROWSER") {
   });
 }
 
+// Only a QUEUED or RUNNING job can be cancelled. The server answers a terminal
+// job with 409 INVALID_JOB_STATE, and request() surfaces that message, so the
+// caller must not swallow the rejection.
+export function cancelJob(id: string) {
+  return request<DetectionJob>(`/detection-jobs/${id}/cancel`, { method: "POST" });
+}
+
 export function getIncidents(params: PageParams = {}) {
   return request<ListResponse<Incident>>(`/incidents${listQuery(params)}`);
 }
