@@ -50,6 +50,7 @@ button, input { font: inherit; }
 .content-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(330px, 1fr); gap: 22px; }
 .panel { overflow: hidden; background: var(--panel); border: 1px solid var(--line); }
 .panel.wide { min-width: 0; }
+.list-footer { display: flex; justify-content: center; padding: 14px 24px 18px; border-top: 1px solid #eef1f5; }
 .panel-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 22px 24px 17px; }
 .panel-header h2 { margin: 7px 0 0; color: var(--ink); font-size: 17px; letter-spacing: 0; }
 .panel-header .el-button { color: var(--teal); }

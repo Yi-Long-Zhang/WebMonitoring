@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import IncidentTimeline from "../components/monitoring/IncidentTimeline.vue";
+import ListFooter from "../components/monitoring/ListFooter.vue";
 import type { AlertDelivery, Asset, Evidence, Incident, User } from "../types/domain";
 
 type Props = {
@@ -18,11 +19,14 @@ type Props = {
   // takes a handler rather than calling the API itself. It returns a promise so
   // the draft is only cleared once the write succeeded.
   onComment: (incident: Incident, note: string) => Promise<void>;
+  hasMore: boolean;
+  loadingMore: boolean;
 };
 
 const props = defineProps<Props>();
 const emit = defineEmits<{
   transition: [incident: Incident, status: Incident["status"], ownerId: string];
+  loadMore: [];
 }>();
 
 // Held by id rather than by object: the store replaces data.incidents on every
@@ -100,6 +104,7 @@ async function submitComment() {
           <a class="evidence-link" :href="`/api/v1/reports/${row.id}`" @click.stop>导出证据</a>
         </template></el-table-column>
       </el-table>
+      <ListFooter :has-more="hasMore" :loading="loadingMore" @load-more="emit('loadMore')" />
     </section>
 
     <el-drawer v-model="detailOpen" title="事件详情" size="min(680px, 100vw)">
