@@ -91,6 +91,8 @@
 - 真实 100 资产 **浏览器** 压测和备份恢复实机演练；控制台 Playwright E2E
   已纳入 Compose smoke，并已于 2026-09-15 在本机实跑通过（见
   [operations.md](operations.md) 的验收清单和 [backup-restore-rehearsal.md](backup-restore-rehearsal.md)）。
+  浏览器模式**登录态**检测已于 2026-09-20 纳入同一 smoke（cookie 门控 fixture
+  的正负两步断言），不再只有单元覆盖。
 - Docker Compose smoke 和真实数据库/Redis 集成门禁已于 2026-09-15 在本机实跑
   通过；演练记录覆盖单机 Compose 拓扑，尚未覆盖多副本、外部对象存储和真实生产网络。
 

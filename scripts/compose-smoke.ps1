@@ -29,6 +29,68 @@ New-Item -ItemType Directory -Force -Path $wellKnown | Out-Null
 <body><main id="content">initial smoke content</main></body></html>
 "@ | Set-Content -Path (Join-Path $targetRoot "index.html") -Encoding utf8
 
+# --- P4-06/P4-07 browser login-state fixture --------------------------------
+# A second nginx host on the same container serves a cookie-gated page. It has
+# its own server_name and document root so the tamper assertions above keep
+# seeing the ungated index at http://smoke-target/ -- gating "/" would make
+# every unauthenticated check see a login page and the content-change
+# assertions pass for the wrong reason.
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+$loginRoot = Join-Path $targetRoot "login"
+$loginWellKnown = Join-Path $loginRoot ".well-known"
+New-Item -ItemType Directory -Force -Path $loginWellKnown | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $loginRoot "login.html"), @"
+<!doctype html>
+<html><head><title>Smoke login</title></head>
+<body><form method="post" action="/login">
+<input name="username" autocomplete="username">
+<input name="password" type="password" autocomplete="current-password">
+<button id="submit-login" type="submit">submit</button>
+</form></body></html>
+"@, $utf8NoBom)
+[System.IO.File]::WriteAllText((Join-Path $loginRoot "protected.html"), @"
+<!doctype html>
+<html><head><title>Smoke protected console</title></head>
+<body><main id="content">protected smoke content</main></body></html>
+"@, $utf8NoBom)
+# No Secure attribute: this stack is plain http and Chromium drops a Secure
+# cookie, which would make the test fail for the wrong reason. The cookie name
+# must be exactly "session" to match nginx's $cookie_session.
+# A single-quoted here-string: the nginx variables must reach the file
+# verbatim, and a double-quoted one would expand $uri and friends.
+$loginConf = @'
+server {
+    listen 80 default_server;
+    server_name _;
+    root /usr/share/nginx/html;
+    location / { try_files $uri $uri/ =404; }
+}
+
+server {
+    listen 80;
+    server_name smoke-login;
+    root /usr/share/nginx/html/login;
+
+    location = /login {
+        if ($request_method = POST) {
+            add_header Set-Cookie "session=authenticated; Path=/; HttpOnly";
+            return 302 /protected.html;
+        }
+        try_files /login.html =404;
+    }
+
+    location = /protected.html {
+        if ($cookie_session != "authenticated") {
+            return 302 /login;
+        }
+        try_files /protected.html =404;
+    }
+
+    location / { try_files $uri $uri/ =404; }
+}
+'@
+[System.IO.File]::WriteAllText((Join-Path $smokeRoot "smoke-target.conf"), $loginConf, $utf8NoBom)
+
 function Invoke-Compose([string[]]$Arguments) {
     & docker compose @compose @Arguments
     if ($LASTEXITCODE -ne 0) {
@@ -70,6 +132,30 @@ function Wait-JobStatus($WebSession, [string]$JobID, [string]$Expected) {
         Start-Sleep -Seconds 2
     }
     throw "job $JobID did not reach $Expected"
+}
+
+# Get-SnapshotTitle runs one BROWSER check for an asset and returns the title the
+# worker captured. Reading the title rather than the HTML is deliberate: it is
+# enough to tell the login page from the protected page, and AGENTS.md forbids
+# rendering collected page content outside the sandbox that produced it.
+function Get-SnapshotTitle {
+    param($WebSession, $Headers, [string]$AssetID)
+    $job = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/detection-jobs" `
+        -WebSession $WebSession -Headers $Headers -ContentType "application/json" `
+        -Body "{`"assetId`":`"$AssetID`",`"mode`":`"BROWSER`"}"
+    Wait-JobStatus $WebSession $job.id "SUCCEEDED"
+    $snapshot = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/evidence?assetId=$AssetID" -WebSession $WebSession |
+        Select-Object -ExpandProperty items |
+        Where-Object { $_.jobId -eq $job.id -and $_.kind -eq "snapshot.json" } |
+        Select-Object -First 1
+    if (-not $snapshot) {
+        throw "browser job $($job.id) produced no snapshot.json evidence"
+    }
+    # -UseBasicParsing: Windows PowerShell 5.1 otherwise hands the response to
+    # the IE engine, which throws a NullReferenceException when IE has never
+    # been configured. This host is exactly that case.
+    $raw = (Invoke-WebRequest -Method Get -UseBasicParsing -Uri "$apiBase/api/v1/evidence/$($snapshot.id)/download" -WebSession $WebSession).Content
+    return ($raw | ConvertFrom-Json).title
 }
 
 # Invoke-ApiExpectError performs a request that must fail and returns the status
@@ -379,6 +465,36 @@ try {
         Select-Object -ExpandProperty items | Where-Object id -eq $queued.id
     if (-not $terminal -or $terminal.status -ne "CANCELLED") {
         throw "cancelled job was overwritten by a late result: $($terminal.status)"
+    }
+
+    # --- P4-06/P4-07 browser login-state detection --------------------------
+    # Step 1 is the negative control: with no AuthConfig the worker cannot get
+    # past the cookie gate, so the snapshot must be the LOGIN page. That is what
+    # makes step 2 evidence about the AuthConfig rather than about the fixture.
+    $loginAsset = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/assets" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" `
+        -Body '{"name":"Smoke login asset","url":"http://smoke-login/protected.html","type":"LOGIN"}'
+    $loginIssued = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/assets/$($loginAsset.id)/verification" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" -Body '{"action":"ISSUE"}'
+    [System.IO.File]::WriteAllText((Join-Path $loginWellKnown "webmonitoring-verification.txt"), $loginIssued.content, $utf8NoBom)
+    Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/assets/$($loginAsset.id)/verification" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" -Body '{"action":"VERIFY"}' | Out-Null
+
+    $anonymousTitle = Get-SnapshotTitle $session $csrf $loginAsset.id
+    if ($anonymousTitle -ne "Smoke login") {
+        throw "unauthenticated browser check saw '$anonymousTitle', expected the login page"
+    }
+
+    # submitSelector is set because the worker otherwise presses Enter in the
+    # password field and then waits for networkidle; a real submit button makes
+    # that deterministic.
+    Invoke-RestMethod -Method Put -Uri "$apiBase/api/v1/policies/$($loginAsset.id)" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" `
+        -Body '{"httpIntervalSeconds":300,"browserIntervalSeconds":1800,"timeoutSeconds":30,"maxResponseBytes":1048576,"ignoreSelectors":[],"trustedDomains":[],"auth":{"loginUrl":"http://smoke-login/login","usernameField":"username","passwordField":"password","submitSelector":"#submit-login","username":"smoke","password":"smoke-password"}}' | Out-Null
+
+    $authenticatedTitle = Get-SnapshotTitle $session $csrf $loginAsset.id
+    if ($authenticatedTitle -ne "Smoke protected console") {
+        throw "authenticated browser check saw '$authenticatedTitle', expected the protected page"
     }
 
     $env:CONSOLE_BASE_URL = "http://localhost:18088"
