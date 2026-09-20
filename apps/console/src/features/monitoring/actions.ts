@@ -111,6 +111,7 @@ export function useMonitoringActions() {
     name: string;
     type: AlertChannel["type"];
     url: string;
+    recipients: string;
     secret: string;
     enabled: boolean;
   }) {
