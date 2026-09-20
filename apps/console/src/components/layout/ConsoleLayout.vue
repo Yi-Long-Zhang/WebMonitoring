@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import Sidebar from "./Sidebar.vue";
 import Topbar from "./Topbar.vue";
 import OverviewPage from "../../pages/OverviewPage.vue";
@@ -23,8 +23,10 @@ import { useConsoleStore } from "../../stores/console";
 import { connectEventStream } from "../../services/events/stream";
 import type { AlertChannel, Asset, AssetType, DetectionJob, Incident, Site, Tenant } from "../../types/domain";
 import type { View } from "../../types/views";
+import { isView } from "../../types/views";
 
 const router = useRouter();
+const route = useRoute();
 const session = useSessionStore();
 const data = useConsoleStore();
 const actions = useMonitoringActions();
@@ -62,12 +64,29 @@ function reportError(error: unknown, fallback: string) { ElMessage.error(error i
 async function createAsset() {
   try { await actions.createNewAsset(assetForm.value); showAssetDialog.value = false; assetForm.value = { name: "", url: "", type: "OFFICIAL", siteId: "" }; } catch (error) { reportError(error, "创建资产失败"); }
 }
-async function navigate(view: View) {
+// The hash owns which view is on screen. navigate() only writes the route, and
+// the watcher below is the only reader that touches activeView, so the sidebar,
+// a deep link and the back button cannot end up disagreeing with the address
+// bar about what is rendered.
+async function selectView(view: View) {
   activeView.value = view;
   if (view === "tenants" && session.canSuperAdmin) {
     try { await data.loadTenants(); } catch (error) { reportError(error, "加载租户失败"); }
   }
 }
+async function syncFromRoute() {
+  const raw = route.params.view;
+  const known = isView(raw);
+  // A segment the app does not know is normalized away rather than left in the
+  // address bar describing a view that is not rendered.
+  if (raw !== undefined && !known) await router.replace("/");
+  await selectView(known ? raw : "overview");
+}
+async function navigate(view: View) {
+  const target = view === "overview" ? "/" : `/${view}`;
+  if (route.path !== target) await router.replace(target);
+}
+watch(() => route.params.view, () => { void syncFromRoute(); });
 function openSiteCreate() { editingSite.value = undefined; siteForm.value = { name: "", domain: "" }; showSiteDialog.value = true; }
 function openSiteEdit(site: Site) { editingSite.value = site; siteForm.value = { name: site.name, domain: site.domain }; showSiteDialog.value = true; }
 async function submitSite() {
@@ -88,7 +107,7 @@ async function submitTenant() {
 }
 async function verify(asset: Asset) { try { await actions.verifyAssetOwnership(asset); } catch (error) { reportError(error, "验证失败"); } }
 async function toggle(asset: Asset) { try { await actions.toggleMonitoring(asset); } catch (error) { reportError(error, "更新资产失败"); } }
-async function detect(asset: Asset, mode: "HTTP" | "BROWSER") { try { await actions.startDetection(asset, mode); activeView.value = "jobs"; } catch (error) { reportError(error, "检测启动失败"); } }
+async function detect(asset: Asset, mode: "HTTP" | "BROWSER") { try { await actions.startDetection(asset, mode); await navigate("jobs"); } catch (error) { reportError(error, "检测启动失败"); } }
 async function review(id: string, accepted: boolean) { try { await actions.reviewBaseline(id, accepted); } catch (error) { reportError(error, "基线操作失败"); } }
 async function retireBaseline(id: string) { try { await actions.retireBaseline(id); } catch (error) { reportError(error, "基线废弃失败"); } }
 async function toggleTenant(tenant: Tenant, disabled: boolean) { try { await actions.setTenantDisabled(tenant, disabled); } catch (error) { reportError(error, "切换租户状态失败"); } }
@@ -143,6 +162,9 @@ onMounted(async () => {
   if (session.canOperate) {
     try { await data.loadUsers(); } catch { /* best effort; the drawer still works without it */ }
   }
+  // Applied only after the session is restored, because the per-view loads it
+  // triggers are role-gated and there is no role to check until then.
+  await syncFromRoute();
   eventStream = connectEventStream(refresh);
 });
 onUnmounted(() => eventStream?.close());
@@ -162,7 +184,10 @@ onUnmounted(() => eventStream?.close());
       <EvidencePage v-else-if="activeView === 'evidence'" :evidence="data.evidence" :assets="data.assets" :asset-map="assetMap" :has-more="data.hasMore('evidence')" :loading-more="data.isLoadingMore('evidence')" @load-more="data.loadMore('evidence')" />
       <ChannelsPage v-else-if="activeView === 'channels'" :channels="data.alertChannels" :can-admin="session.canAdmin" @create="showChannelDialog = true" />
       <TenantsPage v-else-if="activeView === 'tenants'" :tenants="data.tenants" :self-tenant-id="session.user?.tenantId || ''" :has-more="data.hasMore('tenants')" :loading-more="data.isLoadingMore('tenants')" @load-more="data.loadMore('tenants')" @create="openTenantCreate" @edit="openTenantEdit" @toggle="toggleTenant" />
-      <AuditsPage v-else :audits="data.audits" :has-more="data.hasMore('audits')" :loading-more="data.isLoadingMore('audits')" @load-more="data.loadMore('audits')" @filter="data.applyAuditFilters" />
+      <!-- Explicit rather than a v-else fallback: with v-else any view key that
+           matched nothing above would render the audit page, which is how an
+           unknown hash segment used to reach the screen silently. -->
+      <AuditsPage v-else-if="activeView === 'audits'" :audits="data.audits" :has-more="data.hasMore('audits')" :loading-more="data.isLoadingMore('audits')" @load-more="data.loadMore('audits')" @filter="data.applyAuditFilters" />
     </main>
     <el-dialog v-model="showAssetDialog" title="登记监测资产" width="520px">
       <el-form label-position="top">
