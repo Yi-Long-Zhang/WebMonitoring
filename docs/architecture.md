@@ -187,19 +187,21 @@ span 与产生该任务的 API 请求因此不是同一个 trace，只能通过 
 - 将最终失败送入死信或失败记录。
 - 记录任务、租户、资产和追踪 ID。
 
-## 8. 已知部署限制：当前不支持多副本
+## 8. 多副本支持状态
 
-当前拓扑只支持**单个控制面副本和单个 HTTP Worker 实例**。以下三处没有跨副本协调，
-横向扩容会在不报错的情况下产生重复执行：
+横向扩容必须逐项满足以下条件。任一未满足时，扩容都会在不报错的情况下重复执行检测
+或重复删除证据：
 
-| 位置 | 机制 | 多副本后果 |
+| 位置 | 机制 | 状态 |
 | --- | --- | --- |
-| `internal/detection/scheduler.go` | 每个副本各自跑 30 秒 tick，`due()` 先读任务表再决定是否入队 | 两个副本同时判定“无在途任务”会各排一个检测任务；数据库对 `(tenant_id, asset_id, mode)` 无唯一约束 |
-| `internal/maintenance/retention.go` | 无锁，且 `RunDaily` 启动时立即执行一次全量清理 | 每个副本重启都触发完整清扫，重复删除证据对象与元数据、重复计数 |
-| `apps/http-worker` 的 `WORKER_ID` | Compose 固定为 `http-worker-1` | `--scale` 后所有副本同名消费者，`XAutoClaim` 会把对方在途消息当作滞留消息回收并重跑 |
+| `internal/maintenance/retention.go` | 无锁，且 `RunDaily` 启动时立即执行一次全量清理 | **未解决**：每个副本重启都触发完整清扫，重复删除证据对象与元数据、重复计数 |
+| `internal/detection/scheduler.go` | 每个副本各自跑 30 秒 tick，`due()` 先读任务表再决定是否入队 | 已解决：迁移 `000012` 的部分唯一索引 `detection_jobs_active_uidx` 限制每个 `(tenant_id, asset_id, mode)` 最多一个 `QUEUED`/`RUNNING` 任务，竞争失败方由 `store.ErrJobAlreadyActive` 静默吞掉 |
+| `apps/http-worker` 的消费者身份 | `WORKER_ID` 曾被 Compose 固定为 `http-worker-1` | 已解决：`config.WorkerIdentity` 在未显式配置时按 hostname + 随机后缀生成每进程身份，生产门禁拒绝两个历史固定值 |
 
-对比之下 `internal/migrate/runner.go` 使用 `pg_advisory_lock` 串行化迁移，说明该模式在
-仓库内已有先例，但尚未套用到调度和清理。
+调度器和 Worker 的幂等已经具备，**但在保留策略加上跨副本租约之前，仍然只支持单个控制面
+副本**。对比之下 `internal/migrate/runner.go` 使用 `pg_advisory_lock` 串行化迁移，保留策略
+可以直接沿用该模式。
 
-扩容前必须先解决：调度任务带幂等键或唯一约束、清理任务加分布式租约、每个 Worker 实例
-生成唯一消费者身份。这三项属于发布门禁，不是可选优化。
+扩容前还必须补充一项验证：多副本下 `ReapTimedOut` 会把其他副本仍在执行的 `RUNNING` 任务
+单方面置为 `TIMED_OUT`（它只按 `started_at` 与租约判断，不校验持有者），需要确认任务租约
+长于最慢的浏览器检测时长，或改为带持有者校验的回收。
