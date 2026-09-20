@@ -264,3 +264,39 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/v1/maintenance/ret
 - 导出内容不含客户 URL 凭据、通知签名、收件人和页面内容（见
   `docs/architecture.md` 的「可观测性」）。采集器本身仍应视为敏感基础设施。
 - 消费者 span 与 API span 目前只通过 `job_id`/`asset_id` 属性关联，不是同一 trace。
+
+## TLS 终止（生产）
+
+单机 Compose 默认把 API 发布在 `8080`、控制台发布在 `8088`，都是明文 HTTP。
+生产部署叠加 TLS overlay，由 nginx 边缘终止 TLS，并且**只由边缘发布端口**：
+
+```bash
+TLS_CERT_DIR=/etc/letsencrypt/live/example.com \
+  docker compose -f deployments/compose/docker-compose.yml \
+                 -f deployments/compose/docker-compose.tls.yml up -d
+```
+
+`TLS_CERT_DIR` 必须包含 `fullchain.pem` 和 `privkey.pem`。证书不随仓库分发，
+`deployments/.gitignore` 已排除 `deployments/nginx/certs/`、`*.pem` 和 `*.key`。
+
+overlay 用 `ports: !reset []` 摘掉 API 的 `8080` 和控制台的 `8088`。这不是洁癖：
+留着它们就存在一条绕过边缘的明文路径，既绕开安全响应头，也绕开边缘对
+`/metrics` 的屏蔽，还会让标记为 secure 的会话 Cookie 有机会走 http 发出。
+
+生产必须同时满足两个**已经被强制**的条件（`internal/config/production.go`，
+不满足则进程启动失败，而不是仅打印警告）：
+
+| 变量 | 要求 | 原因 |
+|---|---|---|
+| `SESSION_SECURE` | `true` | 会话 Cookie 只在 HTTPS 上发送；`APP_ENV=production` 时非 `true` 直接启动失败，API 与 http-worker 都受此约束 |
+| `POSTGRES_SSLMODE` | 非 `disable` | `POSTGRES_DSN` 里写入 `sslmode=${POSTGRES_SSLMODE:-disable}`；生产环境仍为 `disable` 会启动失败并指出该变量 |
+
+**升级注意**：`sslmode` 这条门是破坏性变更。既有 `APP_ENV=production` 部署在
+升级后若未设置 `POSTGRES_SSLMODE`，会拒绝启动。这是有意为之——把传输加密从
+「文档建议」变成「不满足就不跑」。
+
+边缘的 `/metrics` 显式返回 404。控制面的 `/metrics` 挂在不带认证的根 mux 上，
+对外发布等于把资产数、任务吞吐和错误率暴露给任何能访问该主机的人；采集器仍在
+Compose 网络内部抓取。`/healthz` 与 `/readyz` 保留对外，外部负载均衡需要它们。
+`/api/` 关闭了 `proxy_buffering`，因为 `GET /api/v1/events/stream` 是 SSE，
+缓冲会让控制台的实时刷新成批到达或干脆不到。
