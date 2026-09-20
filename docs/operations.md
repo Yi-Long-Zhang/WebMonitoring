@@ -81,6 +81,29 @@ API/Worker。生产环境执行前必须记录审批、备份版本、RPO/RTO �
 
 ## 验收和故障处理
 
+### 运行验收脚本的前置条件
+
+所有验收脚本都是 `.ps1`，需要在允许执行本地脚本的 PowerShell 中运行。Windows
+客户端版的默认策略是 `Restricted`，此时 `powershell -File scripts\...` 会报
+「在此系统上禁止运行脚本」并直接退出，脚本一行都不会执行：
+
+```powershell
+Get-ExecutionPolicy   # 返回 Restricted 说明需要先处理
+```
+
+两种处理方式任选其一：
+
+```powershell
+# 只对当前用户放开本地脚本（推荐，一次设置长期生效）
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+
+# 或不改机器配置，单次运行
+powershell -ExecutionPolicy Bypass -File .\scripts\compose-smoke.ps1
+```
+
+这和执行策略以外的环境无关：Docker 正常、镜像齐备时脚本依然会被策略拦下，因此
+「脚本没输出」先查这一项。
+
 本机安装 Docker 后执行可重复 smoke test：
 
 ```powershell
@@ -99,6 +122,7 @@ API/Worker。生产环境执行前必须记录审批、备份版本、RPO/RTO �
 | 主链路 smoke | 登录/资产验证/基线审批/HTTP+Browser 检测/事件/证据/报告/控制台 E2E/重启持久化 | `.\scripts\compose-smoke.ps1` |
 | 安全边界 smoke | P0-1 登录锁定（N 次失败后即使密码正确也返回 `ACCOUNT_LOCKED`，且不影响其他账户）、P1-5 keyset 分页（`limit`+`cursor` 无重复无遗漏）、P1-6 资产暂停/恢复（暂停后排队返回 `JOB_REJECTED`，恢复不自动启用）、P1-7 任务取消（终态为 `CANCELLED`，迟到结果不得覆盖） | 同上，`compose-smoke.ps1` 已内置 |
 | 100 资产压测 | 跨租户播种、真实 FILE 所有权验证、单轮 HTTP 检测吞吐、任务无丢失、证据完整、未批准基线无假阳性 | `.\scripts\load-test.ps1` |
+| 多副本演练 | 调度器跨副本排队不重复（任务数等于资产数）、无重复 `(tenant, asset, mode)`、每个 worker 副本一个唯一消费者身份 | `.\scripts\multi-replica-drill.ps1` |
 | 备份恢复演练 | 数据库 dump、evidence bucket 清单、恢复后 `/readyz` 与证据校验 | `.\scripts\compose-backup.ps1`、`.\scripts\compose-restore.ps1`（见 [backup-restore-rehearsal.md](backup-restore-rehearsal.md)） |
 
 `compose-smoke.ps1` 会固定 `LOGIN_MAX_FAILURES=5` 后再断言锁定行为，因此本机
@@ -116,9 +140,26 @@ API/Worker。生产环境执行前必须记录审批、备份版本、RPO/RTO �
 .\scripts\load-test.ps1 -AssetCount 100 -Tenants 4 -MinimumJobsPerSecond 2 -KeepRunning
 ```
 
-测试数据保存在 `.data-smoke` 与 `.data-loadtest`，两个目录已被 Git 忽略。两个脚本
-使用不同的 Compose 项目名和主机端口（smoke：API 18080 / 控制台 18088；压测：API 18081），
-可以并存运行。
+```powershell
+# 默认 40 资产 / 1 租户 / api=2 / http-worker=3
+.\scripts\multi-replica-drill.ps1
+# 变异检查：先删掉活跃任务唯一索引，演练应当失败并报出重复任务数
+.\scripts\multi-replica-drill.ps1 -DropActiveJobIndex
+```
+
+多副本演练和压测的区别在于**谁创建任务**：压测通过 API 逐资产手动创建，走不到调度器；
+演练不创建任何任务，让每个控制面副本的调度器自己排队，然后断言任务数恰好等于资产数 ——
+这正是 `due()` 先读后判无法保证、由迁移 `000012` 的部分唯一索引兜住的那件事。竞态窗口是
+每个副本启动时的第一次 `scheduleAll()`，因此脚本在验证完成后会 `restart api`，让所有副本
+同时重启把这个窗口放大。
+
+`api` 被扩容后不能再占用宿主端口，脚本为此在 overlay 里加了一个按请求解析 DNS 的 nginx
+入口（`api-entry`，宿主 18082）。用变量写 `proxy_pass` 才会走 resolver，否则 nginx 只在
+启动时解析一次，`restart api` 换了容器 IP 之后就指向已经不存在的副本。
+
+测试数据保存在 `.data-smoke`、`.data-loadtest` 与 `.data-multireplica`，三个目录已被 Git
+忽略。三个脚本使用不同的 Compose 项目名和主机端口（smoke：API 18080 / 控制台 18088；
+压测：API 18081；多副本演练：API 18082），可以并存运行。
 
 ### 镜像准备
 

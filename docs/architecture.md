@@ -198,8 +198,17 @@ span 与产生该任务的 API 请求因此不是同一个 trace，只能通过 
 | `apps/http-worker` 的消费者身份 | `WORKER_ID` 曾被 Compose 固定为 `http-worker-1` | 已解决：`config.WorkerIdentity` 在未显式配置时按 hostname + 随机后缀生成每进程身份，生产门禁拒绝两个历史固定值 |
 | `internal/maintenance/retention.go` | 无锁，且 `RunDaily` 启动时立即执行一次全量清理 | 已解决：`store.ReplicaLease` 提供 PostgreSQL 会话级 advisory lock，未取得租约的副本直接跳过本轮；定时清理会为实际发生的删除补写审计事件 |
 
-三项均已修复，但**多副本实机演练尚未执行**。在 `docker compose up --scale api=2
---scale http-worker=3` 上跑通一轮检测并断言任务数与资产数相等之前，不要按多副本部署。
+`scripts/multi-replica-drill.ps1` 是这三项的验收脚本：它不通过 API 创建任务，而是让各副本
+调度器自己排队，再断言任务数等于资产数、没有重复的 `(tenant, asset, mode)`、每个 worker
+副本对应一个唯一消费者身份。
+
+当前状态是**部分验证**：脚本已就位，其中「每个 worker 副本一个唯一消费者」这一半已经在
+真实 `--scale api=2 --scale http-worker=3` 上验证过，并且做过变异检查（把 `WORKER_ID` 钉回
+`http-worker-1` 后三个副本确实注册成同一个消费者名）；但**完整演练尚未跑通**，因此
+「任务数等于资产数」这条端到端断言还没有实际执行过。调度器幂等的确定性证明目前来自单元
+测试（`TestConcurrentReplicasQueueOneJobPerAsset`，去掉约束立即失败），不是来自演练。
+
+在完整演练跑通之前，不要按多副本部署。
 
 扩容前还需要把任务租约关系写进容量说明：`ReapTimedOut` 会把所有 `started_at` 早于
 `JobLease`（5 分钟）的 `RUNNING` 任务单方面置为 `TIMED_OUT`，`ClaimJob` 也允许抢占超过
