@@ -18,7 +18,7 @@ import UsersPage from "../../pages/UsersPage.vue";
 import PolicyDialog from "../monitoring/PolicyDialog.vue";
 import AssetImportDialog from "../monitoring/AssetImportDialog.vue";
 import { useMonitoringActions } from "../../features/monitoring/actions";
-import { exportAssets } from "../../services/api/client";
+import { ApiError, exportAssets } from "../../services/api/client";
 import { saveBlob } from "../../services/download";
 import { roleLabel as roleLabelFor } from "../../app/permissions";
 import { CHANNEL_LABELS, channelNeeds } from "../../app/channels";
@@ -43,6 +43,7 @@ const showSiteDialog = ref(false);
 const showTenantDialog = ref(false);
 const showUserDialog = ref(false);
 const showPasswordDialog = ref(false);
+const showTenantDeleteDialog = ref(false);
 const policyAsset = ref<Asset>();
 const editingSite = ref<Site>();
 const editingTenant = ref<Tenant>();
@@ -60,6 +61,15 @@ const userForm = ref<{ username: string; password: string; role: User["role"]; d
   username: "", password: "", role: "OPERATOR", disabled: false,
 });
 const passwordForm = ref<{ password: string; confirm: string }>({ password: "", confirm: "" });
+// The tenant seeded by the initial migration (internal/domain.DefaultTenantID).
+// The server refuses to delete it with 409 TENANT_PROTECTED; knowing the id here
+// only keeps the button from offering an operation that cannot succeed.
+const DEFAULT_TENANT_ID = "00000000-0000-4000-8000-000000000001";
+const deletingTenant = ref<Tenant>();
+const tenantDeleteConfirm = ref("");
+const tenantDeleteError = ref("");
+const tenantDeleteCascade = ref(false);
+const deletingTenantBusy = ref(false);
 let eventStream: EventSource | undefined;
 
 const assetMap = computed(() => new Map(data.assets.map((asset) => [asset.id, asset])));
@@ -127,6 +137,42 @@ async function detect(asset: Asset, mode: "HTTP" | "BROWSER") { try { await acti
 async function review(id: string, accepted: boolean) { try { await actions.reviewBaseline(id, accepted); } catch (error) { reportError(error, "基线操作失败"); } }
 async function retireBaseline(id: string) { try { await actions.retireBaseline(id); } catch (error) { reportError(error, "基线废弃失败"); } }
 async function toggleTenant(tenant: Tenant, disabled: boolean) { try { await actions.setTenantDisabled(tenant, disabled); } catch (error) { reportError(error, "切换租户状态失败"); } }
+
+// Deletion is confirmed by typing the slug, mirroring the server's
+// CONFIRM_MISMATCH check: a click-through confirm is too easy to hit for an
+// operation that removes every resource under the tenant.
+function openTenantDelete(tenant: Tenant) {
+  deletingTenant.value = tenant;
+  tenantDeleteConfirm.value = "";
+  tenantDeleteError.value = "";
+  tenantDeleteCascade.value = false;
+  showTenantDeleteDialog.value = true;
+}
+function closeTenantDelete() { showTenantDeleteDialog.value = false; deletingTenant.value = undefined; }
+
+// First attempt is always cascade:false, so a tenant that still owns resources
+// stops here with 409 TENANT_NOT_EMPTY instead of quietly taking the data with
+// it. That 409 is a step rather than a failure: the server's message names the
+// resources, and the dialog surfaces it and offers the explicit second state.
+async function submitTenantDelete() {
+  const tenant = deletingTenant.value;
+  if (!tenant) return;
+  deletingTenantBusy.value = true;
+  tenantDeleteError.value = "";
+  try {
+    await actions.removeTenant(tenant, tenantDeleteConfirm.value, tenantDeleteCascade.value);
+    closeTenantDelete();
+  } catch (error) {
+    if (error instanceof ApiError && error.code === "TENANT_NOT_EMPTY" && !tenantDeleteCascade.value) {
+      tenantDeleteCascade.value = true;
+      tenantDeleteError.value = error.message;
+    } else {
+      tenantDeleteError.value = error instanceof Error ? error.message : "删除租户失败";
+    }
+  } finally {
+    deletingTenantBusy.value = false;
+  }
+}
 async function cancelDetectionJob(job: DetectionJob) { try { await actions.cancelDetectionJob(job); } catch (error) { reportError(error, "任务取消失败"); } }
 // Bumped after a write to an incident lands, so the drawer's timeline reloads
 // behind it rather than racing it. Owned here because this is where the writes
@@ -247,7 +293,7 @@ onUnmounted(() => eventStream?.close());
       <JobsPage v-else-if="activeView === 'jobs'" :jobs="data.jobs" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('jobs')" :loading-more="data.isLoadingMore('jobs')" @load-more="data.loadMore('jobs')" @cancel="cancelDetectionJob" />
       <EvidencePage v-else-if="activeView === 'evidence'" :evidence="data.evidence" :assets="data.assets" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('evidence')" :loading-more="data.isLoadingMore('evidence')" @load-more="data.loadMore('evidence')" />
       <ChannelsPage v-else-if="activeView === 'channels'" :channels="data.alertChannels" :can-admin="session.canAdmin" @create="showChannelDialog = true" />
-      <TenantsPage v-else-if="activeView === 'tenants'" :tenants="data.tenants" :self-tenant-id="session.user?.tenantId || ''" :has-more="data.hasMore('tenants')" :loading-more="data.isLoadingMore('tenants')" @load-more="data.loadMore('tenants')" @create="openTenantCreate" @edit="openTenantEdit" @toggle="toggleTenant" />
+      <TenantsPage v-else-if="activeView === 'tenants'" :tenants="data.tenants" :self-tenant-id="session.user?.tenantId || ''" :default-tenant-id="DEFAULT_TENANT_ID" :can-delete="session.canSuperAdmin" :has-more="data.hasMore('tenants')" :loading-more="data.isLoadingMore('tenants')" @load-more="data.loadMore('tenants')" @create="openTenantCreate" @edit="openTenantEdit" @toggle="toggleTenant" @remove="openTenantDelete" />
       <UsersPage v-else-if="activeView === 'users'" :users="data.users" :can-admin="session.canAdmin" :self-user-id="session.user?.id || ''" @create="openUserCreate" @edit="openUserEdit" @reset-password="openPasswordReset" />
       <!-- Explicit rather than a v-else fallback: with v-else any view key that
            matched nothing above would render the audit page, which is how an
@@ -318,6 +364,28 @@ onUnmounted(() => eventStream?.close());
         </template>
       </el-form>
       <template #footer><el-button @click="showTenantDialog = false">取消</el-button><el-button type="primary" @click="submitTenant">保存租户</el-button></template>
+    </el-dialog>
+    <el-dialog v-model="showTenantDeleteDialog" title="删除租户" width="560px" @closed="closeTenantDelete">
+      <template v-if="deletingTenant">
+        <el-alert type="error" :closable="false" show-icon title="删除后该租户下的资产、基线、检测任务、事件与证据均不可恢复" />
+        <el-form label-position="top">
+          <el-form-item :label="`请输入租户标识 ${deletingTenant.slug} 以确认删除`">
+            <el-input v-model="tenantDeleteConfirm" autocomplete="off" :placeholder="deletingTenant.slug" />
+          </el-form-item>
+        </el-form>
+        <!-- The server's own message is shown verbatim: it is what names the
+             remaining resources, and re-deriving a count here would be a second
+             implementation that can disagree with the one that actually deletes. -->
+        <el-alert v-if="tenantDeleteError" type="warning" :closable="false" show-icon :title="tenantDeleteError" />
+        <p v-if="tenantDeleteCascade">该租户仍有资源。再次确认将连同其全部数据一并删除。</p>
+        <div v-else>若该租户仍有关联数据，系统会先提示，不会直接删除。</div>
+      </template>
+      <template #footer>
+        <el-button @click="showTenantDeleteDialog = false">取消</el-button>
+        <el-button type="danger" :loading="deletingTenantBusy" :disabled="!deletingTenant || tenantDeleteConfirm !== deletingTenant.slug" @click="submitTenantDelete">
+          {{ tenantDeleteCascade ? "确认级联删除" : "删除租户" }}
+        </el-button>
+      </template>
     </el-dialog>
   </div>
 </template>

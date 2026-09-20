@@ -315,6 +315,38 @@ export function deleteTenant(id: string, confirm: string, cascade = false) {
   );
 }
 
+// The server's error body is {code, message, traceId, details}. request() throws
+// only the message, which is enough for a toast but not for a caller that has to
+// branch on the code -- tenant deletion is the one flow that does, since a 409
+// TENANT_NOT_EMPTY is a step in the dialog rather than a failure. This mirrors
+// request()'s error handling and keeps the code and details alongside the
+// message.
+export class ApiError extends Error {
+  constructor(message: string, readonly code: string, readonly details: Record<string, unknown>) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+export async function deleteTenantDetailed(id: string, confirm: string, cascade = false) {
+  const response = await fetch(`/api/v1/tenants/${id}`, {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ confirm, cascade }),
+  });
+  if (!response.ok) {
+    let payload: { message?: string; code?: string; details?: Record<string, unknown> } = {};
+    try {
+      payload = await response.json();
+    } catch {
+      // Keep the network status as the fallback error.
+    }
+    throw new ApiError(payload.message || `${response.status} ${response.statusText}`, payload.code ?? "", payload.details ?? {});
+  }
+  return response.json() as Promise<{ tenantId: string; deletedResources: Record<string, number>; orphanedEvidenceObjects: number }>;
+}
+
 export function getUsers() {
   return request<ListResponse<User>>("/users");
 }

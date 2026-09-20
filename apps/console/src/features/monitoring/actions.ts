@@ -8,6 +8,7 @@ import {
   createSite,
   createTenant,
   createUser,
+  deleteTenantDetailed,
   issueVerification,
   rejectBaseline,
   resetUserPassword as resetUserPasswordRequest,
@@ -161,6 +162,20 @@ export function useMonitoringActions() {
     ElMessage.success(disabled ? "租户已停用" : "租户已启用");
   }
 
+  // Deletion is a two-state flow rather than one call, because the server
+  // answers 409 TENANT_NOT_EMPTY when the tenant still owns resources and
+  // expects the caller to say so explicitly. deleteTenantDetailed exists to
+  // carry that code back; request() would only have the message. Nothing here
+  // counts the resources: the counts live in the server's `details` and the
+  // server's message already names them, so the dialog shows that message
+  // rather than a second, drift-prone tally.
+  async function removeTenant(tenant: Tenant, confirm: string, cascade: boolean) {
+    const result = await deleteTenantDetailed(tenant.id, confirm, cascade);
+    await consoleStore.loadTenants();
+    ElMessage.success(`租户 ${tenant.name} 已删除`);
+    return result;
+  }
+
   async function commentOnIncident(incident: Incident, note: string) {
     await addIncidentComment(incident.id, note);
     ElMessage.success("备注已记录");
@@ -208,6 +223,7 @@ export function useMonitoringActions() {
     createNewTenant,
     saveTenant,
     setTenantDisabled,
+    removeTenant,
     createNewUser,
     saveUser,
     resetUserPassword,
