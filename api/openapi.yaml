@@ -323,6 +323,18 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/BaselineList" }
+  /baselines/{id}:
+    get:
+      operationId: getBaseline
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: 基线详情，含抓取快照
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Baseline" }
+        "404": { $ref: "#/components/responses/Error" }
   /baselines/{id}/approve:
     post:
       operationId: approveBaseline
@@ -1178,6 +1190,79 @@ components:
         status: { $ref: "#/components/schemas/BaselineStatus" }
         createdAt: { type: string, format: date-time }
         approvedAt: { type: string, format: date-time }
+        # Serialized by the handler since the beginning, but missing from the
+        # contract, so the generated console types could not see them. Same
+        # omission the Incident schema records above.
+        tenantId: { type: string, format: uuid }
+        evidenceIds:
+          type: array
+          items: { type: string, format: uuid }
+        createdBy: { type: string, format: uuid }
+        approvedBy: { type: string, format: uuid }
+        # Deliberately not required: a candidate whose capture failed carries a
+        # zero snapshot, and declaring it required would make the generated type
+        # claim a shape the server does not guarantee.
+        snapshot: { $ref: "#/components/schemas/Snapshot" }
+    Snapshot:
+      type: object
+      required: [url, finalUrl, statusCode, title, contentHash, textHash, durationMillis, capturedAt]
+      properties:
+        url: { type: string }
+        finalUrl: { type: string }
+        statusCode: { type: integer }
+        title: { type: string }
+        contentHash: { type: string }
+        textHash: { type: string }
+        screenshotHash: { type: string }
+        scripts:
+          type: array
+          items:
+            type: object
+            properties:
+              url: { type: string }
+              inlineHash: { type: string }
+        links:
+          type: array
+          items: { type: string }
+        iframes:
+          type: array
+          items: { type: string }
+        forms:
+          type: array
+          items:
+            type: object
+            properties:
+              action: { type: string }
+              method: { type: string }
+        redirectChain:
+          type: array
+          items: { type: string }
+        resolvedIps:
+          type: array
+          items: { type: string }
+        tlsFingerprint: { type: string }
+        responseHeaders:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+        resourceRequests:
+          type: array
+          items: { type: string }
+        blockedRequests:
+          type: array
+          items: { type: string }
+        popups:
+          type: array
+          items: { type: string }
+        dialogs:
+          type: array
+          items: { type: string }
+        downloads:
+          type: array
+          items: { type: string }
+        durationMillis: { type: integer, format: int64 }
+        capturedAt: { type: string, format: date-time }
     BaselineList:
       type: object
       required: [items, nextCursor]

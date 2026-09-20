@@ -173,6 +173,10 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("GET /api/v1/policies", s.listPolicies)
 	protected.HandleFunc("PUT /api/v1/policies/{assetId}", s.requireRoles(s.updatePolicy, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/baselines", s.listBaselines)
+	// Readable by every authenticated role, like getIncident: the list endpoint
+	// already serializes each baseline's full snapshot, so gating the detail read
+	// would hide nothing that a list call does not already return.
+	protected.HandleFunc("GET /api/v1/baselines/{id}", s.getBaseline)
 	protected.HandleFunc("POST /api/v1/baselines/{id}/approve", s.requireRoles(s.approveBaseline, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("POST /api/v1/baselines/{id}/reject", s.requireRoles(s.rejectBaseline, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("POST /api/v1/baselines/{id}/retire", s.requireRoles(s.retireBaseline, domain.RoleAdmin, domain.RoleOperator))
@@ -1432,6 +1436,21 @@ func (s *Server) listBaselines(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	writeList(writer, items, nextCursor)
+}
+
+// getBaseline returns one baseline including its captured snapshot. The list
+// endpoint has always serialized the same fields; this exists so the snapshot
+// has a declared, addressable contract instead of being an undeclared extra on
+// a list response. Every repository error collapses to 404, matching getAsset
+// and changeBaselineStatus: a cross-tenant id must not be distinguishable from
+// a missing one.
+func (s *Server) getBaseline(writer http.ResponseWriter, request *http.Request) {
+	item, err := s.repository.GetBaseline(principal(request).User.TenantID, request.PathValue("id"))
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	writeJSON(writer, http.StatusOK, item)
 }
 
 func (s *Server) approveBaseline(writer http.ResponseWriter, request *http.Request) {
