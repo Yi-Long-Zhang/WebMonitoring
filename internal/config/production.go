@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -94,6 +95,7 @@ func validateCommon(get func(string) string) []error {
 	if strings.EqualFold(strings.TrimSpace(get("ALLOW_PRIVATE_TARGETS")), "true") {
 		failures = append(failures, errors.New("ALLOW_PRIVATE_TARGETS must be false in production"))
 	}
+	failures = append(failures, validateWorkerEndpoint(get)...)
 	failures = append(failures, validateMinLength(get, "S3_ACCESS_KEY", 8)...)
 	failures = append(failures, validateMinLength(get, "S3_SECRET_KEY", 16)...)
 	failures = append(failures, validateMinLength(get, "BROWSER_WORKER_TOKEN", 16)...)
@@ -103,6 +105,45 @@ func validateCommon(get func(string) string) []error {
 	}
 	failures = append(failures, validateSMTP(get)...)
 	return failures
+}
+
+// validateWorkerEndpoint enforces the transport constraint ADR-0004 depends on.
+// Browser-mode login-state detection sends decrypted customer credentials to
+// this endpoint, so it has to be TLS, or a target that cannot be a public
+// hostname: a private or loopback address, or a bare service name that the
+// orchestrator's internal DNS resolves.
+//
+// This check is lexical on purpose. It cannot resolve names, so a dotted host
+// over plain http is rejected rather than assumed to be internal -- that is the
+// case where a mistake would put credentials on a public network.
+func validateWorkerEndpoint(get func(string) string) []error {
+	raw := strings.TrimSpace(get("BROWSER_WORKER_URL"))
+	if raw == "" {
+		// Absence is already reported by validateRequired where it matters.
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return []error{errors.New("BROWSER_WORKER_URL must be a valid URL")}
+	}
+	switch parsed.Scheme {
+	case "https":
+		return nil
+	case "http":
+	default:
+		return []error{errors.New("BROWSER_WORKER_URL must use http or https")}
+	}
+	host := parsed.Hostname()
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+			return nil
+		}
+		return []error{errors.New("BROWSER_WORKER_URL must use https when it does not point at a private address")}
+	}
+	if !strings.Contains(host, ".") {
+		return nil
+	}
+	return []error{errors.New("BROWSER_WORKER_URL must use https for a domain name, because decrypted login credentials are sent to it")}
 }
 
 // validateSMTP enforces a complete SMTP configuration only when email

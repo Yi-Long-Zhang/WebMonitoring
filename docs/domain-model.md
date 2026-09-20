@@ -57,8 +57,11 @@ updated_at
 关联数据为 `tenantID:assetID:auth`，防止密文跨租户或跨资产重放；读取策略时由
 `redactPolicy` 脱敏，响应不返回密文。登录地址在写入和检测两个阶段各做一次 SSRF 校验。
 
-浏览器 Worker 尚不支持登录态，遇到 `AuthConfig` 时失败关闭。检测节点配置仍未形成
-可用的领域流程。
+浏览器 Worker 同样支持登录态，机制与 HTTP 路径不同：控制面解密后经内部 HTTP 把明文
+凭据传给 Worker，Worker 在同一个 `BrowserContext` 内先提交登录表单再访问目标页，使
+session cookie 生效；登录地址在 Worker 侧独立再复核一次 SSRF。传输约束、失败关闭条件
+和取舍见 [ADR-0004](adr/0004-browser-login-credentials.md)。检测节点配置仍未形成可用的
+领域流程。
 
 ### BaselineVersion
 

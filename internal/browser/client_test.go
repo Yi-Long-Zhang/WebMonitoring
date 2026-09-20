@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"webmonitoring/internal/domain"
+	"webmonitoring/internal/security"
 )
 
 func testAsset() domain.Asset {
@@ -28,7 +29,7 @@ func TestAvailableRequiresURLAndToken(t *testing.T) {
 		"unconfigured": {"", "", false},
 	}
 	for name, testCase := range cases {
-		client := NewClient(testCase.baseURL, testCase.token, false)
+		client := NewClient(testCase.baseURL, testCase.token, security.NewURLGuard(false))
 		if got := client.Available(); got != testCase.want {
 			t.Errorf("%s: Available() = %v, want %v", name, got, testCase.want)
 		}
@@ -36,7 +37,7 @@ func TestAvailableRequiresURLAndToken(t *testing.T) {
 }
 
 func TestCheckWithoutConfigurationFailsClosed(t *testing.T) {
-	client := NewClient("", "", false)
+	client := NewClient("", "", security.NewURLGuard(false))
 	if _, err := client.Check(t.Context(), testAsset(), domain.MonitorPolicy{}); err == nil {
 		t.Fatal("an unconfigured browser worker must not be used")
 	}
@@ -75,7 +76,7 @@ func TestCheckDecodesSnapshotAndEvidence(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "worker-token", true)
+	client := NewClient(server.URL, "worker-token", security.NewURLGuard(true))
 	result, err := client.Check(t.Context(), testAsset(), domain.MonitorPolicy{TimeoutSeconds: 45})
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +100,7 @@ func TestCheckRejectsWorkerErrors(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 			writer.WriteHeader(status)
 		}))
-		client := NewClient(server.URL, "worker-token", false)
+		client := NewClient(server.URL, "worker-token", security.NewURLGuard(false))
 		_, err := client.Check(t.Context(), testAsset(), domain.MonitorPolicy{})
 		server.Close()
 		if err == nil {
@@ -122,7 +123,7 @@ func TestCheckRejectsMalformedWorkerResponses(t *testing.T) {
 			writer.Header().Set("Content-Type", "application/json")
 			_, _ = writer.Write([]byte(body))
 		}))
-		client := NewClient(server.URL, "worker-token", false)
+		client := NewClient(server.URL, "worker-token", security.NewURLGuard(false))
 		_, err := client.Check(t.Context(), testAsset(), domain.MonitorPolicy{})
 		server.Close()
 		if err == nil {
@@ -137,7 +138,7 @@ func TestCheckHonoursContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	client := NewClient(server.URL, "worker-token", false)
+	client := NewClient(server.URL, "worker-token", security.NewURLGuard(false))
 	if _, err := client.Check(ctx, testAsset(), domain.MonitorPolicy{}); err == nil {
 		t.Fatal("a cancelled context must abort the call")
 	}
@@ -151,7 +152,7 @@ func TestReadyReportsWorkerHealth(t *testing.T) {
 		writer.WriteHeader(http.StatusOK)
 	}))
 	defer healthy.Close()
-	if err := NewClient(healthy.URL, "worker-token", false).Ready(t.Context()); err != nil {
+	if err := NewClient(healthy.URL, "worker-token", security.NewURLGuard(false)).Ready(t.Context()); err != nil {
 		t.Fatalf("healthy worker reported: %v", err)
 	}
 
@@ -159,7 +160,7 @@ func TestReadyReportsWorkerHealth(t *testing.T) {
 		writer.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer unhealthy.Close()
-	if err := NewClient(unhealthy.URL, "worker-token", false).Ready(t.Context()); err == nil {
+	if err := NewClient(unhealthy.URL, "worker-token", security.NewURLGuard(false)).Ready(t.Context()); err == nil {
 		t.Fatal("an unhealthy worker must not report ready")
 	}
 }

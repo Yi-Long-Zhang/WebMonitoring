@@ -78,9 +78,14 @@ func main() {
 	if secretCipher != nil {
 		httpChecker.SetCipher(secretCipher)
 	}
-	browserClient := browser.NewClient(os.Getenv("BROWSER_WORKER_URL"), os.Getenv("BROWSER_WORKER_TOKEN"), allowPrivate)
+	browserClient := browser.NewClient(os.Getenv("BROWSER_WORKER_URL"), os.Getenv("BROWSER_WORKER_TOKEN"), guard)
 	var browserChecker detection.BrowserChecker
 	if browserClient.Available() {
+		// Login-state detection needs the cipher on this path too; without it
+		// the client fails closed on any policy carrying an Auth config.
+		if secretCipher != nil {
+			browserClient.SetCipher(secretCipher)
+		}
 		browserChecker = browserClient
 	}
 	notifier := notify.NewDispatcher(repository, guard)

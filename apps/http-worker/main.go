@@ -66,7 +66,7 @@ func main() {
 	guard := security.NewURLGuard(allowPrivate)
 	broker := events.NewBroker()
 	workerMetrics := metrics.New()
-	browserClient := browser.NewClient(os.Getenv("BROWSER_WORKER_URL"), os.Getenv("BROWSER_WORKER_TOKEN"), allowPrivate)
+	browserClient := browser.NewClient(os.Getenv("BROWSER_WORKER_URL"), os.Getenv("BROWSER_WORKER_TOKEN"), guard)
 	var browserChecker detection.BrowserChecker
 	if browserClient.Available() {
 		browserChecker = browserClient
@@ -92,6 +92,10 @@ func main() {
 	}
 	httpChecker := detection.NewChecker(guard)
 	httpChecker.SetCipher(secretCipher)
+	if browserClient.Available() {
+		// Same fail-closed rule as the HTTP path: no cipher, no login.
+		browserClient.SetCipher(secretCipher)
+	}
 	service := detection.NewService(
 		repository,
 		evidenceStore,
