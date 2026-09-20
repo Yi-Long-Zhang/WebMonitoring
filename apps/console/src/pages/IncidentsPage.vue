@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
+import IncidentTimeline from "../components/monitoring/IncidentTimeline.vue";
 import type { AlertDelivery, Asset, Evidence, Incident } from "../types/domain";
 
 type Props = {
@@ -12,14 +13,32 @@ type Props = {
 
 const props = defineProps<Props>();
 const emit = defineEmits<{ transition: [incident: Incident, status: Incident["status"]] }>();
-const selected = ref<Incident>();
+// Held by id rather than by object: the store replaces data.incidents on every
+// refresh, so a captured object would keep showing the state the drawer was
+// opened with -- including after the incident changed underneath it.
+const selectedId = ref("");
 const detailOpen = ref(false);
+const selected = computed(() => props.incidents.find((item) => item.id === selectedId.value));
+
+// Bumped when an action writes to the timeline. The status only reaches this
+// component through the store refresh that follows the transition, so watching
+// it keeps the refetch behind the write instead of racing it.
+const timelineKey = ref(0);
+const renderedStatus = ref("");
+watch(selected, (current) => {
+  if (!current) return;
+  if (renderedStatus.value && current.status !== renderedStatus.value) {
+    timelineKey.value += 1;
+  }
+  renderedStatus.value = current.status;
+});
 
 const detailEvidence = computed(() => selected.value ? props.evidence.filter((item) => selected.value?.evidenceIds?.includes(item.id)) : []);
 const detailDeliveries = computed(() => selected.value ? props.deliveries.filter((item) => item.incidentId === selected.value?.id) : []);
 
 function openIncident(incident: Incident) {
-  selected.value = incident;
+  selectedId.value = incident.id;
+  renderedStatus.value = incident.status;
   detailOpen.value = true;
 }
 
@@ -33,8 +52,9 @@ function statusType(status: string) {
 
 function transition(status: Incident["status"]) {
   if (!selected.value) return;
+  // The drawer stays open: the whole point of the timeline is seeing the entry
+  // the action just produced.
   emit("transition", selected.value, status);
-  detailOpen.value = false;
 }
 </script>
 
@@ -97,6 +117,8 @@ function transition(status: Incident["status"]) {
           <span><strong>{{ delivery.status }}</strong><small>{{ delivery.attempts }} 次尝试 · {{ formatTime(delivery.updatedAt) }}</small></span>
           <span class="muted">{{ delivery.lastError || "-" }}</span>
         </div>
+
+        <IncidentTimeline v-if="selected" :incident-id="selected.id" :refresh-key="timelineKey" />
 
         <div v-if="canOperate" class="detail-actions">
           <el-button v-if="selected.status === 'OPEN'" type="primary" @click="transition('ACKNOWLEDGED')">认领事件</el-button>

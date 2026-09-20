@@ -1,5 +1,5 @@
 import type {
-  AlertChannel, AlertDelivery, Asset, AuditEvent, Baseline, Dashboard, DetectionJob, Evidence, Incident, IncidentStatus, ListResponse, Policy, ReportSummary, Session, Site, Tenant, User,
+  AlertChannel, AlertDelivery, Asset, AuditEvent, Baseline, Dashboard, DetectionJob, Evidence, Incident, IncidentEvent, IncidentStatus, ListResponse, Policy, ReportSummary, Session, Site, Tenant, User,
 } from "../../types/domain";
 
 let csrfToken = "";
@@ -150,6 +150,15 @@ export function runDetection(assetId: string, mode: "HTTP" | "BROWSER") {
 
 export function getIncidents() {
   return request<ListResponse<Incident>>("/incidents");
+}
+
+export function getIncidentTimeline(id: string, params: { limit?: number; cursor?: string } = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value) query.set(key, String(value));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<ListResponse<IncidentEvent>>(`/incidents/${encodeURIComponent(id)}/timeline${suffix}`);
 }
 
 export function getEvidence() {

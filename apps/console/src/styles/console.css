@@ -144,6 +144,9 @@ button, input { font: inherit; }
 .evidence-row > span:first-child { min-width: 0; }
 .evidence-row strong { color: var(--ink); font-size: 12px; }
 .detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+.timeline-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.timeline-note { margin: 6px 0 0; color: var(--ink); font-size: 12px; line-height: 1.5; }
+.timeline-note.el-alert { margin-top: 8px; }
 @media (max-width: 700px) {
   .metric-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .form-grid { grid-template-columns: 1fr; }
