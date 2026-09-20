@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"errors"
 	"os"
 	"strings"
@@ -11,7 +10,6 @@ import (
 
 	"webmonitoring/internal/domain"
 	"webmonitoring/internal/identity"
-	"webmonitoring/internal/migrate"
 )
 
 // activeJobRepositories returns every repository the active-job invariant has to
@@ -22,26 +20,9 @@ import (
 func activeJobRepositories(t *testing.T) map[string]Repository {
 	t.Helper()
 	repositories := map[string]Repository{"memory": NewMemoryRepository()}
-	dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN"))
-	if dsn == "" {
-		return repositories
+	if dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN")); dsn != "" {
+		repositories["postgres"] = newMigratedPostgresRepository(t, dsn)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	t.Cleanup(cancel)
-	runner, err := migrate.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("PostgreSQL integration test unavailable: %v", err)
-	}
-	t.Cleanup(runner.Close)
-	if err := runner.Up(ctx); err != nil {
-		t.Fatal(err)
-	}
-	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey)
-	if err != nil {
-		t.Fatalf("PostgreSQL repository unavailable: %v", err)
-	}
-	t.Cleanup(repository.Close)
-	repositories["postgres"] = repository
 	return repositories
 }
 

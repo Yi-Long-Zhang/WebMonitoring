@@ -57,12 +57,12 @@
 
 当前明确不应描述为已完成或尚未完成部署验收：
 
-- **多副本（HA）仍不支持**：保留策略清理（`internal/maintenance/retention.go`）没有跨副本
-  租约，且启动时立即全量执行一次，任何副本重启都会触发完整清扫并重复删除证据对象与元数据。
-  检测任务的重复排队已由迁移 `000012` 的部分唯一索引 `detection_jobs_active_uidx` 解决，
-  Worker 消费者身份重名已由 `config.WorkerIdentity` 的每进程身份解决；在保留策略加锁之前
-  仍只支持单个控制面副本。另需确认 `ReapTimedOut` 的租约长于最慢的浏览器检测时长，它目前
-  不校验任务持有者。
+- **多副本（HA）尚未实机演练**：三处跨副本阻塞点已经修复 —— 检测任务的重复排队由迁移
+  `000012` 的部分唯一索引 `detection_jobs_active_uidx` 兜底，Worker 消费者身份由
+  `config.WorkerIdentity` 生成每进程身份，保留策略清理由 `store.ReplicaLease` 的 PostgreSQL
+  会话级 advisory lock 串行化，并会为定时删除补写审计事件。但尚未在 `--scale` 拓扑上实跑
+  验证，演练通过前不要按多副本部署。另需确认 `ReapTimedOut` 的 5 分钟租约长于最慢的一次
+  检测，它不校验任务持有者。
 - **保留策略清理缺少审计**：定时清理（`RunAllTenants`）只记录日志，不写审计事件，
   只有手动端点 `POST /maintenance/retention` 会写。自动删除证据因此没有审计留痕。
 - **完整事件时间线**：`UpsertIncident` 的 `signals = EXCLUDED.signals` 会覆盖上一轮信号集，
