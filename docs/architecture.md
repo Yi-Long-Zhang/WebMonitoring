@@ -189,19 +189,19 @@ span 与产生该任务的 API 请求因此不是同一个 trace，只能通过 
 
 ## 8. 多副本支持状态
 
-横向扩容必须逐项满足以下条件。任一未满足时，扩容都会在不报错的情况下重复执行检测
-或重复删除证据：
+横向扩容需要逐项满足以下条件。任一未满足时，扩容都会在不报错的情况下重复执行检测或
+重复删除证据：
 
 | 位置 | 机制 | 状态 |
 | --- | --- | --- |
-| `internal/maintenance/retention.go` | 无锁，且 `RunDaily` 启动时立即执行一次全量清理 | **未解决**：每个副本重启都触发完整清扫，重复删除证据对象与元数据、重复计数 |
 | `internal/detection/scheduler.go` | 每个副本各自跑 30 秒 tick，`due()` 先读任务表再决定是否入队 | 已解决：迁移 `000012` 的部分唯一索引 `detection_jobs_active_uidx` 限制每个 `(tenant_id, asset_id, mode)` 最多一个 `QUEUED`/`RUNNING` 任务，竞争失败方由 `store.ErrJobAlreadyActive` 静默吞掉 |
 | `apps/http-worker` 的消费者身份 | `WORKER_ID` 曾被 Compose 固定为 `http-worker-1` | 已解决：`config.WorkerIdentity` 在未显式配置时按 hostname + 随机后缀生成每进程身份，生产门禁拒绝两个历史固定值 |
+| `internal/maintenance/retention.go` | 无锁，且 `RunDaily` 启动时立即执行一次全量清理 | 已解决：`store.ReplicaLease` 提供 PostgreSQL 会话级 advisory lock，未取得租约的副本直接跳过本轮；定时清理会为实际发生的删除补写审计事件 |
 
-调度器和 Worker 的幂等已经具备，**但在保留策略加上跨副本租约之前，仍然只支持单个控制面
-副本**。对比之下 `internal/migrate/runner.go` 使用 `pg_advisory_lock` 串行化迁移，保留策略
-可以直接沿用该模式。
+三项均已修复，但**多副本实机演练尚未执行**。在 `docker compose up --scale api=2
+--scale http-worker=3` 上跑通一轮检测并断言任务数与资产数相等之前，不要按多副本部署。
 
-扩容前还必须补充一项验证：多副本下 `ReapTimedOut` 会把其他副本仍在执行的 `RUNNING` 任务
-单方面置为 `TIMED_OUT`（它只按 `started_at` 与租约判断，不校验持有者），需要确认任务租约
-长于最慢的浏览器检测时长，或改为带持有者校验的回收。
+扩容前还需要把任务租约关系写进容量说明：`ReapTimedOut` 会把所有 `started_at` 早于
+`JobLease`（5 分钟）的 `RUNNING` 任务单方面置为 `TIMED_OUT`，`ClaimJob` 也允许抢占超过
+租约的任务，两者都不校验持有者。只要最慢的一次检测远短于租约就没有实际影响（浏览器
+Worker 的出站超时是 90 秒，HTTP 检测更短），但租约不能短于检测预算。

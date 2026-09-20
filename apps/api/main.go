@@ -201,6 +201,13 @@ func main() {
 
 	// Retention runs in the control plane rather than every worker, so evidence
 	// is swept once per interval regardless of how many workers are running.
+	// A shared lease narrows that to once per interval across all replicas: the
+	// sweep runs immediately at startup, so without it every replica restart
+	// would start its own full pass. The in-memory repository is not a
+	// ReplicaLease and needs none, being a single process.
+	if lease, ok := repository.(store.ReplicaLease); ok {
+		server.RetentionRunner().SetLease(lease)
+	}
 	if interval := time.Duration(envInt64("RETENTION_INTERVAL_HOURS", 24)) * time.Hour; interval > 0 {
 		go server.RetentionRunner().RunDaily(ctx, interval)
 	} else {
