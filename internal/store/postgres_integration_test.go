@@ -343,3 +343,109 @@ func TestPostgresKeysetPaginationWalksEveryRowOnce(t *testing.T) {
 }
 
 const testAlertSecretKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+// TestAlertChannelUpdateKeepsCiphertextReadable covers the reason the update is
+// an UPDATE and not a delete-then-insert. The encrypted columns are bound to the
+// row's id and tenant through their associated data, so any implementation that
+// recreated the row would leave a channel whose stored credential can never be
+// decrypted again -- and the dispatcher would sign every webhook with garbage
+// while nothing reported an error.
+func TestAlertChannelUpdateKeepsCiphertextReadable(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN"))
+	if dsn == "" {
+		t.Skip("POSTGRES_TEST_DSN is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	runner, err := migrate.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("PostgreSQL integration test unavailable: %v", err)
+	}
+	defer runner.Close()
+	if err := runner.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey)
+	if err != nil {
+		t.Fatalf("PostgreSQL repository unavailable: %v", err)
+	}
+	defer repository.Close()
+
+	tenantID := "00000000-0000-4000-8000-000000000001"
+	now := time.Now().UTC()
+	channel := domain.AlertChannel{
+		ID: identity.New(), TenantID: tenantID, Name: "integration channel " + identity.New(),
+		Type: "WEBHOOK", URL: "https://hooks.example.com/integration",
+		Secret: "integration-secret", Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := repository.CreateAlertChannel(channel); err != nil {
+		t.Fatal(err)
+	}
+	before, err := repository.ListAlertChannelsWithSecrets(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored domain.AlertChannel
+	for _, item := range before {
+		if item.ID == channel.ID {
+			stored = item
+		}
+	}
+	if stored.ID != channel.ID {
+		t.Fatal("the created channel was not returned by ListAlertChannelsWithSecrets")
+	}
+	if stored.Secret != "integration-secret" {
+		t.Fatalf("stored secret round-tripped as %q", stored.Secret)
+	}
+
+	// A rename that keeps the credential. The stored value is what the API layer
+	// carries forward on a blank submit, so the test does the same.
+	renamed := stored
+	renamed.Name = "integration channel renamed"
+	renamed.UpdatedAt = time.Now().UTC()
+	if err := repository.UpdateAlertChannel(renamed); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := repository.ListAlertChannelsWithSecrets(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated domain.AlertChannel
+	for _, item := range after {
+		if item.ID == channel.ID {
+			updated = item
+		}
+	}
+	if updated.ID != channel.ID {
+		t.Fatalf("the update changed the row identity: %q", updated.ID)
+	}
+	if updated.Name != "integration channel renamed" {
+		t.Fatalf("update did not apply: name=%q", updated.Name)
+	}
+	// The credential has to survive an in-place rewrite, not just a read.
+	if updated.Secret != "integration-secret" {
+		t.Fatalf("the stored credential no longer decrypts after an update: %q", updated.Secret)
+	}
+
+	// A tenant that does not own the row cannot rewrite it, and the miss has to
+	// be reported rather than silently doing nothing.
+	other := "00000000-0000-4000-8000-000000000002"
+	crossTenant := renamed
+	crossTenant.TenantID = other
+	if err := repository.UpdateAlertChannel(crossTenant); err != ErrNotFound {
+		t.Fatalf("cross-tenant update returned %v, want ErrNotFound", err)
+	}
+	if err := repository.DeleteAlertChannel(other, channel.ID); err != ErrNotFound {
+		t.Fatalf("cross-tenant delete returned %v, want ErrNotFound", err)
+	}
+
+	if err := repository.DeleteAlertChannel(tenantID, channel.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.GetAlertChannel(tenantID, channel.ID); err != ErrNotFound {
+		t.Fatalf("the channel survived the delete: %v", err)
+	}
+}
