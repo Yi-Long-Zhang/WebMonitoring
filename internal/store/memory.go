@@ -537,6 +537,16 @@ func (m *MemoryRepository) CreateJob(job domain.DetectionJob) error {
 	if _, ok := m.jobs[key]; ok {
 		return ErrConflict
 	}
+	// Mirror detection_jobs_active_uidx (migration 000012): at most one QUEUED
+	// or RUNNING job per tenant, asset and mode.
+	if job.Status.IsActive() {
+		for _, existing := range m.jobs {
+			if existing.TenantID == job.TenantID && existing.AssetID == job.AssetID &&
+				existing.Mode == job.Mode && existing.Status.IsActive() {
+				return ErrJobAlreadyActive
+			}
+		}
+	}
 	m.jobs[key] = job
 	return nil
 }

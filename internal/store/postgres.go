@@ -523,6 +523,10 @@ func scanBaseline(row rowScanner) (domain.BaselineVersion, error) {
 	return baseline, nil
 }
 
+// activeJobConstraint is the partial unique index created by migration 000012.
+// It allows only one QUEUED or RUNNING job per (tenant, asset, mode).
+const activeJobConstraint = "detection_jobs_active_uidx"
+
 func (p *PostgresRepository) CreateJob(job domain.DetectionJob) error {
 	_, err := p.pool.Exec(context.Background(), `
 		INSERT INTO detection_jobs (
@@ -532,6 +536,14 @@ func (p *PostgresRepository) CreateJob(job domain.DetectionJob) error {
 		job.ID, job.TenantID, job.AssetID, job.Mode, job.Status, job.PolicyVersion,
 		job.BaselineVersion, job.ErrorCode, job.ErrorMessage, job.RetryCount, job.MaxAttempts, job.CreatedAt, job.StartedAt, job.FinishedAt,
 	)
+	// A conflict on the active-job index is an idempotent hit, not a failure, so
+	// it must be distinguished from the other unique violations that
+	// normalizePostgresError collapses into ErrConflict.
+	var postgresError *pgconn.PgError
+	if errors.As(err, &postgresError) && postgresError.Code == "23505" &&
+		postgresError.ConstraintName == activeJobConstraint {
+		return ErrJobAlreadyActive
+	}
 	return normalizePostgresError(err)
 }
 
