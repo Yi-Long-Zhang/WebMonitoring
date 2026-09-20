@@ -254,6 +254,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/baselines/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getBaseline"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/baselines/{id}/approve": {
         parameters: {
             query?: never;
@@ -939,6 +955,48 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             approvedAt?: string;
+            /** Format: uuid */
+            tenantId?: string;
+            evidenceIds?: string[];
+            /** Format: uuid */
+            createdBy?: string;
+            /** Format: uuid */
+            approvedBy?: string;
+            snapshot?: components["schemas"]["Snapshot"];
+        };
+        Snapshot: {
+            url: string;
+            finalUrl: string;
+            statusCode: number;
+            title: string;
+            contentHash: string;
+            textHash: string;
+            screenshotHash?: string;
+            scripts?: {
+                url?: string;
+                inlineHash?: string;
+            }[];
+            links?: string[];
+            iframes?: string[];
+            forms?: {
+                action?: string;
+                method?: string;
+            }[];
+            redirectChain?: string[];
+            resolvedIps?: string[];
+            tlsFingerprint?: string;
+            responseHeaders?: {
+                [key: string]: string[];
+            };
+            resourceRequests?: string[];
+            blockedRequests?: string[];
+            popups?: string[];
+            dialogs?: string[];
+            downloads?: string[];
+            /** Format: int64 */
+            durationMillis: number;
+            /** Format: date-time */
+            capturedAt: string;
         };
         BaselineList: {
             items: components["schemas"]["Baseline"][];
@@ -1671,6 +1729,29 @@ export interface operations {
                     "application/json": components["schemas"]["BaselineList"];
                 };
             };
+        };
+    };
+    getBaseline: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 基线详情，含抓取快照 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Baseline"];
+                };
+            };
+            404: components["responses"]["Error"];
         };
     };
     approveBaseline: {
