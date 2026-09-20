@@ -44,8 +44,10 @@
 - Webhook/企业微信/DingTalk/邮件通知、投递记录和事件级去重。
 - 登录防爆破与账户锁定、Redis 会话持久化、用户/角色管理、keyset 真分页、
   任务取消/超时终态、优雅停机和批量导入/导出。
-- 登录态检测（HTTP 路径）：客户凭据 AES-GCM 加密、登录地址 SSRF 复核、登录后抓取
-  受保护页面，API 响应不泄露凭据；浏览器模式暂不支持登录（失败关闭）。
+- 登录态检测（HTTP 与浏览器两条路径）：客户凭据 AES-GCM 加密、登录地址在控制面和
+  Worker 两侧各做一次 SSRF 复核、登录后抓取受保护页面，API 响应不泄露凭据。
+  浏览器模式下凭据由控制面解密后经内部 HTTP 传给 Worker，生产门禁要求该端点使用
+  https 或私网地址（见 [adr/0004](adr/0004-browser-login-credentials.md)）。
 - 内存/本地证据开发模式，以及 PostgreSQL、Redis、MinIO 的 Compose 路径。
 - 生产配置门禁、90 天证据/365 天审计保留策略、dry-run 清理和备份恢复校验脚本。
 - 可重复的验收演练脚本：Compose smoke（含登录锁定、keyset 分页、资产暂停/恢复、
@@ -76,7 +78,7 @@
 - 细粒度权限、跨租户管理员、二次确认和双人审批。前端权限只到角色级，且
   `permissions.ts`、`stores/session.ts` 和 `Sidebar.vue` 三处重复定义同一策略。
 - 完整 Secret Manager 集成（当前凭据用 `ALERT_SECRET_KEY` 派生密钥加密，没有密钥版本
-  和轮换路径，`SecretCipher` 也没有可替换的接口抽象）与浏览器模式登录态检测。
+  和轮换路径，`SecretCipher` 也没有可替换的接口抽象）。
 - 完整多租户运营管理。
 - 部署形态：只有单机 Compose，无 Kubernetes、无 TLS 终止、除 browser-worker 外无
   CPU/内存限制，Compose 中 Redis 未设密码、PostgreSQL 使用 `sslmode=disable`。

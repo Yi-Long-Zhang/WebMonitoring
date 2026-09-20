@@ -69,3 +69,32 @@ func TestValidateProductionWorkerDoesNotRequireAdminPassword(t *testing.T) {
 		t.Fatalf("worker must start without ADMIN_PASSWORD: %v", err)
 	}
 }
+
+// ADR-0004 sends decrypted customer credentials to this endpoint, so plain http
+// is only acceptable where the host cannot be a public name.
+func TestValidateProductionWorkerEndpointTransport(t *testing.T) {
+	cases := map[string]struct {
+		url     string
+		rejects bool
+	}{
+		"https domain":       {"https://browser.example.com", false},
+		"https service name": {"https://browser-worker", false},
+		"http service name":  {"http://browser-worker:8081", false},
+		"http private ip":    {"http://10.1.2.3:8081", false},
+		"http loopback":      {"http://127.0.0.1:8081", false},
+		"http domain":        {"http://browser.example.com", true},
+		"http public ip":     {"http://203.0.113.10", true},
+		"unsupported scheme": {"ftp://browser-worker", true},
+	}
+	for name, testCase := range cases {
+		values := workerEnv()
+		values["BROWSER_WORKER_URL"] = testCase.url
+		err := ValidateProductionWorker(func(field string) string { return values[field] })
+		if testCase.rejects && err == nil {
+			t.Errorf("%s: %s was accepted", name, testCase.url)
+		}
+		if !testCase.rejects && err != nil {
+			t.Errorf("%s: %s was rejected: %v", name, testCase.url, err)
+		}
+	}
+}

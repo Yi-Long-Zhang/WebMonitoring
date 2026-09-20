@@ -9,12 +9,37 @@ const port = Number(process.env.PORT || 8081);
 const workerToken = process.env.WORKER_TOKEN || "";
 const maxResponseBytes = 10 * 1024 * 1024;
 
+// LoginRequest carries decrypted customer credentials. ADR-0004 explains why the
+// control plane sends plaintext rather than sharing the master key: nothing in
+// this worker may log, echo or return these values.
+type LoginRequest = {
+  loginUrl: string;
+  usernameField: string;
+  passwordField: string;
+  extraFields?: Record<string, string>;
+  submitSelector?: string;
+  username: string;
+  password: string;
+};
+
 type CheckRequest = {
   url: string;
   timeoutSeconds?: number;
   maxResponseBytes?: number;
   ignoreSelectors?: string[];
   allowPrivateTargets?: boolean;
+  auth?: LoginRequest;
+};
+
+// RequestGuard accumulates what the context-level route interceptor saw.
+// Recording is off during sign-in so the login page's own resources do not end
+// up in the target snapshot, where they would show up as spurious differences
+// between runs.
+type RequestGuard = {
+  requests: string[];
+  blockedRequests: string[];
+  recording: boolean;
+  blockedDuringLogin: number;
 };
 
 type BrowserEvents = {
@@ -112,12 +137,31 @@ export async function check(input: CheckRequest) {
       acceptDownloads: true,
     });
     const redirects: string[] = [];
-    const requests: string[] = [];
-    const blockedRequests: string[] = [];
     const popups: string[] = [];
     const dialogs: string[] = [];
     const downloads: string[] = [];
-    await guardContextRequests(context, input.allowPrivateTargets === true, requests, blockedRequests);
+    const guard: RequestGuard = {
+      requests: [],
+      blockedRequests: [],
+      recording: false,
+      blockedDuringLogin: 0,
+    };
+    await guardContextRequests(context, input.allowPrivateTargets === true, guard);
+
+    // Sign-in runs on its own page inside the same context, so the cookies it
+    // sets are visible to the target navigation, and before the popup tracker
+    // below is attached, so the login page is not reported as a popup.
+    if (input.auth) {
+      await signIn(context, input.auth, input.allowPrivateTargets === true, timeout);
+      if (guard.blockedDuringLogin > 0) {
+        throw new Error(
+          "login page requested an address the network policy blocks; refusing to snapshot a login form that may not have rendered",
+        );
+      }
+    }
+    guard.recording = true;
+    const requests = guard.requests;
+    const blockedRequests = guard.blockedRequests;
 
     const page = await context.newPage();
     page.setDefaultTimeout(timeout);
@@ -194,20 +238,75 @@ export async function check(input: CheckRequest) {
 async function guardContextRequests(
   context: BrowserContext,
   allowPrivate: boolean,
-  requests: string[],
-  blockedRequests: string[],
+  guard: RequestGuard,
 ) {
   await context.route("**/*", async (route) => {
     const requestURL = route.request().url();
-    requests.push(requestURL);
+    if (guard.recording) guard.requests.push(requestURL);
     try {
       await assertSafeTarget(requestURL, allowPrivate);
       await route.continue();
     } catch {
-      if (!blockedRequests.includes(requestURL)) blockedRequests.push(requestURL);
+      if (guard.recording) {
+        if (!guard.blockedRequests.includes(requestURL)) guard.blockedRequests.push(requestURL);
+      } else {
+        guard.blockedDuringLogin++;
+      }
       await route.abort("blockedbyclient");
     }
   });
+}
+
+// signIn submits the customer login form on its own page and closes it, leaving
+// the resulting cookies in the shared context for the target navigation.
+//
+// The login URL is revalidated here rather than trusted from the request: the
+// control plane already checks it, but this worker is the process that actually
+// opens the connection, so it must not rely on that. Errors must not quote the
+// credentials -- only the field selector, which is not a secret.
+async function signIn(
+  context: BrowserContext,
+  auth: LoginRequest,
+  allowPrivate: boolean,
+  timeout: number,
+) {
+  const { target } = await assertSafeTarget(auth.loginUrl, allowPrivate);
+  const page = await context.newPage();
+  page.setDefaultTimeout(timeout);
+  try {
+    await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout });
+    await submitLoginForm(page, auth, timeout);
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+}
+
+// submitLoginForm is the mechanics of the sign-in, split out from the SSRF check
+// above so it can be tested against a server on an ephemeral port: every target
+// the worker opens in production goes through assertSafeTarget, which only
+// allows 80 and 443.
+export async function submitLoginForm(page: Page, auth: LoginRequest, timeout: number) {
+  // Every action gets the same budget explicitly rather than inheriting the
+  // page default, so the check's timeout setting actually bounds the sign-in.
+  for (const [name, value] of Object.entries(auth.extraFields ?? {})) {
+    await page.fill(attributeSelector(name), value, { timeout });
+  }
+  await page.fill(attributeSelector(auth.usernameField), auth.username, { timeout });
+  await page.fill(attributeSelector(auth.passwordField), auth.password, { timeout });
+  if (auth.submitSelector) {
+    await page.click(auth.submitSelector, { timeout });
+  } else {
+    await page.press(attributeSelector(auth.passwordField), "Enter", { timeout });
+  }
+  await page.waitForLoadState("networkidle", { timeout });
+}
+
+// attributeSelector matches a form field by its name, which is the only field
+// identifier the control plane stores. The value is escaped rather than
+// interpolated raw, so a field name containing a quote cannot break out of the
+// selector.
+function attributeSelector(name: string) {
+  return `[name="${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`;
 }
 
 export async function extractSnapshot(
