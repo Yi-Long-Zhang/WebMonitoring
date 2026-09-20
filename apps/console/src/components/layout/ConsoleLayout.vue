@@ -17,6 +17,7 @@ import TenantsPage from "../../pages/TenantsPage.vue";
 import PolicyDialog from "../monitoring/PolicyDialog.vue";
 import { useMonitoringActions } from "../../features/monitoring/actions";
 import { roleLabel as roleLabelFor } from "../../app/permissions";
+import { CHANNEL_LABELS, channelNeeds } from "../../app/channels";
 import { useSessionStore } from "../../stores/session";
 import { useConsoleStore } from "../../stores/console";
 import { connectEventStream } from "../../services/events/stream";
@@ -37,8 +38,8 @@ const policyAsset = ref<Asset>();
 const editingSite = ref<Site>();
 const editingTenant = ref<Tenant>();
 const assetForm = ref<{ name: string; url: string; type: AssetType; siteId: string }>({ name: "", url: "", type: "OFFICIAL", siteId: "" });
-const channelForm = ref<{ name: string; type: AlertChannel["type"]; url: string; secret: string; enabled: boolean }>({
-  name: "", type: "WECHAT_WORK", url: "", secret: "", enabled: true,
+const channelForm = ref<{ name: string; type: AlertChannel["type"]; url: string; recipients: string; secret: string; enabled: boolean }>({
+  name: "", type: "WECHAT_WORK", url: "", recipients: "", secret: "", enabled: true,
 });
 const siteForm = ref<{ name: string; domain: string }>({ name: "", domain: "" });
 const tenantForm = ref<{ name: string; slug: string; adminUsername: string; adminPassword: string }>({
@@ -111,7 +112,23 @@ async function savePolicy(input: { httpIntervalSeconds: number; browserIntervalS
   }
 }
 async function createChannel() {
-  try { await actions.createNewAlertChannel(channelForm.value); showChannelDialog.value = false; channelForm.value = { name: "", type: "WECHAT_WORK", url: "", secret: "", enabled: true }; } catch (error) { reportError(error, "创建告警渠道失败"); }
+  const form = channelForm.value;
+  // Only the fields this channel type actually uses are transmitted. The dialog
+  // keeps whatever was typed when the operator switches type, and sending a stale
+  // URL or recipient list would hand the server credentials the chosen type does
+  // not use.
+  try {
+    await actions.createNewAlertChannel({
+      name: form.name,
+      type: form.type,
+      url: channelNeeds(form.type, "url") ? form.url : "",
+      recipients: channelNeeds(form.type, "recipients") ? form.recipients : "",
+      secret: channelNeeds(form.type, "secret") ? form.secret : "",
+      enabled: form.enabled,
+    });
+    showChannelDialog.value = false;
+    channelForm.value = { name: "", type: "WECHAT_WORK", url: "", recipients: "", secret: "", enabled: true };
+  } catch (error) { reportError(error, "创建告警渠道失败"); }
 }
 async function signOut() { await session.signOut(); eventStream?.close(); await router.replace("/login"); }
 
@@ -147,7 +164,18 @@ onUnmounted(() => eventStream?.close());
       <AuditsPage v-else :audits="data.audits" :has-more="data.hasMore('audits')" :loading-more="data.isLoadingMore('audits')" @load-more="data.loadMore('audits')" @filter="data.applyAuditFilters" />
     </main>
     <el-dialog v-model="showAssetDialog" title="登记监测资产" width="520px">
-      <el-form label-position="top"><el-form-item label="资产名称"><el-input v-model="assetForm.name" placeholder="例如：官方网站首页" /></el-form-item><el-form-item label="页面 URL"><el-input v-model="assetForm.url" placeholder="https://example.com/" /></el-form-item><el-form-item label="页面类型"><el-select v-model="assetForm.type" style="width: 100%"><el-option label="官网页面" value="OFFICIAL" /><el-option label="业务前台" value="BUSINESS" /><el-option label="后台登录页" value="LOGIN" /><el-option label="其他重点页面" value="OTHER" /></el-select></el-form-item><el-form-item label="所属站点"><el-select v-model="assetForm.siteId" clearable placeholder="可选，不选则无归属站点" style="width: 100%"><el-option v-for="site in data.sites" :key="site.id" :label="site.name" :value="site.id" /></el-select></el-form-item></el-form>
+      <el-form label-position="top">
+        <el-form-item label="渠道名称"><el-input v-model="channelForm.name" placeholder="例如：安全运营群" /></el-form-item>
+        <el-form-item label="渠道类型"><el-radio-group v-model="channelForm.type"><el-radio-button v-for="(label, value) in CHANNEL_LABELS" :key="value" :value="value">{{ label }}</el-radio-button></el-radio-group></el-form-item>
+        <!-- Which fields this type needs comes from app/channels.ts, which mirrors
+             the server's createAlertChannel validation. EMAIL takes a recipient
+             list and no URL; the webhook-shaped types take a URL, and WEBHOOK and
+             DINGTALK also sign with a secret. -->
+        <el-form-item v-if="channelNeeds(channelForm.type, 'url')" label="通知地址"><el-input v-model="channelForm.url" type="password" show-password autocomplete="off" placeholder="https://..." /></el-form-item>
+        <el-form-item v-if="channelNeeds(channelForm.type, 'recipients')" label="收件人"><el-input v-model="channelForm.recipients" placeholder="ops@example.com, oncall@example.com（逗号分隔）" /></el-form-item>
+        <el-form-item v-if="channelNeeds(channelForm.type, 'secret')" label="签名密钥"><el-input v-model="channelForm.secret" type="password" show-password autocomplete="new-password" /></el-form-item>
+        <el-form-item label="创建后启用"><el-switch v-model="channelForm.enabled" /></el-form-item>
+      </el-form>
       <template #footer><el-button @click="showAssetDialog = false">取消</el-button><el-button type="primary" @click="createAsset">创建并授权</el-button></template>
     </el-dialog>
     <PolicyDialog v-model="showPolicyDialog" :asset="policyAsset" :policy="editingPolicy" @save="savePolicy" />
