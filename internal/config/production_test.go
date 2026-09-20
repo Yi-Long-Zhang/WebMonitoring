@@ -250,3 +250,42 @@ func TestParseRedisAddress(t *testing.T) {
 		}
 	}
 }
+
+// The lease has to exceed the worst case for one detection, and the derivation
+// is what makes the number defensible: the policy timeout is capped at 90s, and
+// a BROWSER check spends that budget twice. This is the guarantee that replaces
+// "the slowest detection is probably well under the lease".
+func TestValidateProductionJobLease(t *testing.T) {
+	cases := []struct {
+		value   string
+		wantErr bool
+	}{
+		{"", false},    // unset keeps the store default
+		{"270", true},  // exactly the floor is not enough
+		{"269", true},  // below it
+		{"271", false}, // just above
+		{"600", false},
+		{"0", true},
+		{"-60", true},
+		{"ten", true},
+	}
+	for _, testCase := range cases {
+		t.Run("value="+testCase.value, func(t *testing.T) {
+			values := productionEnvWithSecrets()
+			values["ALERT_SECRET_KEY"] = keyMaterial(1)
+			if testCase.value != "" {
+				values["JOB_LEASE_SECONDS"] = testCase.value
+			}
+			err := ValidateProductionAPI(func(name string) string { return values[name] })
+			if testCase.wantErr && err == nil {
+				t.Fatal("an unsafe job lease was accepted")
+			}
+			if !testCase.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+			if testCase.wantErr && !strings.Contains(err.Error(), "JOB_LEASE_SECONDS") {
+				t.Fatalf("error does not name the variable: %v", err)
+			}
+		})
+	}
+}

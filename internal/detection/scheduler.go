@@ -47,7 +47,9 @@ func (s *Scheduler) scheduleAll() {
 
 func (s *Scheduler) schedule(tenantID string) {
 	now := time.Now().UTC()
-	if reaped, err := s.repository.ReapTimedOut(tenantID, now.Add(-store.JobLease)); err != nil {
+	// The lease comes from the repository rather than the package constant, so
+	// the reap cutoff and the ClaimJob reclaim cutoff cannot drift apart.
+	if reaped, err := s.repository.ReapTimedOut(tenantID, now.Add(-s.repository.JobLease())); err != nil {
 		s.logger.Error("reap timed out detection jobs", "error", err)
 	} else if reaped > 0 {
 		s.logger.Warn("reaped stale RUNNING detection jobs", "tenant_id", tenantID, "count", reaped)

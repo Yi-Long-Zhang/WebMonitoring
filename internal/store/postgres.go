@@ -17,8 +17,10 @@ import (
 )
 
 type PostgresRepository struct {
-	pool    *pgxpool.Pool
-	secrets security.SecretBox
+	// jobLease is the RUNNING claim lease. See Repository.JobLease.
+	jobLease time.Duration
+	pool     *pgxpool.Pool
+	secrets  security.SecretBox
 }
 
 func NewPostgresRepository(ctx context.Context, dsn, alertSecretKey string) (*PostgresRepository, error) {
@@ -34,7 +36,7 @@ func NewPostgresRepository(ctx context.Context, dsn, alertSecretKey string) (*Po
 		pool.Close()
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
-	return &PostgresRepository{pool: pool, secrets: secrets}, nil
+	return &PostgresRepository{pool: pool, secrets: secrets, jobLease: JobLease}, nil
 }
 
 func (p *PostgresRepository) Close() {
@@ -550,8 +552,21 @@ func (p *PostgresRepository) CreateJob(job domain.DetectionJob) error {
 	return normalizePostgresError(err)
 }
 
+// JobLease reports the lease this repository enforces on a RUNNING claim.
+func (p *PostgresRepository) JobLease() time.Duration {
+	return p.jobLease
+}
+
+// SetJobLease replaces the default lease. A non-positive value is ignored so a
+// misread environment variable cannot make every claim immediately reclaimable.
+func (p *PostgresRepository) SetJobLease(lease time.Duration) {
+	if lease > 0 {
+		p.jobLease = lease
+	}
+}
+
 func (p *PostgresRepository) ClaimJob(tenantID, id string, startedAt time.Time) (bool, error) {
-	leaseCutoff := startedAt.Add(-JobLease)
+	leaseCutoff := startedAt.Add(-p.jobLease)
 	tag, err := p.pool.Exec(context.Background(), `
 		UPDATE detection_jobs SET status='RUNNING', started_at=$3
 		WHERE tenant_id=$1 AND id=$2

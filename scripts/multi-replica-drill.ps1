@@ -17,7 +17,7 @@ load-test.ps1 用 API 逐资产手动创建任务，那条路径与调度器无�
 把这个窗口放大成可复现的。
 
 断言：
-  * HTTP 检测任务数恰好等于资产数（没有重复排队）；
+  * 指定模式的检测任务数恰好等于资产数（没有重复排队）；
   * 不存在任何 (tenant, asset, mode) 有多于一条任务；
   * 全部任务进入 SUCCEEDED；
   * Redis 消费组里的消费者数量等于 http-worker 副本数，且名字互不相同。
@@ -27,6 +27,10 @@ load-test.ps1 用 API 逐资产手动创建任务，那条路径与调度器无�
 
 只连接 Compose 内部的授权测试目标，不访问任何外部站点。测试数据写入
 .data-multireplica（已 Git 忽略）。
+
+-Mode 默认 HTTP。BROWSER 模式余量最薄：每次检测都要经 http-worker 调 Playwright，
+所以浏览器变体要小规模跑，并相应放宽 -TimeoutSeconds：
+  .\scripts\multi-replica-drill.ps1 -Mode BROWSER -AssetCount 6 -TimeoutSeconds 900
 
 .EXAMPLE
 .\scripts\multi-replica-drill.ps1 -KeepRunning
@@ -39,6 +43,7 @@ param(
     [int]$ApiReplicas = 2,
     [int]$HttpWorkers = 3,
     [int]$TimeoutSeconds = 240,
+    [ValidateSet("HTTP", "BROWSER")][string]$Mode = "HTTP",
     [switch]$DropActiveJobIndex,
     [switch]$KeepRunning
 )
@@ -95,7 +100,11 @@ function Invoke-Sql([string]$Sql) {
 
 function Wait-Healthy([string]$Service) {
     for ($attempt = 0; $attempt -lt 90; $attempt++) {
-        $containers = @(& docker compose @compose ps -q $Service)
+        # -aq, not -q: `docker compose ps` hides exited containers by default, and
+        # migrate is a one-shot that exits 0. Without -a it is never seen, the
+        # loop never returns, and the drill times out on a migration that in fact
+        # succeeded.
+        $containers = @(& docker compose @compose ps -aq $Service)
         if ($containers.Count -gt 0) {
             $allHealthy = $true
             foreach ($container in $containers) {
@@ -350,7 +359,7 @@ try {
     if (-not $ready) { throw "重启后的 API 未就绪" }
 
     # --- 4. 等待调度器排队并跑完 ------------------------------------------
-    $scope = "t.slug LIKE '$slugPrefix-%' AND j.mode = 'HTTP'"
+    $scope = "t.slug LIKE '$slugPrefix-%' AND j.mode = '$Mode'"
     $started = Get-Date
     $deadline = $started.AddSeconds($TimeoutSeconds)
     $jobs = 0
