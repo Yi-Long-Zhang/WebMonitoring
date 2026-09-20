@@ -16,6 +16,7 @@ import AuditsPage from "../../pages/AuditsPage.vue";
 import TenantsPage from "../../pages/TenantsPage.vue";
 import PolicyDialog from "../monitoring/PolicyDialog.vue";
 import { useMonitoringActions } from "../../features/monitoring/actions";
+import { roleLabel as roleLabelFor } from "../../app/permissions";
 import { useSessionStore } from "../../stores/session";
 import { useConsoleStore } from "../../stores/console";
 import { connectEventStream } from "../../services/events/stream";
@@ -46,7 +47,7 @@ const tenantForm = ref<{ name: string; slug: string; adminUsername: string; admi
 let eventStream: EventSource | undefined;
 
 const assetMap = computed(() => new Map(data.assets.map((asset) => [asset.id, asset])));
-const roleLabel = computed(() => ({ ADMIN: "平台管理员", OPERATOR: "安全运营", AUDITOR: "审计只读", SUPER_ADMIN: "超级管理员" }[session.user?.role || "AUDITOR"]));
+const roleLabel = computed(() => roleLabelFor(session.user?.role));
 const editingPolicy = computed(() => policyAsset.value ? data.policies.find((policy) => policy.assetId === policyAsset.value?.id) : undefined);
 const viewTitle = computed(() => ({
   overview: "安全总览", assets: "资产中心", sites: "站点管理", baselines: "基线审批", incidents: "事件中心",
