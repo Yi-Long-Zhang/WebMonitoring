@@ -7,8 +7,10 @@ import {
   createAsset,
   createSite,
   createTenant,
+  createUser,
   issueVerification,
   rejectBaseline,
+  resetUserPassword as resetUserPasswordRequest,
   retireBaseline as retireBaselineRequest,
   runDetection,
   transitionIncident,
@@ -16,9 +18,10 @@ import {
   updatePolicy,
   updateSite,
   updateTenant,
+  updateUser,
   verifyAsset,
 } from "../../services/api/client";
-import type { AlertChannel, Asset, AssetType, DetectionJob, Incident, Site, Tenant } from "../../types/domain";
+import type { AlertChannel, Asset, AssetType, DetectionJob, Incident, Site, Tenant, User } from "../../types/domain";
 import { useConsoleStore } from "../../stores/console";
 
 export function useMonitoringActions() {
@@ -163,6 +166,31 @@ export function useMonitoringActions() {
     ElMessage.success("备注已记录");
   }
 
+  // The password is never echoed back and never put in a message: it is read
+  // from the form, sent, and the form is cleared by the caller. The server
+  // enforces the 12-character minimum; the dialog mirrors it so the operator
+  // finds out before the round trip.
+  async function createNewUser(input: { username: string; password: string; role: User["role"] }) {
+    await createUser(input);
+    await consoleStore.loadUsers();
+    ElMessage.success("用户已创建");
+  }
+
+  // Sends only the fields the dialog actually changed. A PATCH that also carried
+  // an untouched role would re-run the LAST_ADMIN check, so flipping a switch
+  // could 409 for a reason that has nothing to do with it -- the same reason
+  // setTenantDisabled sends only `disabled`.
+  async function saveUser(user: User, input: Partial<Pick<User, "username" | "role" | "disabled">>) {
+    await updateUser(user.id, input);
+    await consoleStore.loadUsers();
+    ElMessage.success("用户已更新");
+  }
+
+  async function resetUserPassword(user: User, password: string) {
+    await resetUserPasswordRequest(user.id, password);
+    ElMessage.success(`已重置 ${user.username} 的密码`);
+  }
+
   return {
     createNewAsset,
     verifyAssetOwnership,
@@ -180,5 +208,8 @@ export function useMonitoringActions() {
     createNewTenant,
     saveTenant,
     setTenantDisabled,
+    createNewUser,
+    saveUser,
+    resetUserPassword,
   };
 }
