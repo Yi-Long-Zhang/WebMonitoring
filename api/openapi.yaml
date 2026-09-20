@@ -560,6 +560,37 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AlertChannel" }
+  /alert-channels/{id}:
+    put:
+      operationId: updateAlertChannel
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AlertChannelUpdate" }
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AlertChannel" }
+    delete:
+      operationId: deleteAlertChannel
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: 已删除
   /alert-deliveries:
     get:
       operationId: listAlertDeliveries
@@ -1413,6 +1444,21 @@ components:
         enabled: { type: boolean }
         createdAt: { type: string, format: date-time }
     CreateAlertChannel:
+      type: object
+      required: [name, type, enabled]
+      properties:
+        name: { type: string }
+        type: { $ref: "#/components/schemas/AlertChannelType" }
+        url: { type: string, format: uri }
+        recipients: { type: string }
+        secret: { type: string, format: password }
+        enabled: { type: boolean }
+    # Same shape as CreateAlertChannel except for `secret`, where an empty
+    # string means "keep the stored credential". Responses never carry the
+    # plaintext, so a client cannot echo the stored value back; treating empty
+    # as an erase would wipe the credential on any edit that only renamed the
+    # channel.
+    AlertChannelUpdate:
       type: object
       required: [name, type, enabled]
       properties:
