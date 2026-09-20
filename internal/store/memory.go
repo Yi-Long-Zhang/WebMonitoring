@@ -953,12 +953,15 @@ func (m *MemoryRepository) AppendAudit(event domain.AuditEvent) error {
 	return nil
 }
 
-func (m *MemoryRepository) ListAudits(tenantID string, opts ListOptions) ([]domain.AuditEvent, string, error) {
+func (m *MemoryRepository) ListAudits(tenantID string, filter AuditFilter, opts ListOptions) ([]domain.AuditEvent, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.AuditEvent, 0)
 	for _, event := range m.audits {
-		if event.TenantID == tenantID {
+		// Filter first, then sort, then page -- the same order of operations the
+		// SQL takes. Applying the cursor before the filter would count rows the
+		// caller cannot see and skip past visible ones.
+		if event.TenantID == tenantID && filter.Matches(event) {
 			result = append(result, event)
 		}
 	}

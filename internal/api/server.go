@@ -2077,13 +2077,87 @@ func normalizeRecipients(raw string) (string, bool) {
 }
 
 func (s *Server) listAudits(writer http.ResponseWriter, request *http.Request) {
-	items, nextCursor, err := s.repository.ListAudits(principal(request).User.TenantID, listOptions(request))
+	filter, err := parseAuditFilter(request)
+	if err != nil {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_FILTER", err.Error(), nil)
+		return
+	}
+	items, nextCursor, err := s.repository.ListAudits(principal(request).User.TenantID, filter, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list audit events", err)
 		return
 	}
 	writeList(writer, items, nextCursor)
 }
+
+// parseAuditFilter reads the optional audit narrowing query parameters. A
+// malformed value is a 400 rather than a silently empty result, and a reversed
+// time range is rejected for the same reason: the caller asked a question the
+// server can answer precisely, so answering it wrongly is worse than refusing.
+func parseAuditFilter(request *http.Request) (store.AuditFilter, error) {
+	query := request.URL.Query()
+	filter := store.AuditFilter{
+		ActorID:      query.Get("actorId"),
+		Action:       query.Get("action"),
+		ResourceType: query.Get("resourceType"),
+		ResourceID:   query.Get("resourceId"),
+		Result:       query.Get("result"),
+	}
+	// Postgres casts this to uuid (see PostgresRepository.ListAudits), so a
+	// non-uuid reaches the driver as 22P02 and surfaces as a 500.
+	if filter.ActorID != "" && !looksLikeUUID(filter.ActorID) {
+		return store.AuditFilter{}, errors.New("actorId 必须是 UUID")
+	}
+	if filter.Result != "" && !validAuditResults[filter.Result] {
+		return store.AuditFilter{}, errors.New("result 只能是 SUCCESS、FAILED 或 PARTIAL")
+	}
+	var err error
+	if filter.From, err = parseAuditTime(query.Get("from")); err != nil {
+		return store.AuditFilter{}, fmt.Errorf("from 必须是 RFC3339 时间: %w", err)
+	}
+	if filter.To, err = parseAuditTime(query.Get("to")); err != nil {
+		return store.AuditFilter{}, fmt.Errorf("to 必须是 RFC3339 时间: %w", err)
+	}
+	if !filter.From.IsZero() && !filter.To.IsZero() && filter.To.Before(filter.From) {
+		return store.AuditFilter{}, errors.New("to 不能早于 from")
+	}
+	return filter, nil
+}
+
+func parseAuditTime(raw string) (time.Time, error) {
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339, raw)
+}
+
+// looksLikeUUID validates the canonical 8-4-4-4-12 hex shape. The codebase has
+// no uuid parser (identity.New only generates), and this is the one place a
+// caller-supplied id is handed to Postgres as a cast rather than compared as
+// text.
+func looksLikeUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i, r := range value {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// validAuditResults mirrors the values the writers produce: handlers emit
+// SUCCESS or FAILED, and the retention sweep emits PARTIAL when some tenants
+// were skipped.
+var validAuditResults = map[string]bool{"SUCCESS": true, "FAILED": true, "PARTIAL": true}
 
 // runRetentionMaintenance is the authorized manual trigger. It delegates to the
 // same maintenance.Runner the background loop uses, so a dry run here reports

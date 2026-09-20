@@ -57,7 +57,7 @@ func TestRunAllTenantsReleasesTheLease(t *testing.T) {
 
 func scheduledAudits(t *testing.T, repository store.Repository, tenantID string) []domain.AuditEvent {
 	t.Helper()
-	events, _, err := repository.ListAudits(tenantID, store.ListOptions{})
+	events, _, err := repository.ListAudits(tenantID, store.AuditFilter{}, store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

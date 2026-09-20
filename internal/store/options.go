@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"webmonitoring/internal/domain"
 )
 
 // ListOptions controls pagination of repository list methods. A non-positive
@@ -15,6 +17,46 @@ import (
 type ListOptions struct {
 	Limit  int
 	Cursor string
+}
+
+// AuditFilter narrows an audit listing. Every field is optional; the zero value
+// means "do not filter on this dimension", so AuditFilter{} returns everything
+// the tenant has.
+//
+// These dimensions live in their own type rather than in ListOptions because
+// ListOptions is shared by every list method: putting audit predicates there
+// would let an unrelated handler pass them and would make the zero value mean
+// something different per method.
+//
+// Filtering is independent of keyset pagination. The cursor is a position in
+// the (created_at DESC, id DESC) ordering, so narrowing the filter never
+// invalidates a cursor already handed to a client.
+type AuditFilter struct {
+	ActorID      string
+	Action       string
+	ResourceType string
+	ResourceID   string
+	Result       string
+	// Inclusive bounds. A zero time means unbounded on that side.
+	From time.Time
+	To   time.Time
+}
+
+// Matches reports whether an event satisfies every set dimension. The Postgres
+// implementation mirrors these predicates in SQL; both are exercised by the
+// same cross-store test so the two cannot drift silently.
+func (f AuditFilter) Matches(event domain.AuditEvent) bool {
+	switch {
+	case f.ActorID != "" && event.ActorID != f.ActorID,
+		f.Action != "" && event.Action != f.Action,
+		f.ResourceType != "" && event.ResourceType != f.ResourceType,
+		f.ResourceID != "" && event.ResourceID != f.ResourceID,
+		f.Result != "" && event.Result != f.Result,
+		!f.From.IsZero() && event.CreatedAt.Before(f.From),
+		!f.To.IsZero() && event.CreatedAt.After(f.To):
+		return false
+	}
+	return true
 }
 
 // applyPage slices a slice that is already sorted by its keyset key in
