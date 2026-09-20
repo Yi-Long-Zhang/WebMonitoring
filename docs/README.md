@@ -70,14 +70,18 @@
   会话级 advisory lock 串行化，并会为定时删除补写审计事件。但尚未在 `--scale` 拓扑上实跑
   验证，演练通过前不要按多副本部署。另需确认 `ReapTimedOut` 的 5 分钟租约长于最慢的一次
   检测，它不校验任务持有者。
-- **控制台接线**：keyset 分页（前端不传 `limit`/`cursor` 且丢弃 `nextCursor`，所有列表
-  只显示第一页）、任务取消、钉钉/邮件渠道创建、租户启停、基线快照预览等后端已具备的
-  能力尚未接入界面。
+- **控制台接线**：keyset 分页、任务取消、钉钉/邮件渠道创建、租户启停、权限收口、
+  基线快照预览和审计筛选已于 2026-09-20 接入界面。仍未接入的是资产导入导出、
+  用户管理（后端有完整 CRUD）、证据短时签名 URL 和租户删除。
 - 租户和站点的完整管理界面（当前为站点/租户 CRUD 基础形态）。
-- 细粒度权限、跨租户管理员、二次确认和双人审批。前端权限只到角色级，且
-  `permissions.ts`、`stores/session.ts` 和 `Sidebar.vue` 三处重复定义同一策略。
-- 完整 Secret Manager 集成（当前凭据用 `ALERT_SECRET_KEY` 派生密钥加密，没有密钥版本
-  和轮换路径，`SecretCipher` 也没有可替换的接口抽象）。
+- 细粒度权限、跨租户管理员、二次确认和双人审批。前端权限只到角色级；
+  角色矩阵已于 2026-09-20 收敛到 `apps/console/src/app/permissions.ts` 单一来源
+  （此前 `Sidebar.vue` 漏了 `canOperate`，五个导航项对只读角色也可见），
+  但仍没有资源级或字段级授权。
+- 完整 Secret Manager 集成。凭据加密已于 2026-09-20 支持密钥版本：`ALERT_SECRET_KEYS`
+  按 `v1:,v2:` 显式标注，`security.Keyring` 实现 `security.SecretBox` 接口，密文带版本
+  前缀，主密钥取最高版本。**仍缺的是把存量密文重写为最新版本的再加密扫描** ——
+  它只是一次需要授权的维护操作。仍未接入外部 KMS/Vault。
 - 完整多租户运营管理。
 - 部署形态：只有单机 Compose，无 Kubernetes、无 TLS 终止、除 browser-worker 外无
   CPU/内存限制，Compose 中 Redis 未设密码、PostgreSQL 使用 `sslmode=disable`。

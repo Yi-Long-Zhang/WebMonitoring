@@ -58,7 +58,7 @@ type Server struct {
 	detection         *detection.Service
 	evidence          evidence.Store
 	guard             *security.URLGuard
-	cipher            *security.SecretCipher
+	cipher            security.SecretBox
 	broker            *events.Broker
 	logger            *slog.Logger
 	sessionSecure     bool
@@ -132,7 +132,7 @@ func (s *Server) SetLoginGuard(guard *auth.LoginGuard) {
 // SetSecretCipher enables login-state detection. When set, updatePolicy can
 // encrypt customer credentials; without it, enabling login detection fails
 // closed with SECRET_UNAVAILABLE.
-func (s *Server) SetSecretCipher(cipher *security.SecretCipher) {
+func (s *Server) SetSecretCipher(cipher security.SecretBox) {
 	s.cipher = cipher
 }
 

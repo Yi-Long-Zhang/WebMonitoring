@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"webmonitoring/internal/browser"
@@ -47,7 +48,7 @@ func main() {
 		}
 	}()
 	dsn := required("POSTGRES_DSN")
-	repository, err := store.NewPostgresRepository(ctx, dsn, required("ALERT_SECRET_KEY"))
+	repository, err := store.NewPostgresRepository(ctx, dsn, secretKeyMaterial())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -86,7 +87,7 @@ func main() {
 	// The consumer name must be unique per running worker: the group reclaims
 	// anything another consumer has held past QUEUE_MIN_IDLE_SECONDS.
 	consumer := config.WorkerIdentity(os.Getenv)
-	secretCipher, err := security.NewSecretCipher(required("ALERT_SECRET_KEY"))
+	secretCipher, err := security.NewKeyring(secretKeyMaterial())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -235,6 +236,19 @@ func healthcheck(target string) {
 	if response.StatusCode != http.StatusOK {
 		log.Fatalf("health check returned %d", response.StatusCode)
 	}
+}
+
+// secretKeyMaterial reads whichever variable carries the key material and fails
+// closed when neither does. It reads through config.SecretKeyMaterial so the
+// worker and the API cannot end up on different variables: a worker on the
+// singular form would fail to decrypt what an API on the plural form wrote, and
+// that only surfaces at runtime.
+func secretKeyMaterial() string {
+	material := config.SecretKeyMaterial(os.Getenv)
+	if strings.TrimSpace(material) == "" {
+		log.Fatal("ALERT_SECRET_KEY or ALERT_SECRET_KEYS must be set")
+	}
+	return material
 }
 
 func required(name string) string {

@@ -40,7 +40,7 @@ func ValidateProductionAPI(get func(string) string) error {
 	failures = append(failures, validateRequired(get,
 		"POSTGRES_DSN", "REDIS_ADDR", "S3_ENDPOINT", "S3_ACCESS_KEY",
 		"S3_SECRET_KEY", "BROWSER_WORKER_URL", "BROWSER_WORKER_TOKEN",
-		"ALERT_SECRET_KEY", "ADMIN_PASSWORD",
+		"ADMIN_PASSWORD",
 	)...)
 	if get("ADMIN_PASSWORD") == defaultAdminPassword {
 		failures = append(failures, errors.New("ADMIN_PASSWORD must be changed in production"))
@@ -66,7 +66,7 @@ func ValidateProductionWorker(get func(string) string) error {
 	// name; requiring it would push deployments back onto a fixed consumer.
 	failures = append(failures, validateRequired(get,
 		"POSTGRES_DSN", "REDIS_ADDR", "S3_ENDPOINT", "S3_ACCESS_KEY",
-		"S3_SECRET_KEY", "ALERT_SECRET_KEY",
+		"S3_SECRET_KEY",
 		"BROWSER_WORKER_URL", "BROWSER_WORKER_TOKEN",
 	)...)
 	if workerID := strings.TrimSpace(get("WORKER_ID")); legacyWorkerIDs[workerID] {
@@ -99,11 +99,60 @@ func validateCommon(get func(string) string) []error {
 	failures = append(failures, validateMinLength(get, "S3_ACCESS_KEY", 8)...)
 	failures = append(failures, validateMinLength(get, "S3_SECRET_KEY", 16)...)
 	failures = append(failures, validateMinLength(get, "BROWSER_WORKER_TOKEN", 16)...)
-	key, err := base64.StdEncoding.DecodeString(get("ALERT_SECRET_KEY"))
-	if err != nil || len(key) != 32 {
-		failures = append(failures, errors.New("ALERT_SECRET_KEY must be a base64-encoded 32-byte key"))
-	}
+	failures = append(failures, validateSecretKeys(get)...)
 	failures = append(failures, validateSMTP(get)...)
+	return failures
+}
+
+// validateSecretKeys checks the credential-cipher key material. Either variable
+// is accepted -- ALERT_SECRET_KEYS (versioned, comma separated) takes precedence
+// over ALERT_SECRET_KEY -- but at least one must be present, and every entry
+// must be a base64-encoded 32-byte key under a unique version label. A
+// deployment that migrated to the plural form is not rejected for having
+// dropped the singular one, and a duplicate version is refused because it would
+// make which key sealed a ciphertext ambiguous.
+func validateSecretKeys(get func(string) string) []error {
+	// The plural variable is an explicit list, so every entry in it must be
+	// labelled. An unlabelled entry there would silently become v1, and a silent
+	// version assignment is a silent decryption failure after a rotation. The
+	// singular variable is the original single-key form and stays unlabelled.
+	explicitList := strings.TrimSpace(get("ALERT_SECRET_KEYS")) != ""
+	material := SecretKeyMaterial(get)
+	if strings.TrimSpace(material) == "" {
+		return []error{errors.New("ALERT_SECRET_KEY or ALERT_SECRET_KEYS must be set in production")}
+	}
+	var failures []error
+	seen := map[int]bool{}
+	for _, entry := range strings.Split(material, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		version, key := 1, entry
+		if label, rest, found := strings.Cut(entry, ":"); found {
+			parsed, err := strconv.Atoi(strings.TrimPrefix(label, "v"))
+			if !strings.HasPrefix(label, "v") || err != nil || parsed < 1 {
+				failures = append(failures, fmt.Errorf("ALERT_SECRET_KEYS entry %q must be labelled v1, v2, ...", entry))
+				continue
+			}
+			version, key = parsed, rest
+		} else if explicitList {
+			failures = append(failures, fmt.Errorf("ALERT_SECRET_KEYS entry %q must be labelled v1, v2, ...", entry))
+			continue
+		}
+		if seen[version] {
+			failures = append(failures, fmt.Errorf("ALERT_SECRET_KEYS configures version v%d more than once", version))
+			continue
+		}
+		seen[version] = true
+		decoded, err := base64.StdEncoding.DecodeString(key)
+		if err != nil {
+			decoded, err = base64.RawStdEncoding.DecodeString(key)
+		}
+		if err != nil || len(decoded) != 32 {
+			failures = append(failures, fmt.Errorf("ALERT_SECRET_KEYS entry v%d must be a base64-encoded 32-byte key", version))
+		}
+	}
 	return failures
 }
 
