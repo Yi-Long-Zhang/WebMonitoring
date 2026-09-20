@@ -144,6 +144,20 @@ export function useMonitoringActions() {
     ElMessage.success("租户已更新");
   }
 
+  // Deliberately separate from saveTenant and deliberately sending only
+  // `disabled`. A PATCH that also carried name and slug would re-run the slug
+  // uniqueness check, so flipping a switch could 409 TENANT_EXISTS for a reason
+  // that has nothing to do with it. The handler records the audit detail as
+  // {"disabled": ...} for exactly this call shape.
+  //
+  // The server's 409 TENANT_PROTECTED (the default tenant and the caller's own)
+  // is not caught here: request() surfaces its message through ElMessage.error.
+  async function setTenantDisabled(tenant: Tenant, disabled: boolean) {
+    await updateTenant(tenant.id, { disabled });
+    await consoleStore.loadTenants();
+    ElMessage.success(disabled ? "租户已停用" : "租户已启用");
+  }
+
   async function commentOnIncident(incident: Incident, note: string) {
     await addIncidentComment(incident.id, note);
     ElMessage.success("备注已记录");
@@ -165,5 +179,6 @@ export function useMonitoringActions() {
     saveSite,
     createNewTenant,
     saveTenant,
+    setTenantDisabled,
   };
 }

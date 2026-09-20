@@ -8,12 +8,16 @@ vi.mock("element-plus", () => ({
 
 import { useMonitoringActions } from "./actions";
 import { useConsoleStore } from "../../stores/console";
-import type { DetectionJob } from "../../types/domain";
+import type { DetectionJob, Tenant } from "../../types/domain";
 
 let requests: string[] = [];
 
 function job(status: DetectionJob["status"]): DetectionJob {
   return { id: "job-1", assetId: "asset-1", mode: "HTTP", status, createdAt: new Date().toISOString() } as DetectionJob;
+}
+
+function tenant(id: string): Tenant {
+  return { id, slug: "acme", name: "Acme", disabled: false, createdAt: new Date().toISOString() } as Tenant;
 }
 
 beforeEach(() => {
@@ -74,5 +78,47 @@ describe("cancelDetectionJob", () => {
 
     expect(requests.some((url) => url.includes("/detection-jobs/job-1/cancel"))).toBe(true);
     expect(store.jobs.map((item) => item.status)).toEqual(["CANCELLED"]);
+  });
+});
+
+describe("setTenantDisabled", () => {
+  it("sends only the disabled flag", async () => {
+    let body: Record<string, unknown> = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        requests.push(url);
+        if (init?.method === "PATCH") {
+          body = JSON.parse(String(init.body));
+          return new Response(JSON.stringify({ ...tenant("t1"), disabled: true }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ items: [tenant("t1")], nextCursor: "" }), { status: 200, headers: { "content-type": "application/json" } });
+      }),
+    );
+    const actions = useMonitoringActions();
+
+    await actions.setTenantDisabled(tenant("t1"), true);
+
+    // A PATCH carrying name and slug would re-run the slug uniqueness check, so
+    // flipping a switch could 409 TENANT_EXISTS for an unrelated reason.
+    expect(body).toEqual({ disabled: true });
+    expect(Object.keys(body)).not.toContain("slug");
+    expect(Object.keys(body)).not.toContain("name");
+  });
+
+  it("surfaces the protection conflict for the caller's own tenant", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ code: "TENANT_PROTECTED", message: "默认租户或当前登录租户不可停用", traceId: "t" }),
+          { status: 409, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+    const actions = useMonitoringActions();
+
+    await expect(actions.setTenantDisabled(tenant("self"), true)).rejects.toThrow("默认租户或当前登录租户不可停用");
   });
 });
