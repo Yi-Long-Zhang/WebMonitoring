@@ -24,6 +24,14 @@ func decodeSecretKey(encodedKey string) ([]byte, error) {
 	return key, nil
 }
 
+// SecretBox is what the control plane and the workers depend on to protect
+// stored credentials. The concrete implementation is a keyring, so a key can be
+// added or retired without every caller holding a version.
+type SecretBox interface {
+	Encrypt(plaintext, associatedData string) (string, error)
+	Decrypt(encoded, associatedData string) (string, error)
+}
+
 type SecretCipher struct {
 	aead cipher.AEAD
 }

@@ -33,7 +33,7 @@ type CheckResult struct {
 
 type Checker struct {
 	guard     *security.URLGuard
-	cipher    *security.SecretCipher
+	cipher    security.SecretBox
 	userAgent string
 }
 
@@ -44,7 +44,7 @@ func NewChecker(guard *security.URLGuard) *Checker {
 // SetCipher enables login-state detection. It is optional for plain HTTP checks
 // but required whenever a policy carries an Auth config; Check fails closed when
 // a login is needed and no cipher has been configured.
-func (c *Checker) SetCipher(cipher *security.SecretCipher) {
+func (c *Checker) SetCipher(cipher security.SecretBox) {
 	c.cipher = cipher
 }
 

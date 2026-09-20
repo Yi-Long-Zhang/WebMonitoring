@@ -66,9 +66,9 @@ func main() {
 	allowPrivate, _ := strconv.ParseBool(env("ALLOW_PRIVATE_TARGETS", "false"))
 	guard := security.NewURLGuard(allowPrivate)
 	broker := events.NewBroker()
-	var secretCipher *security.SecretCipher
-	if secret := os.Getenv("ALERT_SECRET_KEY"); secret != "" {
-		if cipher, cipherErr := security.NewSecretCipher(secret); cipherErr == nil {
+	var secretCipher security.SecretBox
+	if secret := config.SecretKeyMaterial(os.Getenv); secret != "" {
+		if cipher, cipherErr := security.NewKeyring(secret); cipherErr == nil {
 			secretCipher = cipher
 		} else {
 			logger.Warn("invalid ALERT_SECRET_KEY; login-state detection disabled", "error", cipherErr)
@@ -154,13 +154,15 @@ func main() {
 		repository, authService, detectionService, evidenceStore, guard, broker, logger, sessionSecure,
 	)
 	server.SetLoginGuard(loginGuard)
-	server.SetSecretCipher(secretCipher)
+	if secretCipher != nil {
+		server.SetSecretCipher(secretCipher)
+	}
 	server.SetRetentionPolicy(
 		config.PositiveInt(os.Getenv, "EVIDENCE_RETENTION_DAYS", config.DefaultEvidenceRetentionDays),
 		config.PositiveInt(os.Getenv, "AUDIT_RETENTION_DAYS", config.DefaultAuditRetentionDays),
 	)
-	if secret := os.Getenv("ALERT_SECRET_KEY"); secret != "" {
-		if signer, err := security.NewSignedURLSigner(secret); err == nil {
+	if keyring, ok := secretCipher.(*security.Keyring); ok {
+		if signer, err := security.NewSignedURLSigner(keyring.PrimaryKeyMaterial()); err == nil {
 			server.SetSignedURLs(signer, config.PositiveInt(os.Getenv, "EVIDENCE_SIGNED_URL_TTL_SECONDS", 300))
 		}
 	}
@@ -276,7 +278,7 @@ func buildRepository(ctx context.Context, logger *slog.Logger) (store.Repository
 		logger.Warn("using in-memory repository; data will be lost on restart")
 		return store.NewMemoryRepository(), func() {}
 	}
-	repository, err := store.NewPostgresRepository(ctx, dsn, os.Getenv("ALERT_SECRET_KEY"))
+	repository, err := store.NewPostgresRepository(ctx, dsn, config.SecretKeyMaterial(os.Getenv))
 	if err != nil {
 		log.Fatal(err)
 	}

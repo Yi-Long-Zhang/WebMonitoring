@@ -18,11 +18,11 @@ import (
 
 type PostgresRepository struct {
 	pool    *pgxpool.Pool
-	secrets *security.SecretCipher
+	secrets security.SecretBox
 }
 
 func NewPostgresRepository(ctx context.Context, dsn, alertSecretKey string) (*PostgresRepository, error) {
-	secrets, err := security.NewSecretCipher(alertSecretKey)
+	secrets, err := security.NewKeyring(alertSecretKey)
 	if err != nil {
 		return nil, err
 	}
@@ -991,6 +991,31 @@ func scanIncidentEvent(row rowScanner) (domain.IncidentEvent, error) {
 	return event, nil
 }
 
+// decryptChannelField decrypts one stored channel credential, tolerating only
+// the pre-encryption compatibility case.
+//
+// A value with no version prefix is plaintext from before encryption was
+// introduced, and is passed through so the row still works until its next
+// update rewrites it. A value that carries a version prefix was encrypted, so a
+// failure to decrypt it means the configured keys are wrong. Returning the
+// ciphertext in that case -- which is what this used to do -- silently hands a
+// bogus URL to the dispatcher and, worse, a bogus HMAC secret to the webhook
+// signer, with nothing logged. That is exactly the failure a key rotation would
+// produce, so it has to be loud.
+func decryptChannelField(secrets security.SecretBox, stored, associatedData string) (string, error) {
+	if stored == "" {
+		return "", nil
+	}
+	plaintext, err := secrets.Decrypt(stored, associatedData)
+	if err == nil {
+		return plaintext, nil
+	}
+	if _, _, versioned := security.SplitKeyVersion(stored); versioned {
+		return "", fmt.Errorf("decrypt alert channel credential: %w", err)
+	}
+	return stored, nil
+}
+
 func (p *PostgresRepository) CreateAlertChannel(channel domain.AlertChannel) error {
 	associatedData := channel.TenantID + ":" + channel.ID
 	encryptedURL, err := p.secrets.Encrypt(channel.URL, associatedData+":url")
@@ -1038,16 +1063,14 @@ func (p *PostgresRepository) listAlertChannels(tenantID string, includeSecret bo
 			return nil, normalizePostgresError(err)
 		}
 		associatedData := item.TenantID + ":" + item.ID
-		item.URL, err = p.secrets.Decrypt(encryptedURL, associatedData+":url")
+		item.URL, err = decryptChannelField(p.secrets, encryptedURL, associatedData+":url")
 		if err != nil {
-			// Values written before encryption are retained for a controlled
-			// compatibility window and can be re-encrypted on next update.
-			item.URL = encryptedURL
+			return nil, err
 		}
 		if includeSecret {
-			item.Secret, err = p.secrets.Decrypt(encryptedSecret, associatedData+":secret")
+			item.Secret, err = decryptChannelField(p.secrets, encryptedSecret, associatedData+":secret")
 			if err != nil {
-				item.Secret = encryptedSecret
+				return nil, err
 			}
 		}
 		result = append(result, item)

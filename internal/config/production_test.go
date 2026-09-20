@@ -98,3 +98,80 @@ func TestValidateProductionWorkerEndpointTransport(t *testing.T) {
 		}
 	}
 }
+
+// productionEnvWithSecrets is the accepted production environment, so each case
+// below varies only the key material.
+func productionEnvWithSecrets() map[string]string {
+	return map[string]string{
+		"APP_ENV": "production", "POSTGRES_DSN": "postgres://wm:strong-db-password-123@db:5432/webmonitoring",
+		"REDIS_ADDR": "redis:6379", "S3_ENDPOINT": "http://minio:9000", "S3_ACCESS_KEY": "strong-access-key",
+		"S3_SECRET_KEY": "strong-object-secret-123", "BROWSER_WORKER_URL": "http://browser-worker:8081",
+		"BROWSER_WORKER_TOKEN": "strong-worker-token-123",
+		"ADMIN_PASSWORD":       "strong-admin-password", "SESSION_SECURE": "true", "ALLOW_PRIVATE_TARGETS": "false",
+	}
+}
+
+func keyMaterial(seed byte) string {
+	raw := make([]byte, 32)
+	for i := range raw {
+		raw[i] = seed + byte(i)
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
+// A deployment that migrated to the versioned variable must not be rejected for
+// having dropped the singular one, and the versioned form is what makes a key
+// rotation possible at all.
+func TestValidateProductionAcceptsVersionedKeys(t *testing.T) {
+	values := productionEnvWithSecrets()
+	values["ALERT_SECRET_KEYS"] = "v1:" + keyMaterial(1) + ",v2:" + keyMaterial(2)
+	if err := ValidateProductionAPI(func(name string) string { return values[name] }); err != nil {
+		t.Fatalf("versioned key material was rejected: %v", err)
+	}
+
+	// The singular form keeps working unchanged.
+	values = productionEnvWithSecrets()
+	values["ALERT_SECRET_KEY"] = keyMaterial(1)
+	if err := ValidateProductionAPI(func(name string) string { return values[name] }); err != nil {
+		t.Fatalf("singular key material was rejected: %v", err)
+	}
+}
+
+func TestValidateProductionRejectsMalformedKeyMaterial(t *testing.T) {
+	cases := []struct {
+		name     string
+		material string
+		want     string
+	}{
+		{"unlabelled entry in the plural form", keyMaterial(1) + ",v2:" + keyMaterial(2), "v1, v2"},
+		{"duplicate version", "v1:" + keyMaterial(1) + ",v1:" + keyMaterial(2), "more than once"},
+		{"key of the wrong length", "v1:" + base64.StdEncoding.EncodeToString([]byte("short")), "32-byte"},
+		{"zero version", "v0:" + keyMaterial(1), "v1, v2"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			values := productionEnvWithSecrets()
+			values["ALERT_SECRET_KEYS"] = testCase.material
+			err := ValidateProductionAPI(func(name string) string { return values[name] })
+			if err == nil {
+				t.Fatal("malformed key material was accepted")
+			}
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error %q does not contain %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+// With neither variable set the cipher has no key, so login-state detection and
+// alert channel credentials would silently stop working.
+func TestValidateProductionRequiresKeyMaterial(t *testing.T) {
+	values := productionEnvWithSecrets()
+	err := ValidateProductionAPI(func(name string) string { return values[name] })
+	if err == nil {
+		t.Fatal("a production environment with no key material was accepted")
+	}
+	if !strings.Contains(err.Error(), "ALERT_SECRET_KEY or ALERT_SECRET_KEYS") {
+		t.Fatalf("error does not name both variables: %v", err)
+	}
+}

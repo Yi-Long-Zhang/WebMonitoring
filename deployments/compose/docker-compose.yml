@@ -101,6 +101,9 @@ services:
       ALLOW_PRIVATE_TARGETS: ${ALLOW_PRIVATE_TARGETS:-false}
       BROWSER_WORKER_URL: http://browser-worker:8081
       BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:-replace-with-a-random-token}
+      # Versioned rotation form. When ALERT_SECRET_KEYS is set it takes precedence
+      # over the singular variable, so a rotation is a change to this one line.
+      ALERT_SECRET_KEYS: ${ALERT_SECRET_KEYS:-}
       ALERT_SECRET_KEY: ${ALERT_SECRET_KEY:?set ALERT_SECRET_KEY to a base64-encoded 32-byte key}
       QUEUE_RETRY_BASE_MILLISECONDS: ${QUEUE_RETRY_BASE_MILLISECONDS:-500}
       ALERT_MAX_ATTEMPTS: ${ALERT_MAX_ATTEMPTS:-3}
@@ -152,6 +155,9 @@ services:
       S3_BUCKET: evidence
       BROWSER_WORKER_URL: http://browser-worker:8081
       BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:-replace-with-a-random-token}
+      # Versioned rotation form. When ALERT_SECRET_KEYS is set it takes precedence
+      # over the singular variable, so a rotation is a change to this one line.
+      ALERT_SECRET_KEYS: ${ALERT_SECRET_KEYS:-}
       ALERT_SECRET_KEY: ${ALERT_SECRET_KEY:?set ALERT_SECRET_KEY to a base64-encoded 32-byte key}
       QUEUE_MAX_DELIVERIES: ${QUEUE_MAX_DELIVERIES:-5}
       QUEUE_MIN_IDLE_SECONDS: ${QUEUE_MIN_IDLE_SECONDS:-120}

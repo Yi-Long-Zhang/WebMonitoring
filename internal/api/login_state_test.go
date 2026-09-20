@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +26,13 @@ func loginStateCipher(t *testing.T) *security.SecretCipher {
 }
 
 func loginStateFixture(t *testing.T) (*store.MemoryRepository, *Server, *http.Cookie, string) {
+	t.Helper()
+	return loginStateFixtureWith(t, loginStateCipher(t))
+}
+
+// loginStateFixtureWith builds the same fixture around a chosen cipher. Passing
+// nil models a deployment with no key material configured at all.
+func loginStateFixtureWith(t *testing.T, cipher security.SecretBox) (*store.MemoryRepository, *Server, *http.Cookie, string) {
 	t.Helper()
 	repository := store.NewMemoryRepository()
 	admin := retentionUser(t, repository, "admin", domain.RoleAdmin)
@@ -48,7 +58,9 @@ func loginStateFixture(t *testing.T) (*store.MemoryRepository, *Server, *http.Co
 		t.Fatal(err)
 	}
 	server := retentionServer(repository, evidenceStore)
-	server.SetSecretCipher(loginStateCipher(t))
+	if cipher != nil {
+		server.SetSecretCipher(cipher)
+	}
 	cookie, csrf := loginForTest(t, server, "admin")
 	return repository, server, cookie, csrf
 }
@@ -151,5 +163,30 @@ func TestUpdatePolicyRejectsPrivateLoginURL(t *testing.T) {
 	response := doJSON(t, server, http.MethodPut, "/api/v1/policies/login-asset", cookie, csrf, body)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("expected private login URL rejection, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+// A server with no key material must refuse an auth block rather than panic.
+// The cipher field is an interface, so a nil *SecretCipher stored in it compares
+// non-nil: the fail-closed check would pass and Encrypt would run on a nil
+// receiver. This pins the behaviour the guard in apps/api/main.go protects.
+func TestPolicyAuthFailsClosedWithoutACipher(t *testing.T) {
+	_, server, cookie, csrf := loginStateFixtureWith(t, nil)
+	body := `{"httpIntervalSeconds":300,"browserIntervalSeconds":1800,"timeoutSeconds":30,
+		"maxResponseBytes":1048576,"ignoreSelectors":[],"trustedDomains":[],
+		"auth":{"loginUrl":"https://example.com/login","usernameField":"username",
+		"passwordField":"password","username":"operator","password":"a-password"}}`
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/policies/login-asset", bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "ALERT_SECRET_KEY") {
+		t.Fatalf("error does not name the missing key: %s", response.Body.String())
 	}
 }

@@ -22,7 +22,7 @@ type Client struct {
 	token   string
 	client  *http.Client
 	guard   *security.URLGuard
-	cipher  *security.SecretCipher
+	cipher  security.SecretBox
 }
 
 // NewClient takes the same URLGuard the caller uses for its own outbound checks,
@@ -44,7 +44,7 @@ func NewClient(baseURL, token string, guard *security.URLGuard) *Client {
 // plain checks but required whenever a policy carries an Auth config: without it
 // Check fails closed rather than letting the worker render the login form and
 // snapshot that as if it were the protected page.
-func (c *Client) SetCipher(cipher *security.SecretCipher) {
+func (c *Client) SetCipher(cipher security.SecretBox) {
 	c.cipher = cipher
 }
 
