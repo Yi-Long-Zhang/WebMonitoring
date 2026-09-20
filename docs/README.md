@@ -57,16 +57,35 @@
 
 当前明确不应描述为已完成或尚未完成部署验收：
 
+- **多副本（HA）不支持**：`internal/detection/scheduler.go` 的 30 秒轮询、
+  `internal/maintenance/retention.go` 的保留策略清理和 Worker 消费者身份都没有跨副本
+  协调。调度器的 `due()` 是“先读后判”，数据库对 `(tenant_id, asset_id, mode)` 也没有
+  唯一约束，因此多副本会重复排队检测任务；Compose 把 `WORKER_ID` 固定为
+  `http-worker-1`，`--scale` 后同名消费者会被 `XAutoClaim` 抢占在途消息并重复处理；
+  保留策略任务无锁且启动时立即全量执行一次，任何副本重启都会触发完整清扫。当前只支持
+  单个控制面副本和单个 HTTP Worker 实例。
+- **保留策略清理缺少审计**：定时清理（`RunAllTenants`）只记录日志，不写审计事件，
+  只有手动端点 `POST /maintenance/retention` 会写。自动删除证据因此没有审计留痕。
+- **完整事件时间线**：`UpsertIncident` 的 `signals = EXCLUDED.signals` 会覆盖上一轮信号集，
+  事件只保留 `occurrence_count` 和 `last_seen_at`；事件由检测 Worker 创建时不写审计，
+  `ListAudits` 没有资源过滤，审计记录本身还会被保留策略删除。历史无法事后重建，需要
+  新增事件时间线存储。
+- **控制台接线**：keyset 分页（前端不传 `limit`/`cursor` 且丢弃 `nextCursor`，所有列表
+  只显示第一页）、任务取消、钉钉/邮件渠道创建、租户启停、基线快照预览等后端已具备的
+  能力尚未接入界面。
 - 租户和站点的完整管理界面（当前为站点/租户 CRUD 基础形态）。
-- 细粒度权限、跨租户管理员、二次确认和双人审批。
-- 完整 Secret Manager 集成（当前凭据用 ALERT_SECRET_KEY 派生密钥加密）与
-  浏览器模式登录态检测。
+- 细粒度权限、跨租户管理员、二次确认和双人审批。前端权限只到角色级，且
+  `permissions.ts`、`stores/session.ts` 和 `Sidebar.vue` 三处重复定义同一策略。
+- 完整 Secret Manager 集成（当前凭据用 `ALERT_SECRET_KEY` 派生密钥加密，没有密钥版本
+  和轮换路径，`SecretCipher` 也没有可替换的接口抽象）与浏览器模式登录态检测。
 - 完整多租户运营管理。
-- 真实 100 资产 HTTP/Browser 压测和备份恢复实机演练；控制台 Playwright E2E
+- 部署形态：只有单机 Compose，无 Kubernetes、无 TLS 终止、除 browser-worker 外无
+  CPU/内存限制，Compose 中 Redis 未设密码、PostgreSQL 使用 `sslmode=disable`。
+- 真实 100 资产 **浏览器** 压测和备份恢复实机演练；控制台 Playwright E2E
   已纳入 Compose smoke，并已于 2026-09-15 在本机实跑通过（见
   [operations.md](operations.md) 的验收清单和 [backup-restore-rehearsal.md](backup-restore-rehearsal.md)）。
 - Docker Compose smoke 和真实数据库/Redis 集成门禁已于 2026-09-15 在本机实跑
-  通过；演练记录覆盖单机 Compose 拓扑，尚未覆盖多副本和真实生产网络。
+  通过；演练记录覆盖单机 Compose 拓扑，尚未覆盖多副本、外部对象存储和真实生产网络。
 
 功能状态以代码、测试结果和部署验证记录为准。通过本地内存模式不能推出
 生产可用性；发布前必须单独完成 Compose、数据库迁移、队列恢复和安全验收。
