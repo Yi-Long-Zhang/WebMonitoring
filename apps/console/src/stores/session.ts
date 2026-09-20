@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { getSession, login, logout } from "../services/api/client";
+import { canAdmin, canOperate, canSuperAdmin } from "../app/permissions";
 import type { Session } from "../types/domain";
 
 export const useSessionStore = defineStore("session", {
@@ -7,9 +8,12 @@ export const useSessionStore = defineStore("session", {
   getters: {
     user: (state) => state.session?.user,
     isAuthenticated: (state) => Boolean(state.session),
-    canOperate: (state) => ["ADMIN", "OPERATOR", "SUPER_ADMIN"].includes(state.session?.user.role || ""),
-    canAdmin: (state) => ["ADMIN", "SUPER_ADMIN"].includes(state.session?.user.role || ""),
-    canSuperAdmin: (state) => state.session?.user.role === "SUPER_ADMIN",
+    // Delegated rather than re-derived, so the matrix has exactly one home.
+    // Keeping the getter names means every existing `session.canOperate` call
+    // site keeps working unchanged.
+    canOperate: (state) => canOperate(state.session?.user.role),
+    canAdmin: (state) => canAdmin(state.session?.user.role),
+    canSuperAdmin: (state) => canSuperAdmin(state.session?.user.role),
   },
   actions: {
     async restore() {
