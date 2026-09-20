@@ -2,6 +2,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import {
   addIncidentComment,
   approveBaseline,
+  cancelJob,
   createAlertChannel,
   createAsset,
   createSite,
@@ -17,7 +18,7 @@ import {
   updateTenant,
   verifyAsset,
 } from "../../services/api/client";
-import type { AlertChannel, Asset, AssetType, Incident, Site, Tenant } from "../../types/domain";
+import type { AlertChannel, Asset, AssetType, DetectionJob, Incident, Site, Tenant } from "../../types/domain";
 import { useConsoleStore } from "../../stores/console";
 
 export function useMonitoringActions() {
@@ -81,6 +82,15 @@ export function useMonitoringActions() {
     await retireBaselineRequest(id);
     await consoleStore.refresh();
     ElMessage.success("基线已废弃");
+  }
+
+  // The 409 for a job that already reached a terminal state is deliberately not
+  // caught: request() already surfaces the server's message through
+  // ElMessage.error, and letting it throw keeps the list untouched.
+  async function cancelDetectionJob(job: DetectionJob) {
+    await cancelJob(job.id);
+    await consoleStore.refresh();
+    ElMessage.success("任务已取消");
   }
 
   async function savePolicy(asset: Asset, input: {
@@ -148,6 +158,7 @@ export function useMonitoringActions() {
     commentOnIncident,
     savePolicy,
     retireBaseline,
+    cancelDetectionJob,
     createNewAlertChannel,
     createNewSite,
     saveSite,
