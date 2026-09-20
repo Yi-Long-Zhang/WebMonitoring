@@ -41,7 +41,10 @@ export default tseslint.config(
   {
     files: ["e2e/**/*.mjs"],
     languageOptions: {
+      // Same reason as the .vue block above: naming one global replaces the
+      // default set, so every global the script uses has to be listed.
       globals: {
+        URL: "readonly",
         process: "readonly",
       },
     },

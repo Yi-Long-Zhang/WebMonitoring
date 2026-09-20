@@ -33,6 +33,40 @@ try {
     await assertPageHasContent(page, expectedText);
   }
 
+  // The views above prove a sidebar click reaches the right screen. These prove
+  // the hash is what decides it: a deep link has to land on the same view with
+  // no click at all, and an unknown segment has to be normalized away rather
+  // than left in the address bar describing a screen that is not rendered.
+  // Only views by name -- 用户管理 and 租户管理 are super-admin screens, and the
+  // seeded admin is neither.
+  for (const [hash, expectedText] of [["#/jobs", "DETECTION PIPELINE"], ["#/evidence", "IMMUTABLE ARTIFACTS"]]) {
+    await page.goto(`${baseURL}/${hash}`);
+    await assertPageHasContent(page, expectedText);
+  }
+  await page.goto(`${baseURL}/#/not-a-real-view`);
+  await assertPageHasContent(page, "OPERATIONS METRICS");
+  assert.equal(new URL(page.url()).hash, "#/", "an unknown view segment must be normalized away");
+
+  // The baseline preview is the screen that reads a captured snapshot. Seeded
+  // candidates carry one, so opening the first row has to reach the metadata
+  // rather than the zero-value "快照不可用" state.
+  await page.goto(`${baseURL}/#/baselines`);
+  await page.getByRole("button", { name: "查看快照" }).first().click();
+  await page.locator(".el-drawer").waitFor({ timeout: 15000 });
+  const drawer = await page.locator(".el-drawer").innerText();
+  assert.ok(drawer.includes("内容哈希"), "baseline snapshot drawer did not render the capture metadata");
+
+  // The short-lived link is minted on demand and is the one credential this
+  // screen hands out, so the assertions are that a countdown appears and that
+  // its link actually resolves. The authenticated link beside it must keep
+  // working too -- it is the fallback when signing is unconfigured.
+  await page.goto(`${baseURL}/#/evidence`);
+  await page.getByRole("button", { name: "短时链接" }).first().click();
+  await page.locator(".signed-url").waitFor({ timeout: 15000 });
+  const signedUrl = (await page.locator(".signed-url").innerText()).trim();
+  const signed = await page.request.get(new URL(signedUrl, baseURL).href);
+  assert.equal(signed.status(), 200, "the issued short-lived link did not resolve");
+
   await page.getByRole("button", { name: "退出登录" }).click();
   await page.locator(".login-panel").waitFor({ timeout: 15000 });
 } finally {
