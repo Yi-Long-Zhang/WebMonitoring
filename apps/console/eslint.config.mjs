@@ -16,8 +16,16 @@ export default tseslint.config(
   {
     files: ["**/*.vue"],
     languageOptions: {
+      // The globals object replaces the default set rather than extending it, so
+      // every browser global a component uses has to be named here. TypeScript's
+      // lib covers the type side; this is only what eslint's no-undef needs.
       globals: {
         EventSource: "readonly",
+        URL: "readonly",
+        clearInterval: "readonly",
+        navigator: "readonly",
+        setInterval: "readonly",
+        window: "readonly",
       },
       parserOptions: {
         parser: tseslint.parser,
