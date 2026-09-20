@@ -181,6 +181,9 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("POST /api/v1/detection-jobs/{id}/cancel", s.requireRoles(s.cancelJob, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/incidents", s.listIncidents)
 	protected.HandleFunc("GET /api/v1/incidents/{id}", s.getIncident)
+	// Readable by every authenticated role, like getIncident: an auditor who can see
+	// an incident but not how it was handled cannot audit it.
+	protected.HandleFunc("GET /api/v1/incidents/{id}/timeline", s.listIncidentTimeline)
 	protected.HandleFunc("POST /api/v1/incidents/{id}/transition", s.requireRoles(s.transitionIncident, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/evidence", s.listEvidence)
 	protected.HandleFunc("GET /api/v1/evidence/{id}/download", s.downloadEvidence)
@@ -1564,6 +1567,26 @@ func (s *Server) getIncident(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 	writeJSON(writer, http.StatusOK, item)
+}
+
+// listIncidentTimeline returns one incident's history, newest first.
+//
+// The incident is looked up first so a missing or cross-tenant id answers 404
+// rather than an empty list, which would otherwise be indistinguishable from an
+// incident that has no entries yet.
+func (s *Server) listIncidentTimeline(writer http.ResponseWriter, request *http.Request) {
+	tenantID := principal(request).User.TenantID
+	id := request.PathValue("id")
+	if _, err := s.repository.GetIncident(tenantID, id); err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	events, nextCursor, err := s.repository.ListIncidentEvents(tenantID, id, listOptions(request))
+	if err != nil {
+		s.repositoryFailure(writer, request, "list incident timeline", err)
+		return
+	}
+	writeList(writer, events, nextCursor)
 }
 
 func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Request) {

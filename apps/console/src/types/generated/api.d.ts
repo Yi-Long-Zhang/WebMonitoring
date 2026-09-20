@@ -368,6 +368,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/incidents/{id}/timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 事件时间线，按发生时间倒序；同一时刻的多条记录之间顺序不保证 */
+        get: operations["listIncidentTimeline"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/incidents/{id}/transition": {
         parameters: {
             query?: never;
@@ -846,6 +863,44 @@ export interface components {
         };
         IncidentList: {
             items: components["schemas"]["Incident"][];
+            nextCursor: string;
+        };
+        /** @enum {string} */
+        IncidentEventType: "CREATED" | "RECURRED" | "STATUS_CHANGED" | "OWNER_ASSIGNED" | "COMMENTED";
+        /**
+         * @description 事件时间线的一条记录。signals 是**该轮检测**看到的信号集，不是当前生效的
+         *     那一份——事件行上的 signals 每轮都会被覆盖，所以复现明细只存在于这里。
+         */
+        IncidentEvent: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            incidentId: string;
+            type: components["schemas"]["IncidentEventType"];
+            /**
+             * Format: uuid
+             * @description 为空表示由检测 Worker 自动写入，没有人类操作者
+             */
+            actorId?: string;
+            fromStatus?: components["schemas"]["IncidentStatus"];
+            toStatus?: components["schemas"]["IncidentStatus"];
+            severity?: components["schemas"]["Severity"];
+            title?: string;
+            signals?: components["schemas"]["Signal"][];
+            evidenceIds?: string[];
+            /**
+             * Format: uuid
+             * @description 产生该轮复现的检测任务，可追溯到具体一次运行
+             */
+            jobId?: string;
+            details?: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            createdAt: string;
+        };
+        IncidentTimeline: {
+            items: components["schemas"]["IncidentEvent"][];
             nextCursor: string;
         };
         /** @enum {string} */
@@ -1789,6 +1844,32 @@ export interface operations {
                     "application/json": components["schemas"]["Incident"];
                 };
             };
+        };
+    };
+    listIncidentTimeline: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 事件时间线 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentTimeline"];
+                };
+            };
+            404: components["responses"]["Error"];
         };
     };
     transitionIncident: {

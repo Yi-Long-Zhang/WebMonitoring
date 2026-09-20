@@ -428,6 +428,21 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Incident" }
+  /incidents/{id}/timeline:
+    get:
+      operationId: listIncidentTimeline
+      description: 事件时间线，按发生时间倒序；同一时刻的多条记录之间顺序不保证
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 事件时间线
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IncidentTimeline" }
+        "404": { $ref: "#/components/responses/Error" }
   /incidents/{id}/transition:
     post:
       operationId: transitionIncident
@@ -1079,6 +1094,47 @@ components:
         items:
           type: array
           items: { $ref: "#/components/schemas/Incident" }
+        nextCursor: { type: string }
+    IncidentEventType:
+      type: string
+      enum: [CREATED, RECURRED, STATUS_CHANGED, OWNER_ASSIGNED, COMMENTED]
+    IncidentEvent:
+      type: object
+      description: |
+        事件时间线的一条记录。signals 是**该轮检测**看到的信号集，不是当前生效的
+        那一份——事件行上的 signals 每轮都会被覆盖，所以复现明细只存在于这里。
+      required: [id, incidentId, type, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        incidentId: { type: string, format: uuid }
+        type: { $ref: "#/components/schemas/IncidentEventType" }
+        actorId:
+          type: string
+          format: uuid
+          description: 为空表示由检测 Worker 自动写入，没有人类操作者
+        fromStatus: { $ref: "#/components/schemas/IncidentStatus" }
+        toStatus: { $ref: "#/components/schemas/IncidentStatus" }
+        severity: { $ref: "#/components/schemas/Severity" }
+        title: { type: string }
+        signals:
+          type: array
+          items: { $ref: "#/components/schemas/Signal" }
+        evidenceIds:
+          type: array
+          items: { type: string, format: uuid }
+        jobId:
+          type: string
+          format: uuid
+          description: 产生该轮复现的检测任务，可追溯到具体一次运行
+        details: { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+    IncidentTimeline:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/IncidentEvent" }
         nextCursor: { type: string }
     BaselineStatus:
       type: string

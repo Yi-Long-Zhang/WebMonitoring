@@ -118,3 +118,71 @@ func TestRejectedIncidentTransitionAddsNoTimelineEntry(t *testing.T) {
 		t.Fatalf("entry type = %s, want CREATED", events[0].Type)
 	}
 }
+
+func getTimelineForTest(t *testing.T, server *Server, cookie *http.Cookie, incidentID string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/incidents/"+incidentID+"/timeline", nil)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	return response
+}
+
+// The timeline is readable by every authenticated role. An auditor who can see
+// an incident but not how it was handled has nothing to audit.
+func TestIncidentTimelineEndpointIsReadableAndTenantScoped(t *testing.T) {
+	repository := store.NewMemoryRepository()
+	retentionUser(t, repository, "admin", domain.RoleAdmin)
+	retentionUser(t, repository, "auditor", domain.RoleAuditor)
+	evidenceStore, err := evidence.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := retentionServer(repository, evidenceStore)
+	incident := seedIncident(t, repository)
+
+	adminCookie, adminCsrf := loginForTest(t, server, "admin")
+	if response := transitionIncidentForTest(t, server, adminCookie, adminCsrf, incident.ID, `{"status":"ACKNOWLEDGED"}`); response.Code != http.StatusOK {
+		t.Fatalf("transition status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	auditorCookie, _ := loginForTest(t, server, "auditor")
+	response := getTimelineForTest(t, server, auditorCookie, incident.ID)
+	if response.Code != http.StatusOK {
+		t.Fatalf("auditor read status=%d body=%s", response.Code, response.Body.String())
+	}
+	var timeline struct {
+		Items []domain.IncidentEvent `json:"items"`
+	}
+	if err := decodeResponse(response, &timeline); err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline.Items) != 2 {
+		t.Fatalf("timeline items = %d, want 2", len(timeline.Items))
+	}
+	// Newest first, and the newest one names the admin who acknowledged it.
+	if timeline.Items[0].Type != domain.IncidentEventStatusChanged {
+		t.Fatalf("first item type = %s, want STATUS_CHANGED", timeline.Items[0].Type)
+	}
+	if timeline.Items[0].ActorID != repositoryUserID(t, repository, "admin") {
+		t.Fatalf("first item actor = %q", timeline.Items[0].ActorID)
+	}
+	if timeline.Items[1].Type != domain.IncidentEventCreated {
+		t.Fatalf("second item type = %s, want CREATED", timeline.Items[1].Type)
+	}
+
+	// A missing id answers 404 rather than an empty list, so "no such incident"
+	// is distinguishable from "no entries yet".
+	if response := getTimelineForTest(t, server, auditorCookie, identity.New()); response.Code != http.StatusNotFound {
+		t.Fatalf("unknown incident status=%d, want 404", response.Code)
+	}
+}
+
+func repositoryUserID(t *testing.T, repository store.Repository, username string) string {
+	t.Helper()
+	user, err := repository.FindUserByUsername(defaultTenant, username)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return user.ID
+}
