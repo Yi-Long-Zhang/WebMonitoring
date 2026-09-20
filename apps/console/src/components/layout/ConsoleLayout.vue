@@ -94,6 +94,10 @@ async function createAsset() {
 // bar about what is rendered.
 async function selectView(view: View) {
   activeView.value = view;
+  // The snapshot drawer belongs to the baselines view. Leaving it mounted while
+  // another view renders would keep its overlay over the new page, swallowing
+  // clicks meant for it -- so navigating away dismisses it.
+  closeBaselinePreview();
   try {
     if (view === "tenants" && session.canSuperAdmin) await data.loadTenants();
     // Same reason as tenants: the directory is not part of refresh(), and the
