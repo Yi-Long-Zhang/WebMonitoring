@@ -17,15 +17,16 @@ import TenantsPage from "../../pages/TenantsPage.vue";
 import UsersPage from "../../pages/UsersPage.vue";
 import PolicyDialog from "../monitoring/PolicyDialog.vue";
 import AssetImportDialog from "../monitoring/AssetImportDialog.vue";
+import BaselineSnapshotDrawer from "../monitoring/BaselineSnapshotDrawer.vue";
 import { useMonitoringActions } from "../../features/monitoring/actions";
-import { ApiError, exportAssets } from "../../services/api/client";
+import { ApiError, exportAssets, getBaseline } from "../../services/api/client";
 import { saveBlob } from "../../services/download";
 import { roleLabel as roleLabelFor } from "../../app/permissions";
 import { CHANNEL_LABELS, channelNeeds } from "../../app/channels";
 import { useSessionStore } from "../../stores/session";
 import { useConsoleStore } from "../../stores/console";
 import { connectEventStream } from "../../services/events/stream";
-import type { AlertChannel, Asset, AssetType, DetectionJob, Incident, Site, Tenant, User } from "../../types/domain";
+import type { AlertChannel, Asset, AssetType, Baseline, DetectionJob, Incident, Site, Tenant, User } from "../../types/domain";
 import type { View } from "../../types/views";
 import { isView } from "../../types/views";
 
@@ -136,6 +137,28 @@ async function toggle(asset: Asset) { try { await actions.toggleMonitoring(asset
 async function detect(asset: Asset, mode: "HTTP" | "BROWSER") { try { await actions.startDetection(asset, mode); await navigate("jobs"); } catch (error) { reportError(error, "检测启动失败"); } }
 async function review(id: string, accepted: boolean) { try { await actions.reviewBaseline(id, accepted); } catch (error) { reportError(error, "基线操作失败"); } }
 async function retireBaseline(id: string) { try { await actions.retireBaseline(id); } catch (error) { reportError(error, "基线废弃失败"); } }
+
+// The list row is shown immediately so the drawer opens without a blank frame,
+// then replaced by the single-resource answer, which is the one that carries the
+// snapshot. A row whose fetch fails keeps what the list already had rather than
+// closing under the operator.
+const previewBaseline = ref<Baseline>();
+const previewBaselineId = ref("");
+const previewLoading = ref(false);
+async function openBaselinePreview(baseline: Baseline) {
+  previewBaselineId.value = baseline.id;
+  previewBaseline.value = baseline;
+  previewLoading.value = true;
+  try {
+    const full = await getBaseline(baseline.id);
+    if (previewBaselineId.value === baseline.id) previewBaseline.value = full;
+  } catch (error) {
+    reportError(error, "加载基线快照失败");
+  } finally {
+    previewLoading.value = false;
+  }
+}
+function closeBaselinePreview() { previewBaselineId.value = ""; previewBaseline.value = undefined; }
 async function toggleTenant(tenant: Tenant, disabled: boolean) { try { await actions.setTenantDisabled(tenant, disabled); } catch (error) { reportError(error, "切换租户状态失败"); } }
 
 // Deletion is confirmed by typing the slug, mirroring the server's
@@ -288,7 +311,7 @@ onUnmounted(() => eventStream?.close());
       <OverviewPage v-if="activeView === 'overview'" :dashboard="data.dashboard" :report-summary="data.reportSummary" :assets="data.assets" :incidents="data.incidents" :asset-map="assetMap" @navigate="navigate" />
       <AssetsPage v-else-if="activeView === 'assets'" :assets="data.assets" :policies="data.policies" :can-operate="session.canOperate" :can-admin="session.canAdmin" :has-more="data.hasMore('assets')" :loading-more="data.isLoadingMore('assets')" @load-more="data.loadMore('assets')" @create="showAssetDialog = true" @verify="verify" @toggle="toggle" @detect="detect" @policy="editPolicy" @import="showImportDialog = true" @export="exportAssetList" />
       <SitesPage v-else-if="activeView === 'sites'" :sites="data.sites" :can-admin="session.canAdmin" :has-more="data.hasMore('sites')" :loading-more="data.isLoadingMore('sites')" @load-more="data.loadMore('sites')" @create="openSiteCreate" @edit="openSiteEdit" />
-      <BaselinesPage v-else-if="activeView === 'baselines'" :baselines="data.baselines" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('baselines')" :loading-more="data.isLoadingMore('baselines')" @load-more="data.loadMore('baselines')" @review="review" @retire="retireBaseline" />
+      <BaselinesPage v-else-if="activeView === 'baselines'" :baselines="data.baselines" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('baselines')" :loading-more="data.isLoadingMore('baselines')" @load-more="data.loadMore('baselines')" @review="review" @retire="retireBaseline" @preview="openBaselinePreview" />
       <IncidentsPage v-else-if="activeView === 'incidents'" :incidents="data.incidents" :evidence="data.evidence" :deliveries="data.alertDeliveries" :asset-map="assetMap" :can-operate="session.canOperate" :timeline-key="timelineKey" :users="data.users" :on-comment="comment" :has-more="data.hasMore('incidents')" :loading-more="data.isLoadingMore('incidents')" @load-more="data.loadMore('incidents')" @transition="transition" />
       <JobsPage v-else-if="activeView === 'jobs'" :jobs="data.jobs" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('jobs')" :loading-more="data.isLoadingMore('jobs')" @load-more="data.loadMore('jobs')" @cancel="cancelDetectionJob" />
       <EvidencePage v-else-if="activeView === 'evidence'" :evidence="data.evidence" :assets="data.assets" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('evidence')" :loading-more="data.isLoadingMore('evidence')" @load-more="data.loadMore('evidence')" />
@@ -317,6 +340,7 @@ onUnmounted(() => eventStream?.close());
     </el-dialog>
     <PolicyDialog v-model="showPolicyDialog" :asset="policyAsset" :policy="editingPolicy" @save="savePolicy" />
     <AssetImportDialog v-if="showImportDialog" @imported="onImported" @close="showImportDialog = false" />
+    <BaselineSnapshotDrawer v-if="previewBaseline" :baseline="previewBaseline" :loading="previewLoading" @close="closeBaselinePreview" />
     <el-dialog v-model="showChannelDialog" title="新增告警渠道" width="520px">
       <el-form label-position="top"><el-form-item label="渠道名称"><el-input v-model="channelForm.name" placeholder="例如：安全运营群" /></el-form-item><el-form-item label="渠道类型"><el-radio-group v-model="channelForm.type"><el-radio-button value="WECHAT_WORK">企业微信</el-radio-button><el-radio-button value="WEBHOOK">Webhook</el-radio-button></el-radio-group></el-form-item><el-form-item label="通知地址"><el-input v-model="channelForm.url" type="password" show-password autocomplete="off" placeholder="https://..." /></el-form-item><el-form-item v-if="channelForm.type === 'WEBHOOK'" label="签名密钥"><el-input v-model="channelForm.secret" type="password" show-password autocomplete="new-password" /></el-form-item><el-form-item label="创建后启用"><el-switch v-model="channelForm.enabled" /></el-form-item></el-form>
       <template #footer><el-button @click="showChannelDialog = false">取消</el-button><el-button type="primary" @click="createChannel">创建渠道</el-button></template>

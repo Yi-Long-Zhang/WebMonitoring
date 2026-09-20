@@ -167,6 +167,14 @@ export function getBaselines(params: PageParams = {}) {
   return request<ListResponse<Baseline>>(`/baselines${listQuery(params)}`);
 }
 
+// The list carries only the head of each baseline. The captured snapshot -- the
+// evidence the approval is actually about -- is served on the single-resource
+// route, so the preview fetches it when the operator opens a row instead of
+// inflating every list page with it.
+export function getBaseline(id: string) {
+  return request<Baseline>(`/baselines/${encodeURIComponent(id)}`);
+}
+
 export function approveBaseline(id: string) {
   return request<Baseline>(`/baselines/${id}/approve`, { method: "POST" });
 }
