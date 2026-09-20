@@ -60,6 +60,14 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @webmonitoring/console generate:api
+      # The committed types are generated from api/openapi.yaml and the console
+      # is compiled against them, so a contract change that was not regenerated
+      # makes the two disagree silently. This turns that into a failed build.
+      # It is the check that would have caught the Incident fields that were
+      # serialized by the handler but missing from the contract until they were
+      # found by hand.
+      - name: Generated API types must match the contract
+        run: git diff --exit-code apps/console/src/types/generated/api.d.ts
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
