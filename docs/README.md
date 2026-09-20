@@ -49,7 +49,8 @@
   浏览器模式下凭据由控制面解密后经内部 HTTP 传给 Worker，生产门禁要求该端点使用
   https 或私网地址（见 [adr/0004](adr/0004-browser-login-credentials.md)）。
 - 内存/本地证据开发模式，以及 PostgreSQL、Redis、MinIO 的 Compose 路径。
-- 生产配置门禁、90 天证据/365 天审计保留策略、dry-run 清理和备份恢复校验脚本。
+- 生产配置门禁、90 天证据/365 天审计保留策略、dry-run 清理和备份恢复校验脚本；
+  定时清理会为实际发生的删除补写 `maintenance.retention.scheduled` 审计事件。
 - 可重复的验收演练脚本：Compose smoke（含登录锁定、keyset 分页、资产暂停/恢复、
   任务取消与迟到结果不覆盖）、100 资产跨租户压测（逐资产真实 FILE 所有权验证、
   吞吐下限与任务完整性断言）、备份/恢复（MinIO 客户端在 Compose 网络内运行，
@@ -65,8 +66,6 @@
   会话级 advisory lock 串行化，并会为定时删除补写审计事件。但尚未在 `--scale` 拓扑上实跑
   验证，演练通过前不要按多副本部署。另需确认 `ReapTimedOut` 的 5 分钟租约长于最慢的一次
   检测，它不校验任务持有者。
-- **保留策略清理缺少审计**：定时清理（`RunAllTenants`）只记录日志，不写审计事件，
-  只有手动端点 `POST /maintenance/retention` 会写。自动删除证据因此没有审计留痕。
 - **完整事件时间线**：`UpsertIncident` 的 `signals = EXCLUDED.signals` 会覆盖上一轮信号集，
   事件只保留 `occurrence_count` 和 `last_seen_at`；事件由检测 Worker 创建时不写审计，
   `ListAudits` 没有资源过滤，审计记录本身还会被保留策略删除。历史无法事后重建，需要
