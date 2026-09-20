@@ -1,0 +1,4 @@
+# TLS material is provisioned per deployment and must never be committed.
+nginx/certs/
+*.pem
+*.key
