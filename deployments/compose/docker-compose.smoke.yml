@@ -16,8 +16,23 @@ services:
     image: nginx:1.29-alpine
     volumes:
       - ${SMOKE_DATA_ROOT}/target:/usr/share/nginx/html:ro
+      # The default conf is replaced so a second, cookie-gated server block can
+      # live on its own hostname. Gating "/" instead would make every
+      # unauthenticated check see a login page, so the content-tamper assertions
+      # below would pass for the wrong reason.
+      - ${SMOKE_DATA_ROOT}/smoke-target.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      default:
+        aliases:
+          # Listed explicitly rather than relying on the implicit service-name
+          # alias, because the whole script depends on http://smoke-target/.
+          - smoke-target
+          - smoke-login
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost/"]
+      # 127.0.0.1, not localhost: with a mounted conf the nginx entrypoint cannot
+      # add the IPv6 listen, so only IPv4 is bound and localhost may resolve to
+      # ::1. The load test documents the same trap.
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/"]
       interval: 5s
       timeout: 3s
       retries: 20
