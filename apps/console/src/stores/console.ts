@@ -14,6 +14,7 @@ import {
   getReportSummary,
   getSites,
   getTenants,
+  getUsers,
 } from "../services/api/client";
 import type {
   AlertChannel,
@@ -29,6 +30,7 @@ import type {
   ReportSummary,
   Site,
   Tenant,
+  User,
 } from "../types/domain";
 
 export const useConsoleStore = defineStore("console", () => {
@@ -36,6 +38,7 @@ export const useConsoleStore = defineStore("console", () => {
   const assets = ref<Asset[]>([]);
   const sites = ref<Site[]>([]);
   const tenants = ref<Tenant[]>([]);
+  const users = ref<User[]>([]);
   const policies = ref<Policy[]>([]);
   const baselines = ref<Baseline[]>([]);
   const incidents = ref<Incident[]>([]);
@@ -75,5 +78,12 @@ export const useConsoleStore = defineStore("console", () => {
     tenants.value = tenantData.items;
   }
 
-  return { dashboard, assets, sites, tenants, policies, baselines, incidents, jobs, evidence, alertChannels, alertDeliveries, audits, reportSummary, loading, refresh, loadTenants };
+  // Loaded on demand rather than in refresh(): only the incident drawer needs
+  // the user list, and it is not part of the periodic dashboard pull.
+  async function loadUsers() {
+    const userData = await getUsers();
+    users.value = userData.items;
+  }
+
+  return { dashboard, assets, sites, tenants, users, policies, baselines, incidents, jobs, evidence, alertChannels, alertDeliveries, audits, reportSummary, loading, refresh, loadTenants, loadUsers };
 });

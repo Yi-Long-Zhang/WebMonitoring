@@ -207,10 +207,17 @@ export function getAuditEvents() {
   return request<ListResponse<AuditEvent>>("/audit-events");
 }
 
-export function transitionIncident(id: string, status: IncidentStatus, resolution = "") {
+export function transitionIncident(id: string, status: IncidentStatus, resolution = "", ownerId = "") {
   return request<Incident>(`/incidents/${id}/transition`, {
     method: "POST",
-    body: JSON.stringify({ status, resolution }),
+    body: JSON.stringify({ status, resolution, ownerId }),
+  });
+}
+
+export function addIncidentComment(id: string, note: string) {
+  return request<IncidentEvent>(`/incidents/${encodeURIComponent(id)}/comments`, {
+    method: "POST",
+    body: JSON.stringify({ note }),
   });
 }
 

@@ -89,7 +89,12 @@ async function toggle(asset: Asset) { try { await actions.toggleMonitoring(asset
 async function detect(asset: Asset, mode: "HTTP" | "BROWSER") { try { await actions.startDetection(asset, mode); activeView.value = "jobs"; } catch (error) { reportError(error, "检测启动失败"); } }
 async function review(id: string, accepted: boolean) { try { await actions.reviewBaseline(id, accepted); } catch (error) { reportError(error, "基线操作失败"); } }
 async function retireBaseline(id: string) { try { await actions.retireBaseline(id); } catch (error) { reportError(error, "基线废弃失败"); } }
-async function transition(incident: Incident, status: Incident["status"]) { try { await actions.changeIncident(incident, status); } catch (error) { reportError(error, "事件更新失败"); } }
+// Bumped after a write to an incident lands, so the drawer's timeline reloads
+// behind it rather than racing it. Owned here because this is where the writes
+// complete.
+const timelineKey = ref(0);
+async function transition(incident: Incident, status: Incident["status"], ownerId = "") { try { await actions.changeIncident(incident, status, ownerId); timelineKey.value += 1; } catch (error) { reportError(error, "事件更新失败"); } }
+async function comment(incident: Incident, note: string) { try { await actions.commentOnIncident(incident, note); timelineKey.value += 1; } catch (error) { reportError(error, "备注提交失败"); } }
 function editPolicy(asset: Asset) {
   policyAsset.value = asset;
   showPolicyDialog.value = true;
@@ -114,6 +119,10 @@ onMounted(async () => {
   if (session.canSuperAdmin) {
     try { await data.loadTenants(); } catch { /* best effort; tenants also reload on navigation */ }
   }
+  // The incident drawer assigns an owner, so operators need the user list too.
+  if (session.canOperate) {
+    try { await data.loadUsers(); } catch { /* best effort; the drawer still works without it */ }
+  }
   eventStream = connectEventStream(refresh);
 });
 onUnmounted(() => eventStream?.close());
@@ -128,7 +137,7 @@ onUnmounted(() => eventStream?.close());
       <AssetsPage v-else-if="activeView === 'assets'" :assets="data.assets" :policies="data.policies" :can-operate="session.canOperate" @create="showAssetDialog = true" @verify="verify" @toggle="toggle" @detect="detect" @policy="editPolicy" />
       <SitesPage v-else-if="activeView === 'sites'" :sites="data.sites" :can-admin="session.canAdmin" @create="openSiteCreate" @edit="openSiteEdit" />
       <BaselinesPage v-else-if="activeView === 'baselines'" :baselines="data.baselines" :asset-map="assetMap" :can-operate="session.canOperate" @review="review" @retire="retireBaseline" />
-      <IncidentsPage v-else-if="activeView === 'incidents'" :incidents="data.incidents" :evidence="data.evidence" :deliveries="data.alertDeliveries" :asset-map="assetMap" :can-operate="session.canOperate" @transition="transition" />
+      <IncidentsPage v-else-if="activeView === 'incidents'" :incidents="data.incidents" :evidence="data.evidence" :deliveries="data.alertDeliveries" :asset-map="assetMap" :can-operate="session.canOperate" :timeline-key="timelineKey" :users="data.users" :on-comment="comment" @transition="transition" />
       <JobsPage v-else-if="activeView === 'jobs'" :jobs="data.jobs" :asset-map="assetMap" />
       <EvidencePage v-else-if="activeView === 'evidence'" :evidence="data.evidence" :assets="data.assets" :asset-map="assetMap" />
       <ChannelsPage v-else-if="activeView === 'channels'" :channels="data.alertChannels" :can-admin="session.canAdmin" @create="showChannelDialog = true" />

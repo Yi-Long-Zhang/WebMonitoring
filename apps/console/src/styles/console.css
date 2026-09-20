@@ -144,6 +144,8 @@ button, input { font: inherit; }
 .evidence-row > span:first-child { min-width: 0; }
 .evidence-row strong { color: var(--ink); font-size: 12px; }
 .detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+.comment-submit { margin-top: 8px; }
+.owner-select { width: min(320px, 100%); margin-bottom: 4px; }
 .timeline-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .timeline-note { margin: 6px 0 0; color: var(--ink); font-size: 12px; line-height: 1.5; }
 .timeline-note.el-alert { margin-top: 8px; }

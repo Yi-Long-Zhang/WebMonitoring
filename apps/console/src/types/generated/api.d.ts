@@ -385,6 +385,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/incidents/{id}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description 为事件追加一条备注。备注作为时间线条目保存，不覆盖既有记录 */
+        post: operations["addIncidentComment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/incidents/{id}/transition": {
         parameters: {
             query?: never;
@@ -860,6 +877,12 @@ export interface components {
             acknowledgedAt?: string;
             /** Format: date-time */
             resolvedAt?: string;
+            /** Format: uuid */
+            tenantId?: string;
+            /** Format: uuid */
+            ownerId?: string;
+            /** Format: date-time */
+            createdAt?: string;
         };
         IncidentList: {
             items: components["schemas"]["Incident"][];
@@ -1869,6 +1892,38 @@ export interface operations {
                     "application/json": components["schemas"]["IncidentTimeline"];
                 };
             };
+            404: components["responses"]["Error"];
+        };
+    };
+    addIncidentComment: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    note: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 备注已追加 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentEvent"];
+                };
+            };
+            400: components["responses"]["Error"];
             404: components["responses"]["Error"];
         };
     };

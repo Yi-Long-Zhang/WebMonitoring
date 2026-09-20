@@ -443,6 +443,30 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/IncidentTimeline" }
         "404": { $ref: "#/components/responses/Error" }
+  /incidents/{id}/comments:
+    post:
+      operationId: addIncidentComment
+      description: 为事件追加一条备注。备注作为时间线条目保存，不覆盖既有记录
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              properties:
+                note: { type: string, minLength: 2, maxLength: 2000 }
+      responses:
+        "201":
+          description: 备注已追加
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IncidentEvent" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /incidents/{id}/transition:
     post:
       operationId: transitionIncident
@@ -1087,6 +1111,11 @@ components:
         resolution: { type: string }
         acknowledgedAt: { type: string, format: date-time }
         resolvedAt: { type: string, format: date-time }
+        # These three are always serialized by the handler but were missing from
+        # the contract, so the generated console types could not see them.
+        tenantId: { type: string, format: uuid }
+        ownerId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
     IncidentList:
       type: object
       required: [items, nextCursor]

@@ -186,3 +186,84 @@ func repositoryUserID(t *testing.T, repository store.Repository, username string
 	}
 	return user.ID
 }
+
+func commentIncidentForTest(t *testing.T, server *Server, cookie *http.Cookie, csrf, incidentID, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/incidents/"+incidentID+"/comments", bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	return response
+}
+
+// A comment is part of the incident's history, so it lands on the timeline with
+// the author rather than overwriting anything on the incident row.
+func TestIncidentCommentAppendsToTimeline(t *testing.T) {
+	repository := store.NewMemoryRepository()
+	admin := retentionUser(t, repository, "admin", domain.RoleAdmin)
+	evidenceStore, err := evidence.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := retentionServer(repository, evidenceStore)
+	incident := seedIncident(t, repository)
+	cookie, csrf := loginForTest(t, server, "admin")
+
+	response := commentIncidentForTest(t, server, cookie, csrf, incident.ID, `{"note":"called the site owner"}`)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("comment status=%d body=%s", response.Code, response.Body.String())
+	}
+	events, _, err := repository.ListIncidentEvents(defaultTenant, incident.ID, store.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("timeline entries = %d, want 2", len(events))
+	}
+	if events[0].Type != domain.IncidentEventCommented {
+		t.Fatalf("newest entry type = %s, want COMMENTED", events[0].Type)
+	}
+	if events[0].ActorID != admin.ID {
+		t.Fatalf("actor = %q, want %q", events[0].ActorID, admin.ID)
+	}
+	if note, _ := events[0].Details["note"].(string); note != "called the site owner" {
+		t.Fatalf("note = %v", events[0].Details["note"])
+	}
+}
+
+// An empty or whitespace-only note is rejected before anything is written, so a
+// comment cannot be used to add a timeline entry that says nothing.
+func TestIncidentCommentRejectsBlankNotes(t *testing.T) {
+	repository := store.NewMemoryRepository()
+	retentionUser(t, repository, "admin", domain.RoleAdmin)
+	evidenceStore, err := evidence.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := retentionServer(repository, evidenceStore)
+	incident := seedIncident(t, repository)
+	cookie, csrf := loginForTest(t, server, "admin")
+
+	for _, body := range []string{`{"note":""}`, `{"note":"   "}`, `{"note":"x"}`} {
+		response := commentIncidentForTest(t, server, cookie, csrf, incident.ID, body)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("body %s status=%d, want 400", body, response.Code)
+		}
+	}
+	events, _, err := repository.ListIncidentEvents(defaultTenant, incident.ID, store.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("timeline entries = %d, want only CREATED", len(events))
+	}
+
+	// A read-only role cannot comment.
+	retentionUser(t, repository, "auditor", domain.RoleAuditor)
+	auditorCookie, auditorCsrf := loginForTest(t, server, "auditor")
+	if response := commentIncidentForTest(t, server, auditorCookie, auditorCsrf, incident.ID, `{"note":"looks bad"}`); response.Code != http.StatusForbidden {
+		t.Fatalf("auditor comment status=%d, want 403", response.Code)
+	}
+}

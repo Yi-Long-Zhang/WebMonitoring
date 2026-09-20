@@ -184,6 +184,7 @@ func (s *Server) routes() http.Handler {
 	// Readable by every authenticated role, like getIncident: an auditor who can see
 	// an incident but not how it was handled cannot audit it.
 	protected.HandleFunc("GET /api/v1/incidents/{id}/timeline", s.listIncidentTimeline)
+	protected.HandleFunc("POST /api/v1/incidents/{id}/comments", s.requireRoles(s.addIncidentComment, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("POST /api/v1/incidents/{id}/transition", s.requireRoles(s.transitionIncident, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/evidence", s.listEvidence)
 	protected.HandleFunc("GET /api/v1/evidence/{id}/download", s.downloadEvidence)
@@ -1567,6 +1568,46 @@ func (s *Server) getIncident(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 	writeJSON(writer, http.StatusOK, item)
+}
+
+// addIncidentComment appends an operator's note to an incident's timeline.
+//
+// A comment is a timeline entry rather than a column on the incident: it is part
+// of the history, and a column would keep only the most recent note. The note
+// text is deliberately not copied into the audit record -- the audit says an
+// incident was commented on and by whom, the timeline holds what was said.
+func (s *Server) addIncidentComment(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	id := request.PathValue("id")
+	incident, err := s.repository.GetIncident(session.User.TenantID, id)
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	var input struct {
+		Note string `json:"note"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	note := strings.TrimSpace(input.Note)
+	length := len([]rune(note))
+	if length < 2 || length > 2000 {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_NOTE", "备注长度需在 2 到 2000 个字符之间", nil)
+		return
+	}
+	event := domain.IncidentEvent{
+		ID: identity.New(), TenantID: incident.TenantID, IncidentID: incident.ID,
+		Type: domain.IncidentEventCommented, ActorID: session.User.ID,
+		Details: map[string]any{"note": note}, CreatedAt: time.Now().UTC(),
+	}
+	if err := s.repository.AppendIncidentEvent(event); err != nil {
+		s.repositoryFailure(writer, request, "add incident comment", err)
+		return
+	}
+	s.appendAudit(request, session.User, "incident.comment", "incident", id, "SUCCESS", map[string]any{"length": length})
+	s.broker.Publish("incident.updated", incident)
+	writeJSON(writer, http.StatusCreated, event)
 }
 
 // listIncidentTimeline returns one incident's history, newest first.
