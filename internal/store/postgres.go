@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"webmonitoring/internal/domain"
+	"webmonitoring/internal/identity"
 	"webmonitoring/internal/security"
 )
 
@@ -112,6 +113,7 @@ func (p *PostgresRepository) CountTenantResources(tenantID string) (map[string]i
 		{"jobs", `SELECT count(*) FROM detection_jobs WHERE tenant_id=$1`},
 		{"alertChannels", `SELECT count(*) FROM alert_channels WHERE tenant_id=$1`},
 		{"auditEvents", `SELECT count(*) FROM audit_events WHERE tenant_id=$1`},
+		{"incidentEvents", `SELECT count(*) FROM incident_events WHERE tenant_id=$1`},
 	}
 	result := make(map[string]int, len(kinds))
 	for _, kind := range kinds {
@@ -135,6 +137,7 @@ func (p *PostgresRepository) DeleteTenant(tenantID string) error {
 		`DELETE FROM alert_deliveries WHERE tenant_id=$1`,
 		`DELETE FROM alert_channels WHERE tenant_id=$1`,
 		`DELETE FROM audit_events WHERE tenant_id=$1`,
+		`DELETE FROM incident_events WHERE tenant_id=$1`,
 		`DELETE FROM incidents WHERE tenant_id=$1`,
 		`DELETE FROM evidence WHERE tenant_id=$1`,
 		`DELETE FROM detection_jobs WHERE tenant_id=$1`,
@@ -761,43 +764,73 @@ func scanEvidence(row rowScanner) (domain.Evidence, error) {
 func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.Incident, bool, error) {
 	signals, _ := json.Marshal(incident.Signals)
 	evidenceIDs, _ := json.Marshal(incident.EvidenceIDs)
+	// The timeline entry is written by the same statement as the counter it
+	// describes. A second write could fail, or the process could die between the
+	// two, and the occurrence this table exists to preserve would be lost again
+	// -- which is precisely the bug being fixed here. A data-modifying CTE always
+	// runs to completion even though the final SELECT does not read it.
+	//
+	// `(xmax = 0)` in the RETURNING must stay as it is: it is what tells the
+	// caller whether this round created the incident or merged into one, and the
+	// broker event name and alert dispatch depend on it.
 	row := p.pool.QueryRow(context.Background(), `
-		INSERT INTO incidents (
-			id,tenant_id,asset_id,baseline_id,baseline_version,fingerprint,severity,status,title,
-			signals,evidence_ids,occurrence_count,owner_id,resolution,created_at,first_seen_at,last_seen_at,acknowledged_at,resolved_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,'')::uuid,NULLIF($14,''),$15,$16,$17,$18,$19)
-		ON CONFLICT (tenant_id,asset_id,baseline_version,fingerprint)
-			WHERE status NOT IN ('CLOSED','FALSE_POSITIVE')
-		DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at,
-			occurrence_count=incidents.occurrence_count+1,
-			signals=EXCLUDED.signals,evidence_ids=incidents.evidence_ids || EXCLUDED.evidence_ids,
-			severity=CASE
-				WHEN EXCLUDED.severity='CRITICAL' THEN EXCLUDED.severity
-				WHEN incidents.severity='CRITICAL' THEN incidents.severity
-				ELSE EXCLUDED.severity
-			END
-		RETURNING (xmax = 0)`,
+		WITH upserted AS (
+			INSERT INTO incidents (
+				id,tenant_id,asset_id,baseline_id,baseline_version,fingerprint,severity,status,title,
+				signals,evidence_ids,occurrence_count,owner_id,resolution,created_at,first_seen_at,last_seen_at,acknowledged_at,resolved_at
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,'')::uuid,NULLIF($14,''),$15,$16,$17,$18,$19)
+			ON CONFLICT (tenant_id,asset_id,baseline_version,fingerprint)
+				WHERE status NOT IN ('CLOSED','FALSE_POSITIVE')
+			DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at,
+				occurrence_count=incidents.occurrence_count+1,
+				-- Both of the merged fields below must match the in-memory
+				-- implementation exactly. They did not: severity was allowed to
+				-- downgrade between non-CRITICAL levels here while memory kept it
+				-- monotonic, and the jsonb concatenation kept duplicate evidence
+				-- ids that memory deduplicated. Same input, two different
+				-- incident rows. GREATEST works because a PostgreSQL enum
+				-- compares by declaration order, and the DISTINCT aggregation
+				-- makes the merged list deterministic so the two stores agree on
+				-- content and order.
+				signals=EXCLUDED.signals,
+				evidence_ids=(
+					SELECT COALESCE(jsonb_agg(DISTINCT value ORDER BY value), '[]'::jsonb)
+					FROM jsonb_array_elements(incidents.evidence_ids || EXCLUDED.evidence_ids) AS merged(value)
+				),
+				severity=GREATEST(incidents.severity, EXCLUDED.severity)
+			RETURNING id, (xmax = 0) AS created, severity
+		), logged AS (
+			INSERT INTO incident_events (
+				id,tenant_id,incident_id,event_type,severity,title,signals,evidence_ids,job_id,created_at
+			)
+			SELECT $20,$2,upserted.id,
+				CASE WHEN upserted.created THEN 'CREATED' ELSE 'RECURRED' END::incident_event_type,
+				upserted.severity,$9,$10,$11,NULLIF($21,'')::uuid,$15
+			FROM upserted
+			RETURNING id
+		)
+		SELECT id, created FROM upserted`,
 		incident.ID, incident.TenantID, incident.AssetID, incident.BaselineID, incident.BaselineVersion,
 		incident.Fingerprint, incident.Severity, incident.Status, incident.Title, signals, evidenceIDs,
 		incident.OccurrenceCount, incident.OwnerID, incident.Resolution, incident.CreatedAt,
 		incident.FirstSeenAt, incident.LastSeenAt, incident.AcknowledgedAt, incident.ResolvedAt,
+		identity.New(), incident.JobID,
 	)
+	var mergedID string
 	var created bool
-	if err := row.Scan(&created); err != nil {
+	if err := row.Scan(&mergedID, &created); err != nil {
 		return domain.Incident{}, false, normalizePostgresError(err)
 	}
-	incidents, _, err := p.ListIncidents(incident.TenantID, ListOptions{})
+	// RETURNING gives the real row, so this no longer needs the full-table scan
+	// the previous implementation used to find which incident the round merged
+	// into.
+	merged, err := p.GetIncident(incident.TenantID, mergedID)
 	if err != nil {
-		return domain.Incident{}, false, err
+		// The write already committed; report the caller's view rather than
+		// failing a detection over a read-back that should not fail.
+		return incident, created, nil
 	}
-	for _, current := range incidents {
-		if current.AssetID == incident.AssetID && current.BaselineVersion == incident.BaselineVersion &&
-			current.Fingerprint == incident.Fingerprint &&
-			current.Status != domain.IncidentClosed && current.Status != domain.IncidentFalsePositive {
-			return current, created, nil
-		}
-	}
-	return incident, created, nil
+	return merged, created, nil
 }
 
 func (p *PostgresRepository) UpdateIncident(incident domain.Incident) error {
@@ -871,6 +904,91 @@ func scanIncident(row rowScanner) (domain.Incident, error) {
 		return incident, err
 	}
 	return incident, nil
+}
+
+func (p *PostgresRepository) AppendIncidentEvent(event domain.IncidentEvent) error {
+	signals, _ := json.Marshal(event.Signals)
+	evidenceIDs, _ := json.Marshal(event.EvidenceIDs)
+	details, _ := json.Marshal(event.Details)
+	// INSERT ... SELECT rather than VALUES: an entry for an incident that does
+	// not exist (or belongs to another tenant) inserts nothing, and the caller
+	// gets ErrNotFound. Relying on the foreign key instead would surface as a
+	// raw 23503, which normalizePostgresError does not map and which the
+	// in-memory store could not reproduce.
+	tag, err := p.pool.Exec(context.Background(), `
+		INSERT INTO incident_events (
+			id,tenant_id,incident_id,event_type,actor_id,from_status,to_status,severity,title,
+			signals,evidence_ids,job_id,details,created_at
+		)
+		SELECT $1,$2,i.id,$4,NULLIF($5,'')::uuid,NULLIF($6,'')::incident_status,
+			NULLIF($7,'')::incident_status,NULLIF($8,'')::severity,NULLIF($9,''),
+			$10,$11,NULLIF($12,'')::uuid,$13,$14
+		FROM incidents i WHERE i.tenant_id=$2 AND i.id=$3`,
+		event.ID, event.TenantID, event.IncidentID, event.Type, event.ActorID,
+		event.FromStatus, event.ToStatus, event.Severity, event.Title,
+		signals, evidenceIDs, event.JobID, details, event.CreatedAt,
+	)
+	if err != nil {
+		return normalizePostgresError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *PostgresRepository) ListIncidentEvents(tenantID, incidentID string, opts ListOptions) ([]domain.IncidentEvent, string, error) {
+	args := []any{tenantID, incidentID}
+	query := incidentEventSelect + ` WHERE tenant_id=$1 AND incident_id=$2`
+	query, args = paginateQuery(query, args, opts, "created_at")
+	rows, err := p.pool.Query(context.Background(), query, args...)
+	if err != nil {
+		return nil, "", normalizePostgresError(err)
+	}
+	defer rows.Close()
+	result := make([]domain.IncidentEvent, 0)
+	for rows.Next() {
+		item, scanErr := scanIncidentEvent(rows)
+		if scanErr != nil {
+			return nil, "", scanErr
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", normalizePostgresError(err)
+	}
+	items, next := trimPage(result, opts, func(e domain.IncidentEvent) (time.Time, string) { return e.CreatedAt, e.ID })
+	return items, next, nil
+}
+
+const incidentEventSelect = `
+	SELECT id,tenant_id,incident_id,event_type,COALESCE(actor_id::text,''),
+		COALESCE(from_status::text,''),COALESCE(to_status::text,''),COALESCE(severity::text,''),
+		COALESCE(title,''),signals,evidence_ids,COALESCE(job_id::text,''),
+		COALESCE(details,'{}'::jsonb),created_at
+	FROM incident_events`
+
+func scanIncidentEvent(row rowScanner) (domain.IncidentEvent, error) {
+	var event domain.IncidentEvent
+	var signals, evidenceIDs, details []byte
+	err := row.Scan(
+		&event.ID, &event.TenantID, &event.IncidentID, &event.Type, &event.ActorID,
+		&event.FromStatus, &event.ToStatus, &event.Severity, &event.Title,
+		&signals, &evidenceIDs, &event.JobID, &details, &event.CreatedAt,
+	)
+	if err != nil {
+		return event, normalizePostgresError(err)
+	}
+	if err := json.Unmarshal(signals, &event.Signals); err != nil {
+		return event, err
+	}
+	if err := json.Unmarshal(evidenceIDs, &event.EvidenceIDs); err != nil {
+		return event, err
+	}
+	if err := json.Unmarshal(details, &event.Details); err != nil {
+		return event, err
+	}
+	return event, nil
 }
 
 func (p *PostgresRepository) CreateAlertChannel(channel domain.AlertChannel) error {

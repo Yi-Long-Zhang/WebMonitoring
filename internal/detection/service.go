@@ -308,6 +308,10 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 				CreatedAt:       now,
 				FirstSeenAt:     now,
 				LastSeenAt:      now,
+				// Carried into the timeline entry only; the store never writes
+				// it to the incident row. It is what ties an occurrence to the
+				// run that observed it.
+				JobID: job.ID,
 			}
 			saved, created, upsertErr := s.repository.UpsertIncident(incident)
 			if upsertErr != nil {
