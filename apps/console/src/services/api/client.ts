@@ -112,8 +112,23 @@ export function importAssets(input: {
   }>("/assets/import", { method: "POST", body: JSON.stringify(input) });
 }
 
-export function exportAssets(format: "json" | "csv" = "csv") {
-  return request<{ items: Asset[] }>(`/assets/export?format=${format}`);
+// GET /assets/export answers with a text/csv body when format=csv, which
+// request() cannot read -- it always parses the response as JSON. So this is the
+// one call that goes around it and hands back the body as a Blob for the caller
+// to save. The server keeps ownership of the CSV writing, so the field escaping
+// has one implementation instead of a second one here.
+export async function exportAssets(format: "json" | "csv" = "csv"): Promise<Blob> {
+  const response = await fetch(`/api/v1/assets/export?format=${format}`, { credentials: "include" });
+  if (!response.ok) {
+    let payload: { message?: string } = {};
+    try {
+      payload = await response.json();
+    } catch {
+      // Keep the network status as the fallback error.
+    }
+    throw new Error(payload.message || `${response.status} ${response.statusText}`);
+  }
+  return response.blob();
 }
 
 export function updateAsset(id: string, input: Partial<Pick<Asset, "name" | "ownerId" | "siteId" | "enabled">>) {
