@@ -64,12 +64,15 @@
 
 当前明确不应描述为已完成或尚未完成部署验收：
 
-- **多副本（HA）尚未实机演练**：三处跨副本阻塞点已经修复 —— 检测任务的重复排队由迁移
+- **多副本（HA）已于 2026-09-20 实机演练通过**，数字与变异检查记录在
+  [architecture.md](architecture.md)。以下三处跨副本阻塞点已经修复 —— 检测任务的重复排队由迁移
   `000012` 的部分唯一索引 `detection_jobs_active_uidx` 兜底，Worker 消费者身份由
   `config.WorkerIdentity` 生成每进程身份，保留策略清理由 `store.ReplicaLease` 的 PostgreSQL
-  会话级 advisory lock 串行化，并会为定时删除补写审计事件。但尚未在 `--scale` 拓扑上实跑
-  验证，演练通过前不要按多副本部署。另需确认 `ReapTimedOut` 的 5 分钟租约长于最慢的一次
-  检测，它不校验任务持有者。
+  会话级 advisory lock 串行化，并会为定时删除补写审计事件。演练以
+  `--scale api=2 --scale http-worker=3` 实跑，40 资产对应 40 个任务、0 个重复分组。
+  `ReapTimedOut` 的租约已改为 `JOB_LEASE_SECONDS` 可配，并由生产门禁强制
+  `> 270` 秒（策略超时上限 90 秒 × BROWSER 花两次）；它仍不校验任务持有者，
+  保证是「没有合法检测能超过租约」而非「reaper 知道谁持有任务」。
 - **控制台接线**：keyset 分页、任务取消、钉钉/邮件渠道创建、租户启停、权限收口、
   基线快照预览和审计筛选已于 2026-09-20 接入界面。仍未接入的是资产导入导出、
   用户管理（后端有完整 CRUD）、证据短时签名 URL 和租户删除。
@@ -88,7 +91,10 @@
   暴露端口，`REDIS_PASSWORD` 可启用 `requirepass`（应用侧已有对应支持），
   `POSTGRES_SSLMODE` 控制数据库 TLS 且生产环境拒绝 `disable`。
   仍未做的是 TLS 终止（见下一条）和外部 KMS。
-- 真实 100 资产 **浏览器** 压测和备份恢复实机演练；控制台 Playwright E2E
+- 外部对象存储验证（见 [object-storage-rehearsal.md](object-storage-rehearsal.md)）尚未执行，
+  需要真实 S3 凭据。100 资产 **浏览器** 压测已于 2026-09-20 跑通（100 资产 / 2 租户 /
+  100 个 BROWSER 任务全部成功 / 85.2 秒 / 1.17 任务/秒 / 500 条证据），多副本演练同日跑通
+  并含变异检查；备份恢复实机演练；控制台 Playwright E2E
   已纳入 Compose smoke，并已于 2026-09-15 在本机实跑通过（见
   [operations.md](operations.md) 的验收清单和 [backup-restore-rehearsal.md](backup-restore-rehearsal.md)）。
   浏览器模式**登录态**检测已于 2026-09-20 纳入同一 smoke（cookie 门控 fixture

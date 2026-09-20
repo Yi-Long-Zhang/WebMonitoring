@@ -29,24 +29,45 @@ func (s *S3Store) Ready(ctx context.Context) error {
 	return err
 }
 
-func NewS3Store(ctx context.Context, endpoint, accessKey, secretKey, bucket string) (*S3Store, error) {
-	parsed, err := url.Parse(endpoint)
+// S3Options configures the object-storage evidence store. It is a struct rather
+// than a parameter list because the list had already reached four positional
+// strings and the next one would have been easy to transpose.
+type S3Options struct {
+	Endpoint  string
+	AccessKey string
+	SecretKey string
+	Bucket    string
+	// Region pins the bucket's region. Leaving it empty makes minio-go discover
+	// the region with GetBucketLocation, which costs an extra round trip on every
+	// client construction and requires s3:GetBucketLocation in a least-privilege
+	// policy. Against a non-AWS S3-compatible endpoint it is usually unnecessary.
+	Region string
+}
+
+func NewS3Store(ctx context.Context, opts S3Options) (*S3Store, error) {
+	parsed, err := url.Parse(opts.Endpoint)
 	if err != nil || parsed.Host == "" {
 		return nil, fmt.Errorf("invalid S3 endpoint")
 	}
 	client, err := minio.New(parsed.Host, &minio.Options{
-		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
+		Creds:  credentials.NewStaticV4(opts.AccessKey, opts.SecretKey, ""),
 		Secure: parsed.Scheme == "https",
+		Region: opts.Region,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("configure S3 client: %w", err)
 	}
+	bucket := opts.Bucket
+	// A bucket that already exists is used as-is. Creating one is attempted only
+	// when it is absent, and a policy without s3:CreateBucket fails here at
+	// startup rather than later at write time -- the race re-check exists because
+	// two replicas can both find the bucket missing and both try to create it.
 	exists, err := client.BucketExists(ctx, bucket)
 	if err != nil {
 		return nil, fmt.Errorf("check evidence bucket: %w", err)
 	}
 	if !exists {
-		if err := client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{}); err != nil {
+		if err := client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: opts.Region}); err != nil {
 			existsAfterRace, checkErr := client.BucketExists(ctx, bucket)
 			if checkErr != nil || !existsAfterRace {
 				return nil, fmt.Errorf("create evidence bucket: %w", err)
