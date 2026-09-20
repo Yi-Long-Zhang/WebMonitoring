@@ -8,6 +8,33 @@ export function setCsrfToken(value: string) {
   csrfToken = value;
 }
 
+// PageParams is the shared shape of every keyset-paginated list query. The
+// resource filters are included here because the endpoints that accept them
+// accept limit/cursor on the same request, and the cursor is a position in the
+// (createdAt DESC, id DESC) ordering that the filter does not change.
+export type PageParams = {
+  limit?: number;
+  cursor?: string;
+  assetId?: string;
+  incidentId?: string;
+};
+
+// listQuery builds the query string for a list request. Absent filters are
+// omitted rather than sent empty, because the server treats an empty value and
+// an absent one the same way but the URL reads better and caches better. The
+// parameter type is deliberately open so every list request -- including the
+// report summary, whose filters are not pagination -- shares this one builder
+// instead of growing another copy of the same loop.
+function listQuery(params: Record<string, string | number | undefined | null>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      query.set(key, String(value));
+    }
+  }
+  return query.toString() ? `?${query.toString()}` : "";
+}
+
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
@@ -60,8 +87,8 @@ export function getDashboard() {
   return request<Dashboard>("/dashboard");
 }
 
-export function getAssets() {
-  return request<ListResponse<Asset>>("/assets");
+export function getAssets(params: PageParams = {}) {
+  return request<ListResponse<Asset>>(`/assets${listQuery(params)}`);
 }
 
 export function createAsset(input: Pick<Asset, "name" | "url" | "type" | "siteId">) {
@@ -110,8 +137,8 @@ export function verifyAsset(id: string) {
   });
 }
 
-export function getPolicies() {
-  return request<ListResponse<Policy>>("/policies");
+export function getPolicies(params: PageParams = {}) {
+  return request<ListResponse<Policy>>(`/policies${listQuery(params)}`);
 }
 
 export function updatePolicy(assetId: string, input: Partial<Policy>) {
@@ -121,9 +148,8 @@ export function updatePolicy(assetId: string, input: Partial<Policy>) {
   });
 }
 
-export function getBaselines(assetId?: string) {
-  const query = assetId ? `?assetId=${encodeURIComponent(assetId)}` : "";
-  return request<ListResponse<Baseline>>(`/baselines${query}`);
+export function getBaselines(params: PageParams = {}) {
+  return request<ListResponse<Baseline>>(`/baselines${listQuery(params)}`);
 }
 
 export function approveBaseline(id: string) {
@@ -137,8 +163,8 @@ export function retireBaseline(id: string) {
   return request<Baseline>(`/baselines/${id}/retire`, { method: "POST" });
 }
 
-export function getJobs() {
-  return request<ListResponse<DetectionJob>>("/detection-jobs");
+export function getJobs(params: PageParams = {}) {
+  return request<ListResponse<DetectionJob>>(`/detection-jobs${listQuery(params)}`);
 }
 
 export function runDetection(assetId: string, mode: "HTTP" | "BROWSER") {
@@ -148,21 +174,16 @@ export function runDetection(assetId: string, mode: "HTTP" | "BROWSER") {
   });
 }
 
-export function getIncidents() {
-  return request<ListResponse<Incident>>("/incidents");
+export function getIncidents(params: PageParams = {}) {
+  return request<ListResponse<Incident>>(`/incidents${listQuery(params)}`);
 }
 
-export function getIncidentTimeline(id: string, params: { limit?: number; cursor?: string } = {}) {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value) query.set(key, String(value));
-  }
-  const suffix = query.toString() ? `?${query.toString()}` : "";
-  return request<ListResponse<IncidentEvent>>(`/incidents/${encodeURIComponent(id)}/timeline${suffix}`);
+export function getIncidentTimeline(id: string, params: PageParams = {}) {
+  return request<ListResponse<IncidentEvent>>(`/incidents/${encodeURIComponent(id)}/timeline${listQuery(params)}`);
 }
 
-export function getEvidence() {
-  return request<ListResponse<Evidence>>("/evidence");
+export function getEvidence(params: PageParams = {}) {
+  return request<ListResponse<Evidence>>(`/evidence${listQuery(params)}`);
 }
 
 export function issueEvidenceSignedUrl(id: string) {
@@ -175,18 +196,12 @@ export function getAlertChannels() {
   return request<ListResponse<AlertChannel>>("/alert-channels");
 }
 
-export function getAlertDeliveries(incidentId?: string) {
-  const query = incidentId ? `?incidentId=${encodeURIComponent(incidentId)}` : "";
-  return request<ListResponse<AlertDelivery>>(`/alert-deliveries${query}`);
+export function getAlertDeliveries(params: PageParams = {}) {
+  return request<ListResponse<AlertDelivery>>(`/alert-deliveries${listQuery(params)}`);
 }
 
 export function getReportSummary(params: { from?: string; to?: string; assetId?: string; severity?: string } = {}) {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value) query.set(key, value);
-  }
-  const suffix = query.toString() ? `?${query.toString()}` : "";
-  return request<ReportSummary>(`/reports/summary${suffix}`);
+  return request<ReportSummary>(`/reports/summary${listQuery(params)}`);
 }
 
 export function createAlertChannel(input: {
@@ -203,8 +218,8 @@ export function createAlertChannel(input: {
   });
 }
 
-export function getAuditEvents() {
-  return request<ListResponse<AuditEvent>>("/audit-events");
+export function getAuditEvents(params: PageParams = {}) {
+  return request<ListResponse<AuditEvent>>(`/audit-events${listQuery(params)}`);
 }
 
 export function transitionIncident(id: string, status: IncidentStatus, resolution = "", ownerId = "") {
@@ -221,8 +236,8 @@ export function addIncidentComment(id: string, note: string) {
   });
 }
 
-export function getSites() {
-  return request<ListResponse<Site>>("/sites");
+export function getSites(params: PageParams = {}) {
+  return request<ListResponse<Site>>(`/sites${listQuery(params)}`);
 }
 
 export function createSite(input: { name: string; domain: string; ownerId?: string }) {
@@ -239,8 +254,8 @@ export function updateSite(id: string, input: Partial<Pick<Site, "name" | "domai
   });
 }
 
-export function getTenants() {
-  return request<ListResponse<Tenant>>("/tenants");
+export function getTenants(params: PageParams = {}) {
+  return request<ListResponse<Tenant>>(`/tenants${listQuery(params)}`);
 }
 
 export function createTenant(input: { name: string; slug: string; adminUsername: string; adminPassword: string }) {

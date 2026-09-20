@@ -1,13 +1,15 @@
 <script setup lang="ts">
+import ListFooter from "../components/monitoring/ListFooter.vue";
 import type { Asset, AssetType, Policy } from "../types/domain";
 
-defineProps<{ assets: Asset[]; policies: Policy[]; canOperate: boolean }>();
+defineProps<{ assets: Asset[]; policies: Policy[]; canOperate: boolean; hasMore: boolean; loadingMore: boolean }>();
 const emit = defineEmits<{
   create: [input: { name: string; url: string; type: AssetType }];
   verify: [asset: Asset];
   toggle: [asset: Asset];
   detect: [asset: Asset, mode: "HTTP" | "BROWSER"];
   policy: [asset: Asset];
+  loadMore: [];
 }>();
 function statusType(status: string) { return status === "VERIFIED" ? "success" : "warning"; }
 </script>
@@ -23,6 +25,7 @@ function statusType(status: string) { return status === "VERIFIED" ? "success" :
         <el-table-column label="监测" width="100"><template #default="{ row }"><el-switch :model-value="row.enabled" :disabled="!canOperate || row.verificationStatus !== 'VERIFIED'" @change="emit('toggle', row)" /></template></el-table-column>
         <el-table-column label="操作" width="300" fixed="right"><template #default="{ row }"><template v-if="canOperate"><el-button v-if="row.verificationStatus !== 'VERIFIED'" text type="warning" @click="emit('verify', row)">授权验证</el-button><el-button text :disabled="!row.enabled" @click="emit('detect', row, 'HTTP')">HTTP 检测</el-button><el-button text :disabled="!row.enabled" @click="emit('detect', row, 'BROWSER')">浏览器检测</el-button><el-button text @click="emit('policy', row)">策略</el-button></template><span v-else class="muted">只读</span></template></el-table-column>
       </el-table>
+      <ListFooter :has-more="hasMore" :loading="loadingMore" @load-more="emit('loadMore')" />
     </section>
   </section>
 </template>
