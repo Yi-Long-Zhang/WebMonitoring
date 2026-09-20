@@ -498,6 +498,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/alert-channels/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["updateAlertChannel"];
+        post?: never;
+        delete: operations["deleteAlertChannel"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/alert-deliveries": {
         parameters: {
             query?: never;
@@ -1109,6 +1125,16 @@ export interface components {
             createdAt: string;
         };
         CreateAlertChannel: {
+            name: string;
+            type: components["schemas"]["AlertChannelType"];
+            /** Format: uri */
+            url?: string;
+            recipients?: string;
+            /** Format: password */
+            secret?: string;
+            enabled: boolean;
+        };
+        AlertChannelUpdate: {
             name: string;
             type: components["schemas"]["AlertChannelType"];
             /** Format: uri */
@@ -2152,6 +2178,56 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["AlertChannel"];
                 };
+            };
+        };
+    };
+    updateAlertChannel: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertChannelUpdate"];
+            };
+        };
+        responses: {
+            /** @description 已更新 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertChannel"];
+                };
+            };
+        };
+    };
+    deleteAlertChannel: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

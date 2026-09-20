@@ -102,6 +102,19 @@ type Repository interface {
 	ListIncidentEvents(tenantID, incidentID string, opts ListOptions) ([]domain.IncidentEvent, string, error)
 
 	CreateAlertChannel(domain.AlertChannel) error
+	// GetAlertChannel returns one channel with its secret decrypted, scoped to
+	// the tenant. A cross-tenant id is ErrNotFound rather than a distinguishable
+	// error, matching every other single-resource read.
+	GetAlertChannel(tenantID, id string) (domain.AlertChannel, error)
+	// UpdateAlertChannel rewrites an existing row in place. It is deliberately
+	// not delete-then-insert: the encrypted columns are bound to the row's id
+	// and tenant through their associated data, so a new id would leave the
+	// ciphertext permanently undecryptable.
+	UpdateAlertChannel(domain.AlertChannel) error
+	// DeleteAlertChannel removes one channel, scoped to the tenant. Deliveries
+	// already recorded against it are kept: they are the record that an alert
+	// was sent, and deleting the channel must not erase that.
+	DeleteAlertChannel(tenantID, id string) error
 	ListAlertChannels(tenantID string) ([]domain.AlertChannel, error)
 	ListAlertChannelsWithSecrets(tenantID string) ([]domain.AlertChannel, error)
 	CreateAlertDelivery(domain.AlertDelivery) error

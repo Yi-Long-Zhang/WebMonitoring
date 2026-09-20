@@ -195,6 +195,8 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("POST /api/v1/evidence/{id}/signed-url", s.requireRoles(s.signedEvidenceURL, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/alert-channels", s.listAlertChannels)
 	protected.HandleFunc("POST /api/v1/alert-channels", s.requireRoles(s.createAlertChannel, domain.RoleAdmin))
+	protected.HandleFunc("PUT /api/v1/alert-channels/{id}", s.requireRoles(s.updateAlertChannel, domain.RoleAdmin))
+	protected.HandleFunc("DELETE /api/v1/alert-channels/{id}", s.requireRoles(s.deleteAlertChannel, domain.RoleAdmin))
 	protected.HandleFunc("GET /api/v1/alert-deliveries", s.listAlertDeliveries)
 	protected.HandleFunc("GET /api/v1/audit-events", s.listAudits)
 	protected.HandleFunc("POST /api/v1/maintenance/retention", s.requireRoles(s.runRetentionMaintenance, domain.RoleAdmin))
@@ -2001,41 +2003,65 @@ func validSeverity(value domain.Severity) bool {
 	return value == domain.SeverityInfo || value == domain.SeverityLow || value == domain.SeverityMedium ||
 		value == domain.SeverityHigh || value == domain.SeverityCritical
 }
-func (s *Server) createAlertChannel(writer http.ResponseWriter, request *http.Request) {
-	session := principal(request)
-	var input struct {
-		Name       string `json:"name"`
-		Type       string `json:"type"`
-		URL        string `json:"url"`
-		Recipients string `json:"recipients"`
-		Secret     string `json:"secret"`
-		Enabled    bool   `json:"enabled"`
-	}
-	if !decodeJSON(writer, request, &input) {
-		return
-	}
+// alertChannelInput is the request body shared by create and update.
+type alertChannelInput struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	URL        string `json:"url"`
+	Recipients string `json:"recipients"`
+	Secret     string `json:"secret"`
+	Enabled    bool   `json:"enabled"`
+}
+
+// validateAlertChannelInput applies every rule that decides whether a channel
+// may be stored. It exists so create and update cannot drift: the SSRF guard
+// below is the control that keeps a channel from pointing at the internal
+// network, and a second, subtly different copy of it on the update path would
+// be a hole that only the update path has.
+//
+// It returns the sanitized input and whether the caller may proceed; the error
+// response is already written when it returns false.
+func (s *Server) validateAlertChannelInput(writer http.ResponseWriter, request *http.Request, input alertChannelInput) (alertChannelInput, bool) {
 	input.Type = strings.ToUpper(input.Type)
 	switch input.Type {
 	case "WEBHOOK", "WECHAT_WORK", "DINGTALK", "EMAIL":
 	default:
 		writeError(writer, request, http.StatusBadRequest, "INVALID_CHANNEL", "渠道类型必须是 WEBHOOK、WECHAT_WORK、DINGTALK 或 EMAIL", nil)
-		return
+		return input, false
 	}
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
 		writeError(writer, request, http.StatusBadRequest, "INVALID_CHANNEL", "渠道名称不能为空", nil)
-		return
+		return input, false
 	}
 	if input.Type == "EMAIL" {
-		if recipients, ok := normalizeRecipients(input.Recipients); !ok {
+		recipients, ok := normalizeRecipients(input.Recipients)
+		if !ok {
 			writeError(writer, request, http.StatusBadRequest, "INVALID_CHANNEL", "邮件渠道必须提供有效的收件人地址", nil)
-			return
-		} else {
-			input.Recipients = recipients
+			return input, false
 		}
+		input.Recipients = recipients
 		input.URL = ""
-	} else if _, _, err := s.guard.Validate(request.Context(), input.URL); err != nil {
+		return input, true
+	}
+	// A webhook-ish type carries no recipients; clear whatever was sent so a
+	// stale address list cannot be stored against a channel that never reads it.
+	input.Recipients = ""
+	if _, _, err := s.guard.Validate(request.Context(), input.URL); err != nil {
 		writeError(writer, request, http.StatusBadRequest, "UNSAFE_WEBHOOK", "通知地址不符合安全策略", nil)
+		return input, false
+	}
+	return input, true
+}
+
+func (s *Server) createAlertChannel(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	var input alertChannelInput
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	input, ok := s.validateAlertChannelInput(writer, request, input)
+	if !ok {
 		return
 	}
 	now := time.Now().UTC()
@@ -2051,6 +2077,63 @@ func (s *Server) createAlertChannel(writer http.ResponseWriter, request *http.Re
 	s.appendAudit(request, session.User, "alert_channel.create", "alert_channel", channel.ID, "SUCCESS", nil)
 	channel.Secret = ""
 	writeJSON(writer, http.StatusCreated, channel)
+}
+
+// updateAlertChannel rewrites a channel in place. The row keeps its id: the
+// stored credentials are bound to it through their associated data, so a
+// recreated row would never decrypt again.
+func (s *Server) updateAlertChannel(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	existing, err := s.repository.GetAlertChannel(session.User.TenantID, request.PathValue("id"))
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	var input alertChannelInput
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	input, ok := s.validateAlertChannelInput(writer, request, input)
+	if !ok {
+		return
+	}
+	// An empty secret means "leave the stored one alone". The client never
+	// receives the plaintext (every response clears it), so it cannot echo the
+	// current value back, and treating empty as a deliberate erase would wipe
+	// the credential on any edit that only renamed the channel.
+	secret := input.Secret
+	if secret == "" {
+		secret = existing.Secret
+	}
+	channel := existing
+	channel.Name = input.Name
+	channel.Type = input.Type
+	channel.URL = input.URL
+	channel.Recipients = input.Recipients
+	channel.Secret = secret
+	channel.Enabled = input.Enabled
+	channel.UpdatedAt = time.Now().UTC()
+	if err := s.repository.UpdateAlertChannel(channel); err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	s.appendAudit(request, session.User, "alert_channel.update", "alert_channel", channel.ID, "SUCCESS", nil)
+	channel.Secret = ""
+	writeJSON(writer, http.StatusOK, channel)
+}
+
+// deleteAlertChannel removes the configuration, not the history. Deliveries
+// already recorded against it stay: they are the evidence that an alert was
+// sent, and destroying them would erase the audit trail the console shows.
+func (s *Server) deleteAlertChannel(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	id := request.PathValue("id")
+	if err := s.repository.DeleteAlertChannel(session.User.TenantID, id); err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	s.appendAudit(request, session.User, "alert_channel.delete", "alert_channel", id, "SUCCESS", nil)
+	writer.WriteHeader(http.StatusNoContent)
 }
 
 // normalizeRecipients validates and canonicalizes a comma-separated recipient

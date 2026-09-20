@@ -157,6 +157,15 @@ export const useConsoleStore = defineStore("console", () => {
     await assets.loadFirst();
   }
 
+  // The audit head page is loaded once during refresh(), so a view that renders
+  // the trail after a write has to ask for it again. Dropping the accumulated
+  // pages first: new rows land at the head of the same ordering, so the old tail
+  // is not a page of the reloaded result.
+  async function reloadAudits() {
+    audits.forget();
+    await audits.loadFirst();
+  }
+
   const pages = { assets, sites, policies, baselines, incidents, jobs, evidence, alertDeliveries, audits, tenants };
   type PageKey = keyof typeof pages;
 
@@ -198,5 +207,6 @@ export const useConsoleStore = defineStore("console", () => {
     loadMore,
     applyAuditFilters,
     reloadAssets,
+    reloadAudits,
   };
 });

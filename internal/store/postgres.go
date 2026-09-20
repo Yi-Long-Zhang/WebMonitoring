@@ -1031,8 +1031,16 @@ func decryptChannelField(secrets security.SecretBox, stored, associatedData stri
 	return stored, nil
 }
 
+// channelAssociatedData names the row a channel's ciphertext is bound to. The
+// id and tenant are part of it, which is why a channel is updated in place
+// rather than recreated: any other id would change the associated data and the
+// stored ciphertext would never decrypt again.
+func channelAssociatedData(tenantID, id string) string {
+	return tenantID + ":" + id
+}
+
 func (p *PostgresRepository) CreateAlertChannel(channel domain.AlertChannel) error {
-	associatedData := channel.TenantID + ":" + channel.ID
+	associatedData := channelAssociatedData(channel.TenantID, channel.ID)
 	encryptedURL, err := p.secrets.Encrypt(channel.URL, associatedData+":url")
 	if err != nil {
 		return err
@@ -1049,6 +1057,71 @@ func (p *PostgresRepository) CreateAlertChannel(channel domain.AlertChannel) err
 		encryptedSecret, channel.Enabled, channel.CreatedAt, channel.UpdatedAt,
 	)
 	return normalizePostgresError(err)
+}
+
+func (p *PostgresRepository) GetAlertChannel(tenantID, id string) (domain.AlertChannel, error) {
+	var item domain.AlertChannel
+	var encryptedURL, encryptedSecret string
+	err := p.pool.QueryRow(context.Background(), `
+		SELECT id,tenant_id,name,channel_type,url,recipients,COALESCE(secret_ciphertext,''),enabled,created_at,updated_at
+		FROM alert_channels WHERE tenant_id=$1 AND id=$2`, tenantID, id).Scan(
+		&item.ID, &item.TenantID, &item.Name, &item.Type, &encryptedURL, &item.Recipients, &encryptedSecret,
+		&item.Enabled, &item.CreatedAt, &item.UpdatedAt,
+	)
+	if err != nil {
+		return domain.AlertChannel{}, normalizePostgresError(err)
+	}
+	associatedData := channelAssociatedData(item.TenantID, item.ID)
+	item.URL, err = decryptChannelField(p.secrets, encryptedURL, associatedData+":url")
+	if err != nil {
+		return domain.AlertChannel{}, err
+	}
+	item.Secret, err = decryptChannelField(p.secrets, encryptedSecret, associatedData+":secret")
+	if err != nil {
+		return domain.AlertChannel{}, err
+	}
+	return item, nil
+}
+
+func (p *PostgresRepository) UpdateAlertChannel(channel domain.AlertChannel) error {
+	associatedData := channelAssociatedData(channel.TenantID, channel.ID)
+	encryptedURL, err := p.secrets.Encrypt(channel.URL, associatedData+":url")
+	if err != nil {
+		return err
+	}
+	encryptedSecret, err := p.secrets.Encrypt(channel.Secret, associatedData+":secret")
+	if err != nil {
+		return err
+	}
+	// tenant_id is in the WHERE clause, not just the SET: it is the isolation
+	// boundary, and a write that matched on id alone would let one tenant
+	// rewrite another's channel.
+	tag, err := p.pool.Exec(context.Background(), `
+		UPDATE alert_channels
+		SET name=$3,channel_type=$4,url=$5,recipients=$6,secret_ciphertext=NULLIF($7,''),enabled=$8,updated_at=$9
+		WHERE tenant_id=$1 AND id=$2`,
+		channel.TenantID, channel.ID, channel.Name, channel.Type, encryptedURL, channel.Recipients,
+		encryptedSecret, channel.Enabled, channel.UpdatedAt,
+	)
+	if err != nil {
+		return normalizePostgresError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *PostgresRepository) DeleteAlertChannel(tenantID, id string) error {
+	tag, err := p.pool.Exec(context.Background(),
+		`DELETE FROM alert_channels WHERE tenant_id=$1 AND id=$2`, tenantID, id)
+	if err != nil {
+		return normalizePostgresError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (p *PostgresRepository) ListAlertChannels(tenantID string) ([]domain.AlertChannel, error) {
