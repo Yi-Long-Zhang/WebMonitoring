@@ -35,18 +35,28 @@ function listQuery(params: Record<string, string | number | undefined | null>): 
   return query.toString() ? `?${query.toString()}` : "";
 }
 
-export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
-  headers.set("Accept", "application/json");
-  if (init.body) {
+// requestOptions is RequestInit plus the one thing fetch's init cannot express:
+// how to read the body. Every endpoint but the asset export answers
+// application/json, so JSON stays the default and the rare caller that wants
+// the raw body says so. Without this the export call had to leave request()
+// entirely and re-implement the CSRF header, credentials and error envelope --
+// a second copy of the transport that would drift from this one.
+export type RequestOptions = RequestInit & { responseType?: "json" | "blob" };
+
+export async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
+  const { responseType = "json", ...rest } = init;
+  const headers = new Headers(rest.headers);
+  // A blob response is not JSON, so asking for it must not also announce JSON.
+  headers.set("Accept", responseType === "blob" ? "*/*" : "application/json");
+  if (rest.body) {
     headers.set("Content-Type", "application/json");
   }
-  if (init.method && !["GET", "HEAD", "OPTIONS"].includes(init.method.toUpperCase())) {
+  if (rest.method && !["GET", "HEAD", "OPTIONS"].includes(rest.method.toUpperCase())) {
     headers.set("X-CSRF-Token", csrfToken);
   }
   const response = await fetch(`/api/v1${path}`, {
     credentials: "include",
-    ...init,
+    ...rest,
     headers,
   });
   if (!response.ok) {
@@ -60,6 +70,9 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   }
   if (response.status === 204) {
     return undefined as T;
+  }
+  if (responseType === "blob") {
+    return response.blob() as Promise<T>;
   }
   return response.json() as Promise<T>;
 }
@@ -112,28 +125,13 @@ export function importAssets(input: {
   }>("/assets/import", { method: "POST", body: JSON.stringify(input) });
 }
 
-// GET /assets/export answers with a text/csv body when format=csv, which
-// request() cannot read -- it always parses the response as JSON. So this is the
-// one call that goes around it and hands back the body as a Blob for the caller
-// to save. The server keeps ownership of the CSV writing, so the field escaping
-// has one implementation instead of a second one here.
-//
-// Known limitation: request() always calls response.json() with no responseType
-// parameter. Two ways to resolve this if more non-JSON endpoints appear:
-// (a) add a responseType option to request() that returns a Blob or text, or
-// (b) change the contract to return JSON arrays and build the CSV client-side.
-export async function exportAssets(format: "json" | "csv" = "csv"): Promise<Blob> {
-  const response = await fetch(`/api/v1/assets/export?format=${format}`, { credentials: "include" });
-  if (!response.ok) {
-    let payload: { message?: string } = {};
-    try {
-      payload = await response.json();
-    } catch {
-      // Keep the network status as the fallback error.
-    }
-    throw new Error(payload.message || `${response.status} ${response.statusText}`);
-  }
-  return response.blob();
+// GET /assets/export answers with a text/csv body when format=csv, which is why
+// this is the one call that asks for a blob. The server keeps ownership of the
+// CSV writing, so field escaping has one implementation instead of a second one
+// here. The contract declares both content types on the same operation, so a
+// non-JSON body is expected rather than an exception to route around.
+export function exportAssets(format: "json" | "csv" = "csv"): Promise<Blob> {
+  return request<Blob>(`/assets/export?format=${format}`, { responseType: "blob" });
 }
 
 export function updateAsset(id: string, input: Partial<Pick<Asset, "name" | "ownerId" | "siteId" | "enabled">>) {
