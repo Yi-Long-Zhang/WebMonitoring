@@ -214,6 +214,7 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("POST /api/v1/alert-channels", s.requireRoles(s.createAlertChannel, domain.RoleAdmin))
 	protected.HandleFunc("PUT /api/v1/alert-channels/{id}", s.requireRoles(s.updateAlertChannel, domain.RoleAdmin))
 	protected.HandleFunc("DELETE /api/v1/alert-channels/{id}", s.requireRoles(s.deleteAlertChannel, domain.RoleAdmin))
+	protected.HandleFunc("POST /api/v1/alert-channels/{id}/test", s.requireRoles(s.testAlertChannel, domain.RoleAdmin))
 	protected.HandleFunc("GET /api/v1/alert-deliveries", s.listAlertDeliveries)
 	protected.HandleFunc("GET /api/v1/audit-events", s.listAudits)
 	protected.HandleFunc("POST /api/v1/maintenance/retention", s.requireRoles(s.runRetentionMaintenance, domain.RoleAdmin))
@@ -2181,6 +2182,40 @@ func (s *Server) deleteAlertChannel(writer http.ResponseWriter, request *http.Re
 	}
 	s.appendAudit(request, session.User, "alert_channel.delete", "alert_channel", id, "SUCCESS", nil)
 	writer.WriteHeader(http.StatusNoContent)
+}
+
+// testAlertChannel sends one throwaway message down a channel so the operator
+// who just finished configuring it can find out whether it works.
+//
+// The audit record is written before the attempt and its result recorded, not
+// skipped on failure: an outbound message left this system, addressed to a
+// destination the operator named, and that is exactly the kind of action the
+// audit log exists to hold. A failed attempt is still an attempt.
+//
+// The response carries the delivery error text because the operator is the one
+// who can act on it -- "notification endpoint returned 401" is the whole answer
+// to why the test failed. It is the redacted form, the same string the delivery
+// table would show.
+func (s *Server) testAlertChannel(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	id := request.PathValue("id")
+	err := s.detection.TestChannel(request.Context(), session.User.TenantID, id)
+	if err != nil {
+		outcome := "SUCCESS"
+		if !errors.Is(err, store.ErrNotFound) {
+			outcome = "FAILURE"
+		}
+		detail := map[string]any{"error": security.RedactString(err.Error())}
+		s.appendAudit(request, session.User, "alert_channel.test", "alert_channel", id, outcome, detail)
+		if errors.Is(err, store.ErrNotFound) {
+			s.notFound(writer, request)
+			return
+		}
+		writeError(writer, request, http.StatusBadGateway, "CHANNEL_TEST_FAILED", security.RedactString(err.Error()), nil)
+		return
+	}
+	s.appendAudit(request, session.User, "alert_channel.test", "alert_channel", id, "SUCCESS", nil)
+	writeJSON(writer, http.StatusOK, map[string]string{"status": "DELIVERED"})
 }
 
 // normalizeRecipients validates and canonicalizes a comma-separated recipient

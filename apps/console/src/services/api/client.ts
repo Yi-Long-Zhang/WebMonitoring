@@ -274,6 +274,16 @@ export function deleteAlertChannel(id: string) {
   return request<void>(`/alert-channels/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+// testAlertChannel asks the server to send one throwaway message down a channel.
+// It resolves only once the attempt has finished, and rejects with the
+// delivery error when it failed -- the operator asked, so a failure is the
+// answer rather than something to swallow.
+export function testAlertChannel(id: string) {
+  return request<{ status: "DELIVERED" }>(`/alert-channels/${encodeURIComponent(id)}/test`, {
+    method: "POST",
+  });
+}
+
 // AuditFilterParams mirrors the narrowing query parameters GET /audit-events
 // accepts. Every field is optional and an absent one means "do not filter on
 // this dimension". `action` is an exact match -- the server does not do prefix

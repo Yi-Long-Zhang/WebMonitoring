@@ -514,6 +514,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/alert-channels/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 向渠道发送一条测试消息
+         * @description 发送一条一次性测试消息，用于验证渠道配置是否正确，无需等待真实事件。
+         *     测试刻意绕过熔断器（熔断打开时正是操作员最需要测试的时刻），也不写入
+         *     投递记录（投递表是平台真实告警的历史）。SSRF 防护照常生效。
+         */
+        post: operations["testAlertChannel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/alert-deliveries": {
         parameters: {
             query?: never;
@@ -2229,6 +2251,42 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    testAlertChannel: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 测试消息已投递 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status: "DELIVERED";
+                    };
+                };
+            };
+            /** @description 投递失败，error 字段为脱敏后的失败原因 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
             };
         };
     };

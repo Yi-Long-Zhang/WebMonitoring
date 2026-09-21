@@ -591,6 +591,35 @@ paths:
       responses:
         "204":
           description: 已删除
+  /alert-channels/{id}/test:
+    post:
+      operationId: testAlertChannel
+      summary: 向渠道发送一条测试消息
+      description: |
+        发送一条一次性测试消息，用于验证渠道配置是否正确，无需等待真实事件。
+        测试刻意绕过熔断器（熔断打开时正是操作员最需要测试的时刻），也不写入
+        投递记录（投递表是平台真实告警的历史）。SSRF 防护照常生效。
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 测试消息已投递
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [DELIVERED] }
+        "502":
+          description: 投递失败，error 字段为脱敏后的失败原因
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /alert-deliveries:
     get:
       operationId: listAlertDeliveries
