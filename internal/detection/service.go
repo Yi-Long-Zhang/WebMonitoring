@@ -86,6 +86,32 @@ func (s *Service) SetAlertQueue(queue AlertQueue) {
 	s.alertQueue = queue
 }
 
+// SuspendedChannels reports which of the given channel ids currently have an
+// open notification circuit breaker, so the console can show why a channel has
+// gone quiet. It is read-only: it consumes no allowance and does not probe.
+//
+// It goes through the service rather than the API reaching for the notifier
+// because the service is what owns the notifier, and because a deployment that
+// delivers through the alert worker has no notifier here at all -- in which case
+// there is no gate to read and every channel reports as healthy, which is the
+// honest answer rather than a misleading one.
+func (s *Service) SuspendedChannels(ctx context.Context, channelIDs []string) map[string]bool {
+	suspended := make(map[string]bool, len(channelIDs))
+	if s.notifier == nil {
+		return suspended
+	}
+	gate := s.notifier.Gate()
+	if gate == nil {
+		return suspended
+	}
+	for _, id := range channelIDs {
+		if gate.Open(ctx, id) {
+			suspended[id] = true
+		}
+	}
+	return suspended
+}
+
 // NotifyIncident raises a notification about an incident that something other
 // than a detection run has just changed -- an operator transitioning it, or
 // adding a note. It exists as one method on this service rather than as the API

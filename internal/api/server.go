@@ -1857,16 +1857,35 @@ func (s *Server) downloadSignedEvidence(writer http.ResponseWriter, request *htt
 	_, _ = writer.Write(content)
 }
 
+// alertChannelView is an alert channel as the console sees it: the stored row,
+// with its endpoint redacted, plus whether its notification circuit breaker is
+// currently open. The breaker state is derived rather than stored, so it is not
+// a field on the domain type -- a channel that has been failing is a fact about
+// the gate, not about the channel.
+type alertChannelView struct {
+	domain.AlertChannel
+	// Suspended is true while the breaker is open: the channel is being skipped
+	// rather than retried. It is the answer to "why did nobody get told".
+	Suspended bool `json:"suspended"`
+}
+
 func (s *Server) listAlertChannels(writer http.ResponseWriter, request *http.Request) {
 	items, err := s.repository.ListAlertChannels(principal(request).User.TenantID)
 	if err != nil {
 		s.repositoryFailure(writer, request, "list alert channels", err)
 		return
 	}
+	ids := make([]string, 0, len(items))
 	for index := range items {
 		items[index].URL = redactEndpoint(items[index].URL)
+		ids = append(ids, items[index].ID)
 	}
-	writeList(writer, items, "")
+	suspended := s.detection.SuspendedChannels(request.Context(), ids)
+	views := make([]alertChannelView, 0, len(items))
+	for _, channel := range items {
+		views = append(views, alertChannelView{AlertChannel: channel, Suspended: suspended[channel.ID]})
+	}
+	writeList(writer, views, "")
 }
 
 func (s *Server) listAlertDeliveries(writer http.ResponseWriter, request *http.Request) {

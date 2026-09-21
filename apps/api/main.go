@@ -24,6 +24,7 @@ import (
 	"webmonitoring/internal/identity"
 	"webmonitoring/internal/jobqueue"
 	"webmonitoring/internal/notify"
+	"webmonitoring/internal/notifygate"
 	"webmonitoring/internal/ratelimit"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
@@ -101,6 +102,18 @@ func main() {
 		Password: os.Getenv("SMTP_PASSWORD"),
 		From:     os.Getenv("SMTP_FROM"),
 	})
+	// Notifications are normally delivered by the alert worker, which installs
+	// its own gate. This one covers the embedded mode, where there is no worker
+	// and the API sends the alert itself -- and the transition and comment
+	// notifications the API raises directly. Sharing a Redis-backed gate is what
+	// makes the two agree when both are running.
+	alertPolicy := notifygate.ParsePolicy(os.Getenv,
+		time.Duration(config.PositiveInt(os.Getenv, "ALERT_GATE_WINDOW_SECONDS", 60))*time.Second)
+	if redisAddress := os.Getenv("REDIS_ADDR"); redisAddress != "" {
+		notifier.SetGate(notifygate.NewRedisGate(redisAddress, alertPolicy))
+	} else {
+		notifier.SetGate(notifygate.NewMemoryGate(alertPolicy))
+	}
 	detectionService := detection.NewService(
 		repository, evidenceStore, httpChecker, browserChecker, notifier, broker, logger,
 	)

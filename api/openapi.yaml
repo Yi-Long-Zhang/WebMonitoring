@@ -1434,7 +1434,7 @@ components:
       enum: [WEBHOOK, WECHAT_WORK, DINGTALK, EMAIL]
     AlertChannel:
       type: object
-      required: [id, name, type, url, enabled, createdAt]
+      required: [id, name, type, url, enabled, createdAt, suspended]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -1443,6 +1443,11 @@ components:
         recipients: { type: string }
         enabled: { type: boolean }
         createdAt: { type: string, format: date-time }
+        # Derived, not stored: true while the channel's notification circuit
+        # breaker is open, meaning consecutive deliveries have failed and the
+        # channel is being skipped rather than retried. It is the answer to "why
+        # did nobody get told about this incident".
+        suspended: { type: boolean }
     CreateAlertChannel:
       type: object
       required: [name, type, enabled]
