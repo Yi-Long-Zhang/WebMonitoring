@@ -42,6 +42,18 @@ services:
       - "18080:8080"
     environment:
       ALLOW_PRIVATE_TARGETS: "true"
+      # The smoke drives the whole API from one tenant in a couple of minutes:
+      # it registers assets, queues and cancels jobs, and runs the console walk.
+      # That is far past the production quotas (600/120/12 per minute), and the
+      # limiter was added after this script, so the bulk class started answering
+      # 429 RATE_LIMITED partway through and the whole run failed. The quotas are
+      # about bounding a real tenant's blast radius, which has no meaning for a
+      # throwaway stack that is torn down at the end of the run, so raise them
+      # here rather than teaching the script to pace itself around a limit it
+      # exists to exercise elsewhere.
+      RATE_LIMIT_READ_PER_WINDOW: "100000"
+      RATE_LIMIT_WRITE_PER_WINDOW: "20000"
+      RATE_LIMIT_BULK_PER_WINDOW: "2000"
 
   http-worker:
     environment:
