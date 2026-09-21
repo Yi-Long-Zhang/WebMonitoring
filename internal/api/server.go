@@ -2809,9 +2809,11 @@ func (s *Server) trace(next http.Handler) http.Handler {
 		}
 		s.metrics.Inc("webmonitoring_http_requests_total", map[string]string{
 			"method": request.Method, "status": strconv.Itoa(captured.status),
+			"path": metrics.PathClass(request.URL.Path),
 		})
 		s.metrics.ObserveDuration("webmonitoring_http_request_duration_seconds", time.Since(started), map[string]string{
 			"method": request.Method,
+			"path":   metrics.PathClass(request.URL.Path),
 		})
 	})
 }
