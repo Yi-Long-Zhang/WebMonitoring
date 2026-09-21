@@ -164,6 +164,25 @@ API/Worker 重启。测试数据保存在 `.data-smoke`（已被 Git 忽略）�
 | 多副本演练 | 调度器跨副本排队不重复（任务数等于资产数）、无重复 `(tenant, asset, mode)`、每个 worker 副本一个唯一消费者身份。`-Mode BROWSER` 时断言的是浏览器任务数（余量最薄，需小规模并放宽超时） | `.\scripts\multi-replica-drill.ps1`；变异检查 `-DropActiveJobIndex` 必须失败 |
 | 备份恢复演练 | 数据库 dump、evidence bucket 清单、恢复后 `/readyz` 与证据校验 | `.\scripts\compose-backup.ps1`、`.\scripts\compose-restore.ps1`（见 [backup-restore-rehearsal.md](backup-restore-rehearsal.md)） |
 
+**Q：这些门禁在 CI 里跑哪些？**
+
+三项，见 `.github/workflows/ci.yml`：
+
+| CI job | 跑什么 |
+| --- | --- |
+| `backend` | `gofmt` 校验、`go vet`、`go test`（连真 Postgres 和 Redis 服务容器）、`golangci-lint` |
+| `node` | 契约生成一致性（`generate:api` 后 `git diff --exit-code` 生成类型）、`lint`、`typecheck`、`test`、`build` |
+| `compose-smoke` | `compose-smoke.ps1` 全链路 |
+| `multi-replica-drill` | `multi-replica-drill.ps1`（默认 2 个 api 副本 + 3 个 http-worker） |
+
+**`load-test.ps1` 不在 CI 里**：它要跑满 100 资产并断言吞吐，在共享 runner 上
+既慢又不稳，保留为手工验收。`multi-replica-drill` 进 CI 是因为它测的东西没有替代
+路径——`compose-smoke` 走的是 API 逐资产建任务那条与调度器无关的路径，碰不到
+迁移 000012 的部分唯一索引。
+
+`golangci-lint` 锁到具体版本（`v1.64.8`）而不是 `latest`：上游发布新 linter 规则
+不应让历史提交凭空变红。
+
 **Q：浏览器登录态断言是怎么做的？为什么不能用简单办法？**
 
 用的是 `smoke-target` 容器上的第二个 nginx `server_name`（`smoke-login`）和独立
