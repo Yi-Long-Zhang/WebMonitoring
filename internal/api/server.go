@@ -1645,6 +1645,11 @@ func (s *Server) addIncidentComment(writer http.ResponseWriter, request *http.Re
 	}
 	s.appendAudit(request, session.User, "incident.comment", "incident", id, "SUCCESS", map[string]any{"length": length})
 	s.broker.Publish("incident.updated", incident)
+	// The note itself stays out of the notification, as it stays out of the
+	// audit record: what is sent says an incident was commented on, not what was
+	// said. A timeline note can carry customer detail, and a webhook destination
+	// is a third party.
+	s.detection.NotifyIncident(request.Context(), incident, domain.AlertReasonCommented)
 	writeJSON(writer, http.StatusCreated, event)
 }
 
@@ -1735,6 +1740,11 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 	}
 	s.appendAudit(request, session.User, "incident.transition", "incident", incident.ID, "SUCCESS", map[string]any{"status": input.Status})
 	s.broker.Publish("incident.updated", incident)
+	// A status change is exactly the thing an operator watching a channel wants
+	// to hear about -- an incident being acknowledged or resolved is the end of
+	// the loop they were paged into. It runs after the response is decided, so a
+	// notification failure cannot turn a successful transition into an error.
+	s.detection.NotifyIncident(request.Context(), incident, domain.AlertReasonTransitioned)
 	writeJSON(writer, http.StatusOK, incident)
 }
 
@@ -2020,6 +2030,7 @@ func validSeverity(value domain.Severity) bool {
 	return value == domain.SeverityInfo || value == domain.SeverityLow || value == domain.SeverityMedium ||
 		value == domain.SeverityHigh || value == domain.SeverityCritical
 }
+
 // alertChannelInput is the request body shared by create and update.
 type alertChannelInput struct {
 	Name       string `json:"name"`
