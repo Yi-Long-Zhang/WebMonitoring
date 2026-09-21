@@ -27,6 +27,7 @@ import (
 	"webmonitoring/internal/identity"
 	"webmonitoring/internal/maintenance"
 	"webmonitoring/internal/metrics"
+	"webmonitoring/internal/ratelimit"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
 
@@ -63,6 +64,7 @@ type Server struct {
 	logger            *slog.Logger
 	sessionSecure     bool
 	allowedOrigins    map[string]struct{}
+	rateLimiter       *ratelimit.Limiter
 	metrics           *metrics.Registry
 	readiness         func(context.Context) map[string]error
 	evidenceRetention time.Duration
@@ -107,6 +109,13 @@ func NewServer(
 // topology needs: the console and the API share an origin behind nginx.
 func (s *Server) SetAllowedOrigins(origins map[string]struct{}) {
 	s.allowedOrigins = origins
+}
+
+// SetRateLimiter installs the per-tenant request allowance. Without one the API
+// is unlimited, which is what the tests and the embedded single-process mode
+// get; a deployment sets it from REDIS_ADDR so every replica shares the count.
+func (s *Server) SetRateLimiter(limiter *ratelimit.Limiter) {
+	s.rateLimiter = limiter
 }
 
 func (s *Server) Metrics() *metrics.Registry {
@@ -226,7 +235,7 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("POST /api/v1/users/{id}/password", s.requireRoles(s.resetUserPassword, domain.RoleAdmin))
 	protected.HandleFunc("POST /api/v1/auth/password", s.changeOwnPassword)
 
-	root.Handle("/api/v1/", s.authenticate(s.csrf(protected)))
+	root.Handle("/api/v1/", s.authenticate(s.rateLimit(s.csrf(protected))))
 	return s.trace(root)
 }
 
@@ -2506,6 +2515,41 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(writer, request.WithContext(context.WithValue(request.Context(), principalKey{}, session)))
+	})
+}
+
+// rateLimit bounds how many requests one tenant may make per window, by class.
+//
+// It sits inside authenticate, not outside it, because the counter is keyed by
+// tenant and the tenant is only known once the session is resolved. That
+// ordering also means an unauthenticated flood never reaches the limiter, which
+// is correct: those requests are answered by authenticate, and counting them
+// here would let an anonymous caller exhaust a tenant's allowance.
+//
+// A refusal is 429 with Retry-After, not 403. The caller is authenticated and
+// authorized; only the rate is the problem, and a client that backs off should
+// be told to rather than being made to look at a permissions error.
+func (s *Server) rateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		session := principal(request)
+		class := ratelimit.Classify(request.Method, request.URL.Path)
+		allowed, err := s.rateLimiter.Allow(request.Context(), session.User.TenantID, class)
+		if err != nil {
+			// Allow already fails open; the error is logged so a broken limiter
+			// is visible rather than silently doing nothing.
+			s.logger.Warn("rate limiter unavailable; allowing request", "error", err)
+		}
+		if !allowed {
+			retryAfter := s.rateLimiter.RetryAfter()
+			writer.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+			s.metrics.Inc("webmonitoring_rate_limited_total", map[string]string{
+				"class": string(class),
+			})
+			writeError(writer, request, http.StatusTooManyRequests, "RATE_LIMITED",
+				"请求过于频繁，请稍后重试", map[string]any{"retryAfterSeconds": int(retryAfter.Seconds())})
+			return
+		}
+		next.ServeHTTP(writer, request)
 	})
 }
 
