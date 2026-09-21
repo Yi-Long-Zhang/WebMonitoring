@@ -1,10 +1,15 @@
 # 运行手册：MinIO 不可达 / 证据卷写满
 
-## 症状
+**Q：我看到的什么现象指向这本手册？**
 
 `/readyz` 里 `evidence` 报 `unavailable`；任务以 `EVIDENCE_WRITE_FAILED` /
 `EVIDENCE_METADATA_FAILED` 失败并触发重试；证据下载返回 404
 `EVIDENCE_MISSING`；或宿主的 `minio-data` 卷持续增长直至写满。
+
+**Q：又要删数据又要改配置，先看哪一节？**
+
+先看"先理解对象存储的位置"——排查前必须先确认 API 到底在跟 MinIO 还是本地
+目录说话，否则所有后续判断都建立在错误前提上。
 
 ## 先理解对象存储的位置
 

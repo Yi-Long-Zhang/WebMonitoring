@@ -1,10 +1,14 @@
 # 运行手册：PostgreSQL 不可用 / 连接池耗尽
 
-## 症状
+**Q：我看到的什么现象指向这本手册？**
 
 `/readyz` 返回 503 且 `dependencies` 里含 `"postgres":"unavailable"`；或在
 PostgreSQL 尚可连接的情况下，接口大面积返回 500 `STORAGE_UNAVAILABLE`、
 日志出现 `acquire` / 连接超时类错误。
+
+**Q：这本手册里哪一步会改变状态？**
+
+带 **【改变状态】** 标记的小节。只读诊断命令没有标记，可以先跑完再决定。
 
 ## 判断
 

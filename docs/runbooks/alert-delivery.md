@@ -1,10 +1,15 @@
 # 运行手册：告警渠道投递失败
 
-## 症状
+**Q：我看到的什么现象指向这本手册？**
 
 控制台渠道列表出现「投递熔断」标签；`GET /api/v1/alert-deliveries` 里出现
 `status=FAILED` 的行（`last_error` 有值）；或 `/metrics` 里
 `webmonitoring_alert_suppressed_total` 开始增长。
+
+**Q：为什么这本手册开头就强调 `/readyz` 查不出问题？**
+
+因为告警投递失败时 API 和 worker 都仍然就绪。一开始就往 `/readyz` 上找，
+会得出"一切正常"的错误结论。
 
 ## 关键前提：`/readyz` 查不出这个问题
 
