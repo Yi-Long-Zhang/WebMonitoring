@@ -970,7 +970,7 @@ export interface components {
             nextCursor: string;
         };
         /** @enum {string} */
-        IncidentEventType: "CREATED" | "RECURRED" | "STATUS_CHANGED" | "OWNER_ASSIGNED" | "COMMENTED";
+        IncidentEventType: "CREATED" | "RECURRED" | "REOPENED" | "STATUS_CHANGED" | "OWNER_ASSIGNED" | "COMMENTED";
         /**
          * @description 事件时间线的一条记录。signals 是**该轮检测**看到的信号集，不是当前生效的
          *     那一份——事件行上的 signals 每轮都会被覆盖，所以复现明细只存在于这里。

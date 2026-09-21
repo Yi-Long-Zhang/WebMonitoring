@@ -86,21 +86,21 @@ func TestRecurrenceKeepsPerOccurrenceSignals(t *testing.T) {
 			fingerprint := identity.New()
 			clock := roundClock()
 
-			if _, created, err := repository.UpsertIncident(
+			if _, outcome, err := repository.UpsertIncident(
 				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityLow, []domain.Signal{signal("first")}, []string{"ev-1"}, clock()),
-			); err != nil || !created {
-				t.Fatalf("first round: created=%v err=%v", created, err)
+			); err != nil || outcome != IncidentCreated {
+				t.Fatalf("first round: outcome=%v err=%v", outcome, err)
 			}
-			if _, created, err := repository.UpsertIncident(
+			if _, outcome, err := repository.UpsertIncident(
 				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityMedium, []domain.Signal{signal("second")}, []string{"ev-2"}, clock()),
-			); err != nil || created {
-				t.Fatalf("second round: created=%v err=%v", created, err)
+			); err != nil || outcome != IncidentRecurred {
+				t.Fatalf("second round: outcome=%v err=%v", outcome, err)
 			}
-			merged, created, err := repository.UpsertIncident(
+			merged, outcome, err := repository.UpsertIncident(
 				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityHigh, []domain.Signal{signal("third")}, []string{"ev-3"}, clock()),
 			)
-			if err != nil || created {
-				t.Fatalf("third round: created=%v err=%v", created, err)
+			if err != nil || outcome != IncidentRecurred {
+				t.Fatalf("third round: outcome=%v err=%v", outcome, err)
 			}
 
 			events, _, err := repository.ListIncidentEvents(tenantID, merged.ID, ListOptions{})
@@ -171,10 +171,16 @@ func TestRecurrenceEntryUsesTheMergedIncidentID(t *testing.T) {
 	}
 }
 
-// The dedup index only covers active incidents, so a closed incident followed by
-// the same change is a new incident with its own timeline. The old one must not
-// gain entries.
-func TestClosedIncidentRecurrenceStartsANewTimeline(t *testing.T) {
+// A recurrence on a closed incident reopens it: same id, same timeline, status
+// back to OPEN, and a REOPENED entry appended.
+//
+// This test used to assert the opposite -- that the recurrence produced a second
+// incident with its own CREATED timeline -- because the dedup index was partial
+// and simply did not match closed rows. That meant one problem an operator had
+// already dealt with could be sitting in the list twice, as two rows with the
+// same fingerprint and no link between them. The merge below is what migration
+// 000015 makes possible; the timeline keeps its history rather than restarting.
+func TestClosedIncidentRecurrenceReopensTheSameIncident(t *testing.T) {
 	for name, repository := range testRepositories(t) {
 		t.Run(name, func(t *testing.T) {
 			tenantID, assetID, baselineID := seedIncidentFixture(t, repository)
@@ -189,27 +195,65 @@ func TestClosedIncidentRecurrenceStartsANewTimeline(t *testing.T) {
 			if err := repository.UpdateIncident(first); err != nil {
 				t.Fatal(err)
 			}
-			second, created, err := repository.UpsertIncident(
+			reopened, outcome, err := repository.UpsertIncident(
 				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityLow, []domain.Signal{signal("b")}, []string{"ev-2"}, clock()))
-			if err != nil || !created {
-				t.Fatalf("recurrence after close: created=%v err=%v", created, err)
+			if err != nil || outcome != IncidentReopened {
+				t.Fatalf("recurrence after close: outcome=%v err=%v", outcome, err)
 			}
-			if second.ID == first.ID {
-				t.Fatal("recurrence reused the closed incident")
+			if reopened.ID != first.ID {
+				t.Fatalf("reopen made a new incident %q, want the closed one %q", reopened.ID, first.ID)
 			}
-			oldEvents, _, err := repository.ListIncidentEvents(tenantID, first.ID, ListOptions{})
+			if reopened.Status != domain.IncidentOpen {
+				t.Fatalf("reopened status = %q, want OPEN", reopened.Status)
+			}
+			if reopened.OccurrenceCount != 2 {
+				t.Fatalf("reopened occurrence count = %d, want 2", reopened.OccurrenceCount)
+			}
+			events, _, err := repository.ListIncidentEvents(tenantID, first.ID, ListOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(oldEvents) != 1 {
-				t.Fatalf("closed incident timeline = %d entries, want 1", len(oldEvents))
+			// Newest first: the reopen, then the original creation. The pre-close
+			// history is still there -- it was not moved to a second incident.
+			if len(events) != 2 {
+				t.Fatalf("timeline = %d entries, want 2", len(events))
 			}
-			newEvents, _, err := repository.ListIncidentEvents(tenantID, second.ID, ListOptions{})
+			if events[0].Type != domain.IncidentEventReopened {
+				t.Fatalf("newest entry = %q, want REOPENED", events[0].Type)
+			}
+			if events[1].Type != domain.IncidentEventCreated {
+				t.Fatalf("oldest entry = %q, want CREATED", events[1].Type)
+			}
+		})
+	}
+}
+
+// A dismissed incident (FALSE_POSITIVE) reopens the same way. It is a separate
+// case because the operator's intent differs -- "this was never a real problem"
+// rather than "this was fixed" -- but the storage path is identical, and if the
+// predicate ever drifts to name only CLOSED this catches it.
+func TestFalsePositiveIncidentRecurrenceReopensTheSameIncident(t *testing.T) {
+	for name, repository := range testRepositories(t) {
+		t.Run(name, func(t *testing.T) {
+			tenantID, assetID, baselineID := seedIncidentFixture(t, repository)
+			fingerprint := identity.New()
+			clock := roundClock()
+			first, _, err := repository.UpsertIncident(
+				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityLow, []domain.Signal{signal("a")}, []string{"ev-1"}, clock()))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(newEvents) != 1 || newEvents[0].Type != domain.IncidentEventCreated {
-				t.Fatalf("new incident timeline = %+v, want one CREATED entry", newEvents)
+			first.Status = domain.IncidentFalsePositive
+			if err := repository.UpdateIncident(first); err != nil {
+				t.Fatal(err)
+			}
+			reopened, outcome, err := repository.UpsertIncident(
+				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityLow, []domain.Signal{signal("b")}, []string{"ev-2"}, clock()))
+			if err != nil || outcome != IncidentReopened {
+				t.Fatalf("recurrence after dismissal: outcome=%v err=%v", outcome, err)
+			}
+			if reopened.ID != first.ID || reopened.Status != domain.IncidentOpen {
+				t.Fatalf("reopened = %#v, want the dismissed incident back at OPEN", reopened)
 			}
 		})
 	}

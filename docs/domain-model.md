@@ -153,6 +153,8 @@ append-only（`incident_events`，迁移 `000013`）：
 ```text
 CREATED          检测首次产生该事件，signals 为首轮信号集
 RECURRED         同一 fingerprint 再次命中，signals 为该轮信号集
+REOPENED         命中一个已 CLOSED/FALSE_POSITIVE 的事件，事件回到 OPEN，
+                 状态回到 OPEN 与 occurrence_count 自增在同一条记录里完成
 STATUS_CHANGED   状态流转，记录 from/to、操作者，负责人与处置说明在 details
 OWNER_ASSIGNED   预留：仅负责人变更（当前 API 不产生，指派随流转一并提交）
 COMMENTED        人工备注，正文在 details.note
@@ -299,7 +301,24 @@ baseline_version
 normalized_signal_fingerprint
 ```
 
-告警投递使用 `incident_id:channel_id` 作为租户内幂等键。
+告警投递使用 `incident_id:channel_id:reason` 作为租户内幂等键。
+
+**Q：已关闭/误报的事件再次命中会怎样？**
+
+**重开原事件，不新建。** 去重键上的唯一索引（迁移 `000015` 起
+`active_incident_fingerprint_uidx`）对每个 fingerprint **恒唯一**，所以复现一定
+落在原来那一行上：状态回到 `OPEN`、`occurrence_count` 自增、时间线追加一条
+`REOPENED`，事件 ID 与既有时间线全部保留。运营侧因此能看出「这是我关掉的那个
+问题回来了」，而不是看到两条 fingerprint 相同却毫不相干的记录。
+
+这一点是**行为修正**而非新能力：迁移 `000015` 之前 `active_incident_dedup_idx`
+是**部分**唯一索引（`WHERE status NOT IN ('CLOSED','FALSE_POSITIVE')`），终态行
+不参与匹配，于是「关闭后复现」会插出一条全新的重复行，且 `DO UPDATE` 从不写
+`status`，`RESOLVED` 的事件复现后仍停在 `RESOLVED`——两个终态之所以特殊，只是
+因为「行根本不被匹配」，而不是有意为之的重开语义。
+
+告警理由同时新增 `REOPENED`：投递幂等键含理由，而重开的事件 ID 没变，沿用
+`RECURRED` 会被既有键静默挡掉，运营收不到重开通知。
 
 **Q：能按时间窗口拆分事件吗？**
 

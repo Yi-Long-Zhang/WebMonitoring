@@ -51,6 +51,9 @@ watch(() => [props.incidentId, props.refreshKey], load, { immediate: true });
 const typeLabels: Record<string, string> = {
   CREATED: "首次发现",
   RECURRED: "再次复现",
+  // Distinct from 再次复现 on purpose: the operator had closed or dismissed
+  // this, and it came back. Rendering both the same would hide the regression.
+  REOPENED: "问题回归",
   STATUS_CHANGED: "状态流转",
   OWNER_ASSIGNED: "指派负责人",
   COMMENTED: "备注",
@@ -63,6 +66,7 @@ function typeLabel(event: IncidentEvent) {
 function typeTag(event: IncidentEvent) {
   if (event.type === "CREATED") return "danger";
   if (event.type === "RECURRED") return "warning";
+  if (event.type === "REOPENED") return "danger";
   if (event.type === "COMMENTED") return "info";
   return "success";
 }

@@ -298,6 +298,12 @@ type IncidentEventType string
 const (
 	IncidentEventCreated       IncidentEventType = "CREATED"
 	IncidentEventRecurred      IncidentEventType = "RECURRED"
+	// IncidentEventReopened is a recurrence that landed on an incident an
+	// operator had already closed or dismissed as a false positive. It is kept
+	// apart from RECURRED because the two mean different things to the person
+	// reading the timeline: RECURRED is "still happening", REOPENED is "the
+	// thing we closed came back".
+	IncidentEventReopened      IncidentEventType = "REOPENED"
 	IncidentEventStatusChanged IncidentEventType = "STATUS_CHANGED"
 	IncidentEventOwnerAssigned IncidentEventType = "OWNER_ASSIGNED"
 	IncidentEventCommented     IncidentEventType = "COMMENTED"
@@ -382,6 +388,15 @@ const (
 	// AlertReasonRecurred is a fingerprint that matched an incident already on
 	// the books -- the page was tampered with again after being looked at.
 	AlertReasonRecurred = "RECURRED"
+	// AlertReasonReopened is a fingerprint that matched an incident already
+	// closed or dismissed as a false positive, so the recurrence reopened it.
+	//
+	// It is a separate reason from AlertReasonRecurred for a mechanical reason
+	// as well as a semantic one: a delivery's dedup key is
+	// incidentID:channelID:reason, and a reopened incident keeps its id, so
+	// reusing RECURRED would make the reopen notice collide with the one that
+	// was already sent and be silently dropped.
+	AlertReasonReopened = "REOPENED"
 	// AlertReasonTransitioned is a status change an operator made by hand.
 	AlertReasonTransitioned = "TRANSITIONED"
 	// AlertReasonCommented is a note added to an incident's timeline.

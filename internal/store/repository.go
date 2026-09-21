@@ -30,6 +30,25 @@ var (
 // working. Exposing it here is what keeps the two in step.
 const JobLease = 5 * time.Minute
 
+// IncidentUpsertOutcome says what one detection round did to an incident.
+//
+// RECURRED and REOPENED both merge into an existing row; the difference is the
+// signal an operator needs. RECURRED means a problem that was still on the books
+// happened again. REOPENED means a problem they had already closed or dismissed
+// came back, which is the one that must not be silently folded into a routine
+// update count.
+type IncidentUpsertOutcome int
+
+const (
+	// IncidentCreated is a fingerprint that had no incident at all.
+	IncidentCreated IncidentUpsertOutcome = iota
+	// IncidentRecurred is a fingerprint that matched a live incident.
+	IncidentRecurred
+	// IncidentReopened is a fingerprint that matched a CLOSED or FALSE_POSITIVE
+	// incident, which is now OPEN again under the same id.
+	IncidentReopened
+)
+
 type Repository interface {
 	// JobLease reports the lease this repository enforces, and SetJobLease
 	// replaces the default. The scheduler reads the lease rather than importing
@@ -103,7 +122,20 @@ type Repository interface {
 	IsEvidenceReferenced(tenantID, id string) (bool, error)
 	DeleteEvidence(tenantID, id string) error
 
-	UpsertIncident(domain.Incident) (domain.Incident, bool, error)
+	// UpsertIncident merges one detection round into the incident that shares
+	// its (tenant, asset, baseline version, fingerprint), or creates it.
+	//
+	// The outcome is a three-way value rather than a bool because a recurrence
+	// has two distinct meanings: landing on a live incident is RECURRED, while
+	// landing on one an operator already closed or dismissed is REOPENED -- the
+	// thing they closed came back. Both merge rather than insert, so a bool
+	// cannot tell them apart, and the alert the operator receives depends on
+	// which it was.
+	//
+	// A recurrence on a terminal incident reopens it: the incident keeps its id
+	// and its timeline, and its status returns to OPEN. Until migration 000015
+	// this case instead inserted a second incident with the same fingerprint.
+	UpsertIncident(domain.Incident) (domain.Incident, IncidentUpsertOutcome, error)
 	UpdateIncident(domain.Incident) error
 	GetIncident(tenantID, id string) (domain.Incident, error)
 	ListIncidents(tenantID string, opts ListOptions) ([]domain.Incident, string, error)
