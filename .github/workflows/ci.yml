@@ -46,6 +46,13 @@ jobs:
       - run: git ls-files '*.go' -z | xargs -0 gofmt -l | tee /tmp/gofmt.txt && test ! -s /tmp/gofmt.txt
       - run: go vet ./...
       - run: go test ./...
+      # 同一个 .golangci.yml 一直在仓库里启用了 errcheck/govet/staticcheck/gosec，
+      # 但从来没有在 CI 里跑过，等于门禁贴着墙。锁到具体版本而不是 latest，
+      # 否则上游发布新 linter 会凭空让历史提交变红。
+      - name: Lint (golangci-lint)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
 
   node:
     runs-on: ubuntu-latest
@@ -92,3 +99,18 @@ jobs:
       - name: Run Compose smoke test
         shell: pwsh
         run: ./scripts/compose-smoke.ps1
+
+  # 多副本演练是唯一能测出"横向扩容会静默重复执行检测"的检查：迁移 000012 的
+  # 部分唯一索引 detection_jobs_active_uidx 是它的被测对象，compose-smoke 走的是
+  # API 逐资产建任务那条与调度器无关的路径，覆盖不到。默认参数即最小的真实拓扑
+  # （2 个 api 副本 + 3 个 http-worker），40 资产、240 秒上限。
+  multi-replica-drill:
+    runs-on: ubuntu-latest
+    needs: [backend, node]
+    env:
+      MRDRILL_PROJECT_NAME: webmonitoring-drill-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run multi-replica drill
+        shell: pwsh
+        run: ./scripts/multi-replica-drill.ps1
