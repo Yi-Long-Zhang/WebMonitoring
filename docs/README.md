@@ -9,8 +9,10 @@
 | [domain-model.md](domain-model.md) | 核心对象、状态机和数据契约 |
 | [security-model.md](security-model.md) | 威胁模型、权限、SSRF 和证据安全 |
 | [engineering.md](engineering.md) | 分支、提交、评审、测试、发布和回滚 |
-| [operations.md](operations.md) | Docker Compose 部署、迁移、备份、恢复和验收 |
+| [operations.md](operations.md) | Docker Compose 部署、迁移、备份、恢复、TLS 终止和验收 |
+| [runbooks/](runbooks/README.md) | 故障处置手册：按 `/readyz` 依赖定位 Postgres/Redis/对象存储/浏览器 Worker/告警投递 |
 | [backup-restore-rehearsal.md](backup-restore-rehearsal.md) | 备份恢复演练记录模板和验收门禁 |
+| [object-storage-rehearsal.md](object-storage-rehearsal.md) | 外部 S3 验证步骤（状态：尚未执行） |
 | [adr/](adr/) | 需要长期保留的架构决策记录 |
 
 ## 文档规则
@@ -60,6 +62,9 @@
   吞吐下限与任务完整性断言）、备份/恢复（MinIO 客户端在 Compose 网络内运行，
   不依赖宿主机 `mc` 或 PowerShell 7）。
 - OpenTelemetry Trace（env 门控、默认 no-op）和补充的单元测试（含 miniredis）。
+- 出站告警的配额与熔断（`internal/notifygate`）、通用请求限速（读/写/重操作三类
+  配额，生产门禁拒绝 0 与「等同于无限制」的高值）、CORS 与 HSTS，以及带
+  `method`/`status`/`path` 标签的请求级指标（路径按集合归并，签名令牌不进入标签）。
 - Repository 错误传播、真实 PostgreSQL/Redis 集成测试和 100 资产调度合成测试。
 
 当前明确不应描述为已完成或尚未完成部署验收：
@@ -92,14 +97,18 @@
   但仍没有资源级或字段级授权。
 - 完整 Secret Manager 集成。凭据加密已于 2026-09-20 支持密钥版本：`ALERT_SECRET_KEYS`
   按 `v1:,v2:` 显式标注，`security.Keyring` 实现 `security.SecretBox` 接口，密文带版本
-  前缀，主密钥取最高版本。**仍缺的是把存量密文重写为最新版本的再加密扫描** ——
-  它只是一次需要授权的维护操作。仍未接入外部 KMS/Vault。
+  前缀，主密钥取最高版本。存量密文的再加密扫描**已于 2026-09-22 实现**
+  （`internal/rewrap` + `apps/rewrap`，支持 `--dry-run`、advisory lease 串行化与审计），
+  但**尚未在真实数据上执行过** —— 它是一次需要授权的维护操作，未接入外部 KMS/Vault。
 - 完整多租户运营管理。
-- 部署形态：只有单机 Compose，无 Kubernetes、无 TLS 终止。Compose 已于 2026-09-20
+- 部署形态：只有单机 Compose，无 Kubernetes。**TLS 终止已具备**：叠加
+  `docker-compose.tls.yml` 后由 nginx 边缘终止 TLS 且只由边缘发布端口，配套
+  `scripts/reload-tls.ps1` 在证书续期后 SIGHUP 重载（不重启容器，不断开 SSE 流）；
+  仓库不签发证书，ACME 客户端由部署方选择。Compose 已于 2026-09-20
   加固：全部服务有 CPU/内存限制、日志轮转和 `no-new-privileges`，MinIO 不再向宿主机
   暴露端口，`REDIS_PASSWORD` 可启用 `requirepass`（应用侧已有对应支持），
   `POSTGRES_SSLMODE` 控制数据库 TLS 且生产环境拒绝 `disable`。
-  仍未做的是 TLS 终止（见下一条）和外部 KMS。
+  仍未做的是外部 KMS；Kubernetes 依据 `AGENTS.md` 待有规模依据后再上。
 - 外部对象存储验证（见 [object-storage-rehearsal.md](object-storage-rehearsal.md)）尚未执行，
   需要真实 S3 凭据。100 资产 **浏览器** 压测已于 2026-09-20 跑通（100 资产 / 2 租户 /
   100 个 BROWSER 任务全部成功 / 85.2 秒 / 1.17 任务/秒 / 500 条证据），多副本演练同日跑通
