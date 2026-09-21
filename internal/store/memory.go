@@ -904,6 +904,26 @@ func (m *MemoryRepository) UpdateAlertChannel(channel domain.AlertChannel) error
 	return nil
 }
 
+// RewrapAlertChannel replaces one channel's credentials in place. The memory
+// repository stores plaintext, so this has nothing to re-seal; it exists so the
+// key-rotation pass can run against the in-memory backend and so both
+// implementations of Repository agree on the shape of the write.
+func (m *MemoryRepository) RewrapAlertChannel(channel domain.AlertChannel) error {
+	return m.UpdateAlertChannel(channel)
+}
+
+// RewrapPolicy replaces one policy in place, for the same reason.
+func (m *MemoryRepository) RewrapPolicy(policy domain.MonitorPolicy) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := tenantKey(policy.TenantID, policy.AssetID)
+	if _, ok := m.policies[key]; !ok {
+		return ErrNotFound
+	}
+	m.policies[key] = clonePolicy(policy)
+	return nil
+}
+
 func (m *MemoryRepository) DeleteAlertChannel(tenantID, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

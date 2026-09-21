@@ -66,6 +66,11 @@ type Repository interface {
 	ListSites(tenantID string, opts ListOptions) ([]domain.Site, string, error)
 
 	UpsertPolicy(domain.MonitorPolicy) error
+	// RewrapPolicy rewrites one policy's stored login credentials under the
+	// current key. Like RewrapAlertChannel it is the narrow rotation write, not a
+	// general update: the caller reads the policy first and changes only the
+	// ciphertext fields.
+	RewrapPolicy(domain.MonitorPolicy) error
 	GetPolicy(tenantID, assetID string) (domain.MonitorPolicy, error)
 	ListPolicies(tenantID string, opts ListOptions) ([]domain.MonitorPolicy, string, error)
 
@@ -115,6 +120,11 @@ type Repository interface {
 	// already recorded against it are kept: they are the record that an alert
 	// was sent, and deleting the channel must not erase that.
 	DeleteAlertChannel(tenantID, id string) error
+	// RewrapAlertChannel rewrites only the two encrypted columns of one channel.
+	// It is the key-rotation write: unlike UpdateAlertChannel it cannot touch a
+	// name or a recipient list, so a rotation pass has no way to alter a row's
+	// meaning while re-sealing it.
+	RewrapAlertChannel(domain.AlertChannel) error
 	ListAlertChannels(tenantID string) ([]domain.AlertChannel, error)
 	ListAlertChannelsWithSecrets(tenantID string) ([]domain.AlertChannel, error)
 	CreateAlertDelivery(domain.AlertDelivery) error
