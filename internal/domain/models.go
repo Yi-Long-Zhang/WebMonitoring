@@ -362,7 +362,31 @@ type AlertJob struct {
 	TenantID   string `json:"tenantId"`
 	IncidentID string `json:"incidentId"`
 	AssetID    string `json:"assetId"`
+	// Reason names what happened to the incident, and is part of the delivery's
+	// dedup key: one incident now notifies more than once -- it is opened, then
+	// acknowledged, then resolved -- and those are different messages about the
+	// same row. Without the reason in the key the later ones would be read as
+	// duplicates of the first and silently dropped.
+	//
+	// It is a plain string rather than a closed type because the set spans two
+	// packages: detection raises "RECURRED" and the API raises the transition
+	// reasons, and neither should have to import the other to add one.
+	Reason string `json:"reason,omitempty"`
 }
+
+// Alert reasons carried on AlertJob.Reason. They are not a closed set; these are
+// the ones the code currently raises.
+const (
+	// AlertReasonCreated is a newly opened incident.
+	AlertReasonCreated = "CREATED"
+	// AlertReasonRecurred is a fingerprint that matched an incident already on
+	// the books -- the page was tampered with again after being looked at.
+	AlertReasonRecurred = "RECURRED"
+	// AlertReasonTransitioned is a status change an operator made by hand.
+	AlertReasonTransitioned = "TRANSITIONED"
+	// AlertReasonCommented is a note added to an incident's timeline.
+	AlertReasonCommented = "COMMENTED"
+)
 
 type AuditEvent struct {
 	ID           string         `json:"id"`

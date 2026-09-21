@@ -46,10 +46,10 @@ func TestSendIncidentPersistsAndDeduplicatesDelivery(t *testing.T) {
 	incident := domain.Incident{ID: "incident", TenantID: "tenant", AssetID: "asset", Severity: domain.SeverityHigh, Title: "changed"}
 	asset := domain.Asset{ID: "asset", TenantID: "tenant", Name: "site"}
 
-	if failures := dispatcher.SendIncident(t.Context(), incident, asset); len(failures) != 0 {
+	if failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonCreated); len(failures) != 0 {
 		t.Fatalf("first delivery failed: %v", failures)
 	}
-	if failures := dispatcher.SendIncident(t.Context(), incident, asset); len(failures) != 0 {
+	if failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonCreated); len(failures) != 0 {
 		t.Fatalf("duplicate delivery failed: %v", failures)
 	}
 	if requests.Load() != 1 {
@@ -90,7 +90,7 @@ func TestSendIncidentRetriesWithPersistedAttemptCount(t *testing.T) {
 	incident := domain.Incident{ID: "incident", TenantID: "tenant", AssetID: "asset"}
 	asset := domain.Asset{ID: "asset", TenantID: "tenant"}
 
-	if failures := dispatcher.SendIncident(t.Context(), incident, asset); len(failures) != 0 {
+	if failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonCreated); len(failures) != 0 {
 		t.Fatalf("delivery failed: %v", failures)
 	}
 	deliveries, _, err := repository.ListAlertDeliveries("tenant", "incident", store.ListOptions{})
@@ -167,7 +167,7 @@ func TestSendDingTalkChannel(t *testing.T) {
 	incident := domain.Incident{ID: "incident", TenantID: "tenant", AssetID: "asset", Severity: domain.SeverityHigh, Title: "changed"}
 	asset := domain.Asset{ID: "asset", TenantID: "tenant", Name: "site"}
 
-	if failures := dispatcher.SendIncident(t.Context(), incident, asset); len(failures) != 0 {
+	if failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonCreated); len(failures) != 0 {
 		t.Fatalf("dingtalk delivery failed: %v", failures)
 	}
 	if payload["msgtype"] != "markdown" {
@@ -266,7 +266,7 @@ func TestSendEmailChannel(t *testing.T) {
 	incident := domain.Incident{ID: "incident", TenantID: "tenant", AssetID: "asset", Severity: domain.SeverityHigh, Title: "changed"}
 	asset := domain.Asset{ID: "asset", TenantID: "tenant", Name: "site"}
 
-	if failures := dispatcher.SendIncident(t.Context(), incident, asset); len(failures) != 0 {
+	if failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonCreated); len(failures) != 0 {
 		t.Fatalf("email delivery failed: %v", failures)
 	}
 	select {
@@ -292,7 +292,134 @@ func TestSendEmailChannelWithoutSMTPConfig(t *testing.T) {
 	incident := domain.Incident{ID: "incident", TenantID: "tenant", AssetID: "asset"}
 	asset := domain.Asset{ID: "asset", TenantID: "tenant"}
 
-	if failures := dispatcher.SendIncident(t.Context(), incident, asset); len(failures) == 0 {
+	if failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonCreated); len(failures) == 0 {
 		t.Fatal("expected email delivery to fail without SMTP configuration")
+	}
+}
+
+// TestSendIncidentNotifiesOncePerReason is the reason the dedup key carries a
+// reason at all. An incident is no longer notified exactly once: it is opened,
+// then acknowledged, then resolved. Keying only on the incident would make the
+// later messages look like duplicates of the first and drop them silently,
+// which is the failure mode an operator would never see.
+func TestSendIncidentNotifiesOncePerReason(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	repository, guard := webhookChannelRepository(t, server)
+	dispatcher := NewDispatcher(repository, guard)
+	incident := domain.Incident{ID: "incident", TenantID: "tenant", AssetID: "asset", Severity: domain.SeverityHigh, Title: "changed"}
+	asset := domain.Asset{ID: "asset", TenantID: "tenant", Name: "site"}
+
+	for _, reason := range []string{domain.AlertReasonCreated, domain.AlertReasonTransitioned} {
+		if failures := dispatcher.SendIncident(t.Context(), incident, asset, reason); len(failures) != 0 {
+			t.Fatalf("%s delivery failed: %v", reason, failures)
+		}
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("two reasons produced %d webhook requests, want 2", got)
+	}
+	// The same reason twice is still one delivery: the retry path relies on it.
+	if failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonTransitioned); len(failures) != 0 {
+		t.Fatalf("repeat delivery failed: %v", failures)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("a repeated reason produced %d webhook requests, want it deduplicated to 2", got)
+	}
+	deliveries, _, err := repository.ListAlertDeliveries("tenant", "incident", store.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 2 {
+		t.Fatalf("expected one delivery per reason, got %d", len(deliveries))
+	}
+}
+
+// TestEmptyReasonMatchesCreated pins the compatibility direction: a caller that
+// names no reason is the original "an incident was created" case, so it must
+// land on the same delivery as an explicit CREATED rather than opening a second
+// one for the same event.
+func TestEmptyReasonMatchesCreated(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	repository, guard := webhookChannelRepository(t, server)
+	dispatcher := NewDispatcher(repository, guard)
+	incident := domain.Incident{ID: "incident", TenantID: "tenant", AssetID: "asset"}
+	asset := domain.Asset{ID: "asset", TenantID: "tenant"}
+
+	if failures := dispatcher.SendIncident(t.Context(), incident, asset, ""); len(failures) != 0 {
+		t.Fatalf("unreasoned delivery failed: %v", failures)
+	}
+	if failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonCreated); len(failures) != 0 {
+		t.Fatalf("created delivery failed: %v", failures)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("an empty reason and CREATED produced %d requests, want them to be one event", got)
+	}
+}
+
+// webhookChannelRepository stands up a repository holding one enabled webhook
+// channel pointed at server, with the guard opened for its port.
+func webhookChannelRepository(t *testing.T, server *httptest.Server) (store.Repository, *security.URLGuard) {
+	t.Helper()
+	repository := store.NewMemoryRepository()
+	guard := security.NewURLGuard(true)
+	guard.AllowedPorts[strconv.Itoa(server.Listener.Addr().(*net.TCPAddr).Port)] = struct{}{}
+	if err := repository.CreateAlertChannel(domain.AlertChannel{
+		ID: "channel", TenantID: "tenant", Type: "WEBHOOK", URL: server.URL,
+		Enabled: true, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return repository, guard
+}
+
+// TestAlertPayloadNamesTheReasonNotJustTheIncident: the dedup key decides
+// whether a message is sent, but the headline is all an operator sees. Three
+// notifications about one incident that all begin "网页风险告警" would be
+// indistinguishable from three duplicates.
+func TestAlertPayloadNamesTheReasonNotJustTheIncident(t *testing.T) {
+	incident := domain.Incident{ID: "incident", Severity: domain.SeverityHigh, Title: "changed", Status: domain.IncidentOpen}
+	asset := domain.Asset{ID: "asset", Name: "site"}
+
+	seen := map[string]string{}
+	for _, reason := range []string{
+		domain.AlertReasonCreated, domain.AlertReasonRecurred,
+		domain.AlertReasonTransitioned, domain.AlertReasonCommented,
+	} {
+		payload, ok := buildAlertPayload("WEBHOOK", incident, asset, reason).(map[string]any)
+		if !ok {
+			t.Fatal("webhook payload is not an object")
+		}
+		if payload["reason"] != reason {
+			t.Fatalf("payload reason = %v, want %s", payload["reason"], reason)
+		}
+		data := payload["data"].(map[string]any)
+		if data["status"] != incident.Status {
+			t.Fatalf("payload did not carry the incident status: %v", data)
+		}
+		headline := alertHeadline(reason)
+		if previous, duplicate := seen[headline]; duplicate {
+			t.Fatalf("%s and %s share the headline %q", previous, reason, headline)
+		}
+		seen[headline] = reason
+	}
+}
+
+// TestUnknownReasonIsEchoedRatherThanGeneric: reasons are an open set spanning
+// two packages. A new one must show up in the message as itself, not vanish into
+// a generic "update" that tells the operator nothing about why they were paged.
+func TestUnknownReasonIsEchoedRatherThanGeneric(t *testing.T) {
+	if got := alertHeadline("SOMETHING_NEW"); !strings.Contains(got, "SOMETHING_NEW") {
+		t.Fatalf("an unrecognised reason rendered as %q, losing the reason", got)
 	}
 }

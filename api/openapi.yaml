@@ -1475,6 +1475,10 @@ components:
         id: { type: string, format: uuid }
         incidentId: { type: string, format: uuid }
         channelId: { type: string, format: uuid }
+        # One incident notifies more than once -- it is opened, then acknowledged,
+        # then resolved -- so the key names the reason as well as the incident and
+        # channel: "<incidentId>:<channelId>:<reason>". Two deliveries that differ
+        # only in their reason are two messages, not a duplicate.
         dedupKey: { type: string }
         status: { type: string, enum: [PENDING, DELIVERED, FAILED] }
         attempts: { type: integer }

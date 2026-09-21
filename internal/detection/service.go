@@ -86,6 +86,47 @@ func (s *Service) SetAlertQueue(queue AlertQueue) {
 	s.alertQueue = queue
 }
 
+// NotifyIncident raises a notification about an incident that something other
+// than a detection run has just changed -- an operator transitioning it, or
+// adding a note. It exists as one method on this service rather than as the API
+// reaching for the notifier directly because the service already owns the two
+// ways a notification can be raised (the shared queue, or the dispatcher
+// inline) and the choice between them must not depend on which caller asked.
+//
+// It returns nil rather than an error when there is nowhere to send: a
+// deployment with no channels and no notifier is a valid configuration, and
+// failing a status transition because nobody could be told about it would be
+// the wrong trade. Delivery failures are logged, not returned, for the same
+// reason -- the incident has already changed by the time this runs.
+func (s *Service) NotifyIncident(ctx context.Context, incident domain.Incident, reason string) {
+	// The queue is checked first, and on its own: a deployment that routes
+	// notifications through the alert worker has no dispatcher on this service,
+	// so requiring one here would mean the queue was never used at all.
+	if s.alertQueue != nil {
+		if err := s.alertQueue.EnqueueAlert(ctx, domain.AlertJob{
+			TenantID: incident.TenantID, IncidentID: incident.ID, AssetID: incident.AssetID,
+			Reason: reason,
+		}); err != nil {
+			s.logger.Warn("enqueue incident notification failed",
+				"incident_id", incident.ID, "reason", reason, "error", err)
+		}
+		return
+	}
+	if s.notifier == nil {
+		return
+	}
+	asset, err := s.repository.GetAsset(incident.TenantID, incident.AssetID)
+	if err != nil {
+		s.logger.Warn("load asset for notification failed",
+			"incident_id", incident.ID, "reason", reason, "error", err)
+		return
+	}
+	for _, notifyErr := range s.notifier.SendIncident(ctx, incident, asset, reason) {
+		s.logger.Warn("notification failed",
+			"incident_id", incident.ID, "reason", reason, "error", notifyErr)
+	}
+}
+
 func (s *Service) SetMetrics(registry *metrics.Registry) {
 	s.metrics = registry
 }
@@ -323,14 +364,26 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 				s.broker.Publish("incident.updated", saved)
 			}
 			if s.notifier != nil {
+				// A recurrence notifies too. The original code notified only on
+				// creation, which meant an incident that was seen once and then
+				// independently raised again produced no second message -- the
+				// operator who had already been paged was the one who most
+				// needed to know it happened again. The reason travels with the
+				// job so the message can say which of the two it is, and so the
+				// delivery key keeps them apart.
+				reason := domain.AlertReasonCreated
+				if !created {
+					reason = domain.AlertReasonRecurred
+				}
 				if s.alertQueue != nil {
 					if err := s.alertQueue.EnqueueAlert(ctx, domain.AlertJob{
 						TenantID: saved.TenantID, IncidentID: saved.ID, AssetID: saved.AssetID,
+						Reason: reason,
 					}); err != nil {
 						return s.failJob(ctx, job, "ALERT_QUEUE_FAILED", err)
 					}
-				} else if created {
-					for _, notifyErr := range s.notifier.SendIncident(ctx, saved, asset) {
+				} else {
+					for _, notifyErr := range s.notifier.SendIncident(ctx, saved, asset, reason) {
 						s.logger.Warn("notification failed", "incident_id", saved.ID, "error", notifyErr)
 					}
 				}

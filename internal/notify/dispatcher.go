@@ -85,7 +85,7 @@ func (d *Dispatcher) ProcessAlert(ctx context.Context, job domain.AlertJob) erro
 	if err != nil {
 		return fmt.Errorf("load alert asset: %w", err)
 	}
-	failures := d.SendIncident(ctx, incident, asset)
+	failures := d.SendIncident(ctx, incident, asset, job.Reason)
 	if len(failures) > 0 {
 		return errors.Join(failures...)
 	}
@@ -138,7 +138,15 @@ func NewDispatcher(repository store.Repository, guard *security.URLGuard) *Dispa
 	}
 }
 
-func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident, asset domain.Asset) []error {
+// SendIncident delivers one notification about an incident to every enabled
+// channel, and reports the channels that failed.
+//
+// reason names what happened -- opened, recurred, transitioned, commented -- and
+// is part of the delivery's dedup key. An incident is now notified more than
+// once: it is opened, then acknowledged, then resolved, and each of those is a
+// message an operator wants. Keying only on the incident would make the later
+// ones look like duplicates of the first and drop them without a trace.
+func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident, asset domain.Asset, reason string) []error {
 	failures := make([]error, 0)
 	channels, err := d.repository.ListAlertChannelsWithSecrets(incident.TenantID)
 	if err != nil {
@@ -148,15 +156,16 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 		if !channel.Enabled {
 			continue
 		}
+		dedupKey := incident.ID + ":" + channel.ID + ":" + alertReasonKey(reason)
 		now := time.Now().UTC()
 		delivery := domain.AlertDelivery{
 			ID: identity.New(), TenantID: incident.TenantID, IncidentID: incident.ID,
-			ChannelID: channel.ID, DedupKey: incident.ID + ":" + channel.ID,
+			ChannelID: channel.ID, DedupKey: dedupKey,
 			Status: "PENDING", CreatedAt: now, UpdatedAt: now,
 		}
 		if err := d.repository.CreateAlertDelivery(delivery); err != nil {
 			if errors.Is(err, store.ErrConflict) {
-				existing, findErr := d.findDelivery(incident.TenantID, incident.ID, channel.ID)
+				existing, findErr := d.findDelivery(incident.TenantID, incident.ID, dedupKey)
 				if findErr != nil {
 					failures = append(failures, fmt.Errorf("channel %s delivery lookup: %w", channel.ID, findErr))
 					continue
@@ -198,7 +207,7 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 			delivery.Attempts = attempt
 			delivery.NextAttemptAt = nil
 			delivery.UpdatedAt = time.Now().UTC()
-			if err := d.send(ctx, channel, incident, asset); err == nil {
+			if err := d.send(ctx, channel, incident, asset, reason); err == nil {
 				delivery.Status = "DELIVERED"
 				delivery.LastError = ""
 				if updateErr := d.repository.UpdateAlertDelivery(delivery); updateErr != nil {
@@ -241,17 +250,31 @@ func (d *Dispatcher) record(channelType, status string) {
 	}
 }
 
-func (d *Dispatcher) findDelivery(tenantID, incidentID, channelID string) (domain.AlertDelivery, error) {
+// findDelivery looks up a channel's delivery by its dedup key rather than by
+// channel alone: one incident now has several deliveries per channel, one per
+// reason, and matching on the channel would find the wrong one.
+func (d *Dispatcher) findDelivery(tenantID, incidentID, dedupKey string) (domain.AlertDelivery, error) {
 	deliveries, _, err := d.repository.ListAlertDeliveries(tenantID, incidentID, store.ListOptions{})
 	if err != nil {
 		return domain.AlertDelivery{}, err
 	}
 	for _, delivery := range deliveries {
-		if delivery.ChannelID == channelID {
+		if delivery.DedupKey == dedupKey {
 			return delivery, nil
 		}
 	}
 	return domain.AlertDelivery{}, nil
+}
+
+// alertReasonKey normalises a reason for use inside a dedup key. An empty one
+// stands for the original behaviour -- an incident was created -- so a caller
+// that does not name a reason and one that names CREATED produce the same key
+// instead of two deliveries for the same event.
+func alertReasonKey(reason string) string {
+	if reason == "" {
+		return domain.AlertReasonCreated
+	}
+	return reason
 }
 
 func ptr(value time.Time) *time.Time {
@@ -270,6 +293,7 @@ func (d *Dispatcher) send(
 	channel domain.AlertChannel,
 	incident domain.Incident,
 	asset domain.Asset,
+	reason string,
 ) error {
 	// The span records the channel type and nothing else: a webhook URL can
 	// carry a token, a DingTalk URL carries a signature, and recipients are
@@ -281,7 +305,7 @@ func (d *Dispatcher) send(
 			attribute.String("webmonitoring.incident_id", incident.ID),
 		))
 	defer span.End()
-	if err := d.sendForChannel(ctx, channel, incident, asset); err != nil {
+	if err := d.sendForChannel(ctx, channel, incident, asset, reason); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "delivery failed")
 		return err
@@ -294,14 +318,15 @@ func (d *Dispatcher) sendForChannel(
 	channel domain.AlertChannel,
 	incident domain.Incident,
 	asset domain.Asset,
+	reason string,
 ) error {
 	if channel.Type == "EMAIL" {
-		return d.sendEmail(ctx, channel, incident, asset)
+		return d.sendEmail(ctx, channel, incident, asset, reason)
 	}
 	if _, _, err := d.guard.Validate(ctx, channel.URL); err != nil {
 		return fmt.Errorf("unsafe notification target: %w", err)
 	}
-	body, _ := json.Marshal(buildAlertPayload(channel.Type, incident, asset))
+	body, _ := json.Marshal(buildAlertPayload(channel.Type, incident, asset, reason))
 	target := channel.URL
 	if channel.Type == "DINGTALK" && channel.Secret != "" {
 		target = signDingTalkURL(channel.URL, channel.Secret)
@@ -332,11 +357,33 @@ func (d *Dispatcher) sendForChannel(
 	return nil
 }
 
-func buildAlertPayload(channelType string, incident domain.Incident, asset domain.Asset) any {
+// alertHeadline renders a reason as the first line of a notification. It is the
+// only thing that tells an operator why they are being paged for the second time
+// about an incident they already know about, so an unrecognised reason is echoed
+// verbatim rather than collapsed into a generic "update".
+func alertHeadline(reason string) string {
+	switch alertReasonKey(reason) {
+	case domain.AlertReasonCreated:
+		return "网页风险告警"
+	case domain.AlertReasonRecurred:
+		return "网页风险告警（事件复现）"
+	case domain.AlertReasonTransitioned:
+		return "网页风险事件状态变更"
+	case domain.AlertReasonCommented:
+		return "网页风险事件新增备注"
+	default:
+		return "网页风险告警（" + reason + "）"
+	}
+}
+
+func buildAlertPayload(channelType string, incident domain.Incident, asset domain.Asset, reason string) any {
+	headline := alertHeadline(reason)
 	content := fmt.Sprintf(
-		"**网页风险告警**\n>资产：%s\n>风险：%s\n>事件：%s",
+		"**%s**\n>资产：%s\n>风险：%s\n>状态：%s\n>事件：%s",
+		headline,
 		asset.Name,
 		incident.Severity,
+		incident.Status,
 		incident.Title,
 	)
 	switch channelType {
@@ -349,18 +396,20 @@ func buildAlertPayload(channelType string, incident domain.Incident, asset domai
 		return map[string]any{
 			"msgtype": "markdown",
 			"markdown": map[string]string{
-				"title": "网页风险告警",
+				"title": headline,
 				"text":  content,
 			},
 		}
 	default:
 		return map[string]any{
-			"event": "incident.created",
+			"event":  "incident." + strings.ToLower(alertReasonKey(reason)),
+			"reason": alertReasonKey(reason),
 			"data": map[string]any{
 				"incidentId": incident.ID,
 				"assetId":    asset.ID,
 				"assetName":  asset.Name,
 				"severity":   incident.Severity,
+				"status":     incident.Status,
 				"title":      incident.Title,
 				"createdAt":  incident.CreatedAt,
 			},
@@ -382,7 +431,7 @@ func signDingTalkURL(target, secret string) string {
 	return target + separator + "timestamp=" + timestamp + "&sign=" + sign
 }
 
-func (d *Dispatcher) sendEmail(ctx context.Context, channel domain.AlertChannel, incident domain.Incident, asset domain.Asset) error {
+func (d *Dispatcher) sendEmail(ctx context.Context, channel domain.AlertChannel, incident domain.Incident, asset domain.Asset, reason string) error {
 	cfg := d.smtp
 	if cfg.Host == "" {
 		return errors.New("SMTP is not configured for email notifications")
@@ -395,7 +444,7 @@ func (d *Dispatcher) sendEmail(ctx context.Context, channel domain.AlertChannel,
 	if from == "" {
 		from = cfg.Username
 	}
-	message := buildEmailMessage(from, recipients, incident, asset)
+	message := buildEmailMessage(from, recipients, incident, asset, reason)
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	var auth smtp.Auth
 	if cfg.Username != "" {
@@ -422,11 +471,11 @@ func splitRecipients(raw string) []string {
 	return result
 }
 
-func buildEmailMessage(from string, recipients []string, incident domain.Incident, asset domain.Asset) []byte {
-	subject := "网页风险告警：" + incident.Title
+func buildEmailMessage(from string, recipients []string, incident domain.Incident, asset domain.Asset, reason string) []byte {
+	subject := alertHeadline(reason) + "：" + incident.Title
 	body := fmt.Sprintf(
-		"资产：%s\n风险等级：%s\n事件：%s\n事件 ID：%s\n",
-		asset.Name, incident.Severity, incident.Title, incident.ID,
+		"资产：%s\n风险等级：%s\n状态：%s\n事件：%s\n事件 ID：%s\n",
+		asset.Name, incident.Severity, incident.Status, incident.Title, incident.ID,
 	)
 	var header bytes.Buffer
 	fmt.Fprintf(&header, "From: %s\r\n", from)
