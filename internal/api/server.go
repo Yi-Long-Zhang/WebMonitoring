@@ -62,6 +62,7 @@ type Server struct {
 	broker            *events.Broker
 	logger            *slog.Logger
 	sessionSecure     bool
+	allowedOrigins    map[string]struct{}
 	metrics           *metrics.Registry
 	readiness         func(context.Context) map[string]error
 	evidenceRetention time.Duration
@@ -99,6 +100,13 @@ func NewServer(
 	server.retention = maintenance.NewRunner(repository, evidenceStore, server.auditRetention, logger)
 	server.handler = server.routes()
 	return server
+}
+
+// SetAllowedOrigins turns on cross-origin responses for the listed origins.
+// Without it the API is same-origin only, which is what the single-host Compose
+// topology needs: the console and the API share an origin behind nginx.
+func (s *Server) SetAllowedOrigins(origins map[string]struct{}) {
+	s.allowedOrigins = origins
 }
 
 func (s *Server) Metrics() *metrics.Registry {
@@ -2541,6 +2549,31 @@ func (s *Server) requireSuperAdmin(handler http.HandlerFunc) http.HandlerFunc {
 	return s.requireRoles(handler, domain.RoleSuperAdmin)
 }
 
+// applyCORS echoes the request's Origin when it is on the allowlist, and reports
+// whether it did. Echoing rather than answering "*" is required because every
+// authenticated call carries a session cookie: the browser will not send
+// credentials to a wildcard origin. Vary: Origin is always set so a shared cache
+// cannot serve one origin's response to another.
+func (s *Server) applyCORS(writer http.ResponseWriter, request *http.Request) bool {
+	origin := request.Header.Get("Origin")
+	if origin == "" {
+		return false
+	}
+	writer.Header().Add("Vary", "Origin")
+	if _, ok := s.allowedOrigins[origin]; !ok {
+		return false
+	}
+	writer.Header().Set("Access-Control-Allow-Origin", origin)
+	writer.Header().Set("Access-Control-Allow-Credentials", "true")
+	writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+	writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token, X-Request-ID")
+	// The signed-URL countdown in the console reads this header off the response,
+	// so a cross-origin console has to be told it may.
+	writer.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
+	writer.Header().Set("Access-Control-Max-Age", "600")
+	return true
+}
+
 func (s *Server) trace(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		started := time.Now()
@@ -2569,6 +2602,25 @@ func (s *Server) trace(next http.Handler) http.Handler {
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("X-Frame-Options", "DENY")
 		writer.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		// HSTS is only meaningful over TLS: sending it on a plaintext response
+		// would pin the browser to https for a host that does not serve it. It
+		// follows the session cookie's Secure flag, which is already the switch
+		// that says "this deployment is behind TLS termination".
+		if s.sessionSecure {
+			writer.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		// A preflight is answered here and never reaches a handler: the browser
+		// sends it without credentials, so routing it through auth would answer
+		// 401 and the real request would never be attempted.
+		if request.Method == http.MethodOptions && request.Header.Get("Access-Control-Request-Method") != "" {
+			if s.applyCORS(writer, request) {
+				writer.WriteHeader(http.StatusNoContent)
+				return
+			}
+			writer.WriteHeader(http.StatusForbidden)
+			return
+		}
+		s.applyCORS(writer, request)
 		next.ServeHTTP(captured, request.WithContext(context.WithValue(ctx, traceKey{}, traceID)))
 		span.SetAttributes(attribute.Int("http.response.status_code", captured.status))
 		if captured.status >= 500 {

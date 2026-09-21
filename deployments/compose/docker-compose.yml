@@ -141,6 +141,9 @@ services:
       LOGIN_LOCKOUT_MINUTES: ${LOGIN_LOCKOUT_MINUTES:-15}
       SESSION_SECURE: ${SESSION_SECURE:-false}
       ALLOW_PRIVATE_TARGETS: ${ALLOW_PRIVATE_TARGETS:-false}
+      # Only the API serves browser traffic, so only the API reads this. Empty
+      # means same-origin, which is the single-host topology's default.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       BROWSER_WORKER_URL: http://browser-worker:8081
       BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:-replace-with-a-random-token}
       # Versioned rotation form. When ALERT_SECRET_KEYS is set it takes precedence

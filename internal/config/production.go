@@ -105,6 +105,35 @@ func validateCommon(get func(string) string) []error {
 	failures = append(failures, validateRedisCredentials(get)...)
 	failures = append(failures, validateJobLease(get)...)
 	failures = append(failures, validateSMTP(get)...)
+	failures = append(failures, validateAllowedOrigins(get)...)
+	return failures
+}
+
+// validateAllowedOrigins rejects a wildcard ALLOWED_ORIGINS in production. The
+// parser silently drops "*", so without this check the operator would believe
+// they had opened the API to every origin while the API stayed same-origin --
+// and the failure would show up as an opaque 403 in a browser console. An https
+// origin is required for the same reason the session cookie is Secure: a
+// cross-origin console over plain http would send credentials in the clear.
+func validateAllowedOrigins(get func(string) string) []error {
+	raw := strings.TrimSpace(get("ALLOWED_ORIGINS"))
+	if raw == "" {
+		return nil
+	}
+	var failures []error
+	for _, entry := range strings.Split(raw, ",") {
+		origin := strings.TrimSpace(entry)
+		if origin == "" {
+			continue
+		}
+		if origin == "*" {
+			failures = append(failures, errors.New("ALLOWED_ORIGINS must list explicit origins; a wildcard is refused because credentialed requests cannot use one"))
+			continue
+		}
+		if !strings.HasPrefix(origin, "https://") {
+			failures = append(failures, fmt.Errorf("ALLOWED_ORIGINS entry %q must use https", origin))
+		}
+	}
 	return failures
 }
 
