@@ -117,6 +117,11 @@ export function importAssets(input: {
 // one call that goes around it and hands back the body as a Blob for the caller
 // to save. The server keeps ownership of the CSV writing, so the field escaping
 // has one implementation instead of a second one here.
+//
+// Known limitation: request() always calls response.json() with no responseType
+// parameter. Two ways to resolve this if more non-JSON endpoints appear:
+// (a) add a responseType option to request() that returns a Blob or text, or
+// (b) change the contract to return JSON arrays and build the CSV client-side.
 export async function exportAssets(format: "json" | "csv" = "csv"): Promise<Blob> {
   const response = await fetch(`/api/v1/assets/export?format=${format}`, { credentials: "include" });
   if (!response.ok) {
