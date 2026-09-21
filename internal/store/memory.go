@@ -782,13 +782,24 @@ func (m *MemoryRepository) DeleteEvidence(tenantID, id string) error {
 	return nil
 }
 
-func (m *MemoryRepository) UpsertIncident(incident domain.Incident) (domain.Incident, bool, error) {
+func (m *MemoryRepository) UpsertIncident(incident domain.Incident) (domain.Incident, IncidentUpsertOutcome, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for key, current := range m.incidents {
 		if current.TenantID == incident.TenantID && current.AssetID == incident.AssetID &&
-			current.BaselineVersion == incident.BaselineVersion && current.Fingerprint == incident.Fingerprint &&
-			current.Status != domain.IncidentClosed && current.Status != domain.IncidentFalsePositive {
+			current.BaselineVersion == incident.BaselineVersion && current.Fingerprint == incident.Fingerprint {
+			// A recurrence on a closed incident reopens it rather than opening a
+			// second one. The old condition skipped these rows entirely, so the
+			// fallthrough below inserted a duplicate with the same fingerprint
+			// and the operator saw two unrelated incidents for one problem. The
+			// row keeps its id, so its timeline and evidence stay attached.
+			//
+			// This must agree with the PostgreSQL implementation, which reads the
+			// pre-update status in a sibling CTE to decide the same thing.
+			reopened := current.Status == domain.IncidentClosed || current.Status == domain.IncidentFalsePositive
+			if reopened {
+				current.Status = domain.IncidentOpen
+			}
 			current.LastSeenAt = incident.LastSeenAt
 			current.OccurrenceCount++
 			current.Signals = append([]domain.Signal(nil), incident.Signals...)
@@ -805,15 +816,21 @@ func (m *MemoryRepository) UpsertIncident(incident domain.Incident) (domain.Inci
 			// Same critical section as the counter above, mirroring the single
 			// statement the PostgreSQL implementation uses. Two separate writes
 			// could interleave and lose the occurrence.
+			eventType := domain.IncidentEventRecurred
+			outcome := IncidentRecurred
+			if reopened {
+				eventType = domain.IncidentEventReopened
+				outcome = IncidentReopened
+			}
 			m.incidentEvents = append(m.incidentEvents,
-				occurrenceEvent(current, incident, domain.IncidentEventRecurred))
-			return cloneIncident(current), false, nil
+				occurrenceEvent(current, incident, eventType))
+			return cloneIncident(current), outcome, nil
 		}
 	}
 	m.incidents[tenantKey(incident.TenantID, incident.ID)] = cloneIncident(incident)
 	m.incidentEvents = append(m.incidentEvents,
 		occurrenceEvent(incident, incident, domain.IncidentEventCreated))
-	return cloneIncident(incident), true, nil
+	return cloneIncident(incident), IncidentCreated, nil
 }
 
 // occurrenceEvent builds the timeline entry for one detection round.

@@ -1269,7 +1269,7 @@ components:
         nextCursor: { type: string }
     IncidentEventType:
       type: string
-      enum: [CREATED, RECURRED, STATUS_CHANGED, OWNER_ASSIGNED, COMMENTED]
+      enum: [CREATED, RECURRED, REOPENED, STATUS_CHANGED, OWNER_ASSIGNED, COMMENTED]
     IncidentEvent:
       type: object
       description: |

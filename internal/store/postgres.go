@@ -837,7 +837,7 @@ func scanEvidence(row rowScanner) (domain.Evidence, error) {
 	return item, normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.Incident, bool, error) {
+func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.Incident, IncidentUpsertOutcome, error) {
 	signals, _ := json.Marshal(incident.Signals)
 	evidenceIDs, _ := json.Marshal(incident.EvidenceIDs)
 	// The timeline entry is written by the same statement as the counter it
@@ -849,16 +849,36 @@ func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.In
 	// `(xmax = 0)` in the RETURNING must stay as it is: it is what tells the
 	// caller whether this round created the incident or merged into one, and the
 	// broker event name and alert dispatch depend on it.
+	//
+	// `prior` exists to answer one question the upsert itself cannot: was the row
+	// we just landed on CLOSED or FALSE_POSITIVE before this statement? It has
+	// to be read by a sibling CTE rather than from the RETURNING, because that
+	// RETURNING sees the row *after* DO UPDATE has rewritten status, so
+	// `incidents.status` there is already OPEN and every reopen would be
+	// mislabelled RECURRED. A CTE without a data-modifying sibling reads the
+	// pre-statement snapshot, which is the value we need. All three CTEs share
+	// one snapshot, so `prior` and the INSERT below cannot disagree about what
+	// the row looked like on entry.
 	row := p.pool.QueryRow(context.Background(), `
-		WITH upserted AS (
+		WITH prior AS (
+			SELECT status FROM incidents
+			WHERE tenant_id=$2 AND asset_id=$3 AND baseline_version=$5 AND fingerprint=$6
+		), upserted AS (
 			INSERT INTO incidents (
 				id,tenant_id,asset_id,baseline_id,baseline_version,fingerprint,severity,status,title,
 				signals,evidence_ids,occurrence_count,owner_id,resolution,created_at,first_seen_at,last_seen_at,acknowledged_at,resolved_at
 			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,'')::uuid,NULLIF($14,''),$15,$16,$17,$18,$19)
 			ON CONFLICT (tenant_id,asset_id,baseline_version,fingerprint)
-				WHERE status NOT IN ('CLOSED','FALSE_POSITIVE')
 			DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at,
 				occurrence_count=incidents.occurrence_count+1,
+				-- A recurrence on a closed incident reopens it. The partial index
+				-- this replaces simply refused to match those rows, so the
+				-- recurrence opened a second incident with the same fingerprint
+				-- and the operator saw two unrelated rows for one problem. The
+				-- incident keeps its id, so its timeline and its evidence stay
+				-- attached to it.
+				status=CASE WHEN incidents.status IN ('CLOSED','FALSE_POSITIVE')
+					THEN 'OPEN'::incident_status ELSE incidents.status END,
 				-- Both of the merged fields below must match the in-memory
 				-- implementation exactly. They did not: severity was allowed to
 				-- downgrade between non-CRITICAL levels here while memory kept it
@@ -874,18 +894,21 @@ func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.In
 					FROM jsonb_array_elements(incidents.evidence_ids || EXCLUDED.evidence_ids) AS merged(value)
 				),
 				severity=GREATEST(incidents.severity, EXCLUDED.severity)
-			RETURNING id, (xmax = 0) AS created, severity
+			RETURNING id, (xmax = 0) AS created, severity,
+				CASE WHEN (xmax = 0) THEN 'CREATED'
+				     WHEN (SELECT status FROM prior) IN ('CLOSED','FALSE_POSITIVE') THEN 'REOPENED'
+				     ELSE 'RECURRED' END AS event_type
 		), logged AS (
 			INSERT INTO incident_events (
 				id,tenant_id,incident_id,event_type,severity,title,signals,evidence_ids,job_id,created_at
 			)
 			SELECT $20,$2,upserted.id,
-				CASE WHEN upserted.created THEN 'CREATED' ELSE 'RECURRED' END::incident_event_type,
+				upserted.event_type::incident_event_type,
 				upserted.severity,$9,$10,$11,NULLIF($21,'')::uuid,$15
 			FROM upserted
 			RETURNING id
 		)
-		SELECT id, created FROM upserted`,
+		SELECT id, event_type FROM upserted`,
 		incident.ID, incident.TenantID, incident.AssetID, incident.BaselineID, incident.BaselineVersion,
 		incident.Fingerprint, incident.Severity, incident.Status, incident.Title, signals, evidenceIDs,
 		incident.OccurrenceCount, incident.OwnerID, incident.Resolution, incident.CreatedAt,
@@ -893,9 +916,18 @@ func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.In
 		identity.New(), incident.JobID,
 	)
 	var mergedID string
-	var created bool
-	if err := row.Scan(&mergedID, &created); err != nil {
-		return domain.Incident{}, false, normalizePostgresError(err)
+	// The statement decides the outcome, not this side: it is the only place
+	// that can still see the pre-update status.
+	var eventType string
+	if err := row.Scan(&mergedID, &eventType); err != nil {
+		return domain.Incident{}, IncidentCreated, normalizePostgresError(err)
+	}
+	outcome := IncidentRecurred
+	switch eventType {
+	case string(domain.IncidentEventCreated):
+		outcome = IncidentCreated
+	case string(domain.IncidentEventReopened):
+		outcome = IncidentReopened
 	}
 	// RETURNING gives the real row, so this no longer needs the full-table scan
 	// the previous implementation used to find which incident the round merged
@@ -904,9 +936,9 @@ func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.In
 	if err != nil {
 		// The write already committed; report the caller's view rather than
 		// failing a detection over a read-back that should not fail.
-		return incident, created, nil
+		return incident, outcome, nil
 	}
-	return merged, created, nil
+	return merged, outcome, nil
 }
 
 func (p *PostgresRepository) UpdateIncident(incident domain.Incident) error {

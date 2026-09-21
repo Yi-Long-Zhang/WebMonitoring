@@ -15,16 +15,16 @@ func TestUpsertIncidentDeduplicatesActiveEvents(t *testing.T) {
 		Fingerprint: "same", Severity: domain.SeverityHigh, Status: domain.IncidentOpen,
 		Title: "event", OccurrenceCount: 1, FirstSeenAt: now, LastSeenAt: now,
 	}
-	saved, created, err := repository.UpsertIncident(first)
-	if err != nil || !created || saved.OccurrenceCount != 1 {
-		t.Fatalf("create incident: %#v %v %v", saved, created, err)
+	saved, outcome, err := repository.UpsertIncident(first)
+	if err != nil || outcome != IncidentCreated || saved.OccurrenceCount != 1 {
+		t.Fatalf("create incident: %#v %v %v", saved, outcome, err)
 	}
 	second := first
 	second.ID = "second"
 	second.LastSeenAt = now.Add(time.Minute)
-	saved, created, err = repository.UpsertIncident(second)
-	if err != nil || created || saved.ID != "first" || saved.OccurrenceCount != 2 {
-		t.Fatalf("deduplicate incident: %#v %v %v", saved, created, err)
+	saved, outcome, err = repository.UpsertIncident(second)
+	if err != nil || outcome != IncidentRecurred || saved.ID != "first" || saved.OccurrenceCount != 2 {
+		t.Fatalf("deduplicate incident: %#v %v %v", saved, outcome, err)
 	}
 }
 

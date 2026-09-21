@@ -404,11 +404,11 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 				// run that observed it.
 				JobID: job.ID,
 			}
-			saved, created, upsertErr := s.repository.UpsertIncident(incident)
+			saved, outcome, upsertErr := s.repository.UpsertIncident(incident)
 			if upsertErr != nil {
 				return s.failJob(ctx, job, "INCIDENT_WRITE_FAILED", upsertErr)
 			}
-			if created {
+			if outcome == store.IncidentCreated {
 				s.broker.Publish("incident.created", saved)
 			} else {
 				s.broker.Publish("incident.updated", saved)
@@ -419,11 +419,20 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 				// independently raised again produced no second message -- the
 				// operator who had already been paged was the one who most
 				// needed to know it happened again. The reason travels with the
-				// job so the message can say which of the two it is, and so the
+				// job so the message can say which of the three it is, and so the
 				// delivery key keeps them apart.
+				//
+				// Reopened is a separate reason on purpose. A delivery's dedup
+				// key is incidentID:channelID:reason, and a reopened incident
+				// keeps its id, so reusing RECURRED would make this notice
+				// collide with the recurrence notice already sent for that
+				// incident and be dropped without anyone noticing.
 				reason := domain.AlertReasonCreated
-				if !created {
+				switch outcome {
+				case store.IncidentRecurred:
 					reason = domain.AlertReasonRecurred
+				case store.IncidentReopened:
+					reason = domain.AlertReasonReopened
 				}
 				if s.alertQueue != nil {
 					if err := s.alertQueue.EnqueueAlert(ctx, domain.AlertJob{

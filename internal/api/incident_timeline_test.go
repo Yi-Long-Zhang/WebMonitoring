@@ -33,8 +33,8 @@ func seedIncident(t *testing.T, repository store.Repository) domain.Incident {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !created {
-		t.Fatal("fixture did not create a new incident")
+	if created != store.IncidentCreated {
+		t.Fatalf("fixture outcome = %v, want a new incident", created)
 	}
 	return incident
 }
