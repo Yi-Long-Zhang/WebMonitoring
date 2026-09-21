@@ -21,6 +21,7 @@ export default tseslint.config(
       // lib covers the type side; this is only what eslint's no-undef needs.
       globals: {
         EventSource: "readonly",
+        ResizeObserver: "readonly",
         URL: "readonly",
         clearInterval: "readonly",
         navigator: "readonly",

@@ -1970,6 +1970,11 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 	severityCounts := map[string]int{}
 	incidentIDs := make(map[string]struct{})
 	mttd, mtta, mttr := make([]float64, 0), make([]float64, 0), make([]float64, 0)
+	// trendDay counts incidents per calendar day, split by severity. The
+	// overview chart needs a series the client cannot build: the console holds
+	// one page of incidents, and a trend drawn from a page would show the shape
+	// of the page size rather than of the tenant's risk.
+	trendDay := make(map[string]map[string]int)
 	for _, incident := range incidents {
 		if _, ok := assetIDs[incident.AssetID]; !ok || !withinRange(incident.LastSeenAt, from, to) {
 			continue
@@ -1979,6 +1984,11 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 		}
 		severityCounts[string(incident.Severity)]++
 		incidentIDs[incident.ID] = struct{}{}
+		day := incident.LastSeenAt.UTC().Format("2006-01-02")
+		if trendDay[day] == nil {
+			trendDay[day] = map[string]int{}
+		}
+		trendDay[day][string(incident.Severity)]++
 		if value := incident.CreatedAt.Sub(incident.FirstSeenAt).Seconds(); value >= 0 {
 			mttd = append(mttd, value)
 		}
@@ -2009,7 +2019,69 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 		"detectionJobs": jobCount, "successfulJobs": successfulJobs, "failedJobs": failedJobs,
 		"incidents": len(incidentIDs), "severityCounts": severityCounts, "alertDeliveries": alertDeliveries,
 		"mttdSeconds": averageSeconds(mttd), "mttaSeconds": averageSeconds(mtta), "mttrSeconds": averageSeconds(mttr),
+		"trend": buildTrend(trendDay, from, to),
 	})
+}
+
+// buildTrend renders the per-day severity counts as a dense, ascending series
+// spanning the requested range. Days with no incident are emitted with zeroes
+// rather than omitted: a chart that skipped them would draw a line straight
+// from the day before a quiet stretch to the day after it, which reads as
+// continuous activity across a period when nothing happened.
+//
+// An unset bound is anchored to the data rather than left at the zero time: a
+// report request need not carry a range, and treating an absent `to` as year
+// one would produce a series of nothing. An unset `from` starts thirty days
+// before the newest day that has data, which is the window the overview chart
+// shows by default.
+func buildTrend(counts map[string]map[string]int, from, to time.Time) []map[string]any {
+	if len(counts) == 0 {
+		return []map[string]any{}
+	}
+	newest := time.Time{}
+	for day := range counts {
+		parsed, err := time.Parse("2006-01-02", day)
+		if err != nil {
+			continue
+		}
+		if parsed.After(newest) {
+			newest = parsed
+		}
+	}
+	if newest.IsZero() {
+		return []map[string]any{}
+	}
+	end := newest
+	if !to.IsZero() {
+		end = to.UTC().Truncate(24 * time.Hour)
+	}
+	start := end.AddDate(0, 0, -29)
+	if !from.IsZero() {
+		start = from.UTC().Truncate(24 * time.Hour)
+	}
+	// The window is capped so a caller passing an enormous range cannot make
+	// the server allocate an unbounded slice.
+	const maxTrendDays = 366
+	if end.Before(start) {
+		return []map[string]any{}
+	}
+	if days := int(end.Sub(start).Hours()/24) + 1; days > maxTrendDays {
+		start = end.AddDate(0, 0, -(maxTrendDays - 1))
+	}
+	trend := make([]map[string]any, 0)
+	for day := start; !day.After(end); day = day.AddDate(0, 0, 1) {
+		key := day.Format("2006-01-02")
+		entry := map[string]any{"date": key}
+		total := 0
+		for _, severity := range []string{"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"} {
+			value := counts[key][severity]
+			entry[strings.ToLower(severity)] = value
+			total += value
+		}
+		entry["total"] = total
+		trend = append(trend, entry)
+	}
+	return trend
 }
 
 func reportRange(request *http.Request) (time.Time, time.Time, error) {

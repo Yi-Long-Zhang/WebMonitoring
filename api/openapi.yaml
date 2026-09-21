@@ -1557,7 +1557,7 @@ components:
         nextCursor: { type: string }
     ReportSummary:
       type: object
-      required: [assets, verifiedAssets, detectionJobs, successfulJobs, failedJobs, incidents, alertDeliveries, severityCounts, mttdSeconds, mttaSeconds, mttrSeconds]
+      required: [assets, verifiedAssets, detectionJobs, successfulJobs, failedJobs, incidents, alertDeliveries, severityCounts, mttdSeconds, mttaSeconds, mttrSeconds, trend]
       properties:
         assets: { type: integer }
         verifiedAssets: { type: integer }
@@ -1570,6 +1570,23 @@ components:
         mttdSeconds: { type: number, format: double }
         mttaSeconds: { type: number, format: double }
         mttrSeconds: { type: number, format: double }
+        trend:
+          type: array
+          description: |
+            按天分严重度的事件数，升序排列。没有事件的日期也会出现，计数为零——
+            跳过它们会让折线从安静期之前直接连到之后，看起来像那段时间一直有事发生。
+            未指定 from/to 时，区间以最新有数据的日期为终点向前 30 天。
+          items:
+            type: object
+            required: [date, critical, high, medium, low, info, total]
+            properties:
+              date: { type: string, format: date }
+              critical: { type: integer }
+              high: { type: integer }
+              medium: { type: integer }
+              low: { type: integer }
+              info: { type: integer }
+              total: { type: integer }
     AlertChannelList:
       type: object
       required: [items, nextCursor]
