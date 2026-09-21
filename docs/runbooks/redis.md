@@ -1,10 +1,15 @@
 # 运行手册：Redis 内存耗尽 / 队列堆积
 
-## 症状
+**Q：我看到的什么现象指向这本手册？**
 
 `/readyz` 里 `redis` 或 `alert_redis` 报 `unavailable`；或 Redis 仍可连接，
 但 `/metrics` 的 `webmonitoring_queue_pending` 持续增长不再回落、
 `webmonitoring_queue_dead_letters_total` 开始增长、检测任务迟迟不进入终态。
+
+**Q：为什么这里要先讲队列的形状？**
+
+因为两个 Stream 有两套独立的消费者组和重试语义，"堆积"出现在哪一个上面，
+处置完全不同。先看懂它们再动手。
 
 ## 先理解队列的形状
 

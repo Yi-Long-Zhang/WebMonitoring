@@ -1,10 +1,15 @@
 # 运行手册：浏览器 Worker 崩溃 / Chromium 需要更新
 
-## 症状
+**Q：我看到的什么现象指向这本手册？**
 
 `/readyz` 里 `browser_worker` 报 `unavailable`；只有 `BROWSER` 模式的任务失败
 （`CHECK_FAILED` / `BROWSER_UNAVAILABLE` / `CHECK_TIMEOUT`），HTTP 模式正常；
 或容器反复 OOM 重启（退出码 137）。
+
+**Q：怎么快速确认是它而不是别的？**
+
+看"HTTP 任务照常、BROWSER 任务全挂"这个指纹——每一次 BROWSER 模式检测都
+同步调用这个 worker，它不参与 HTTP 模式检测。
 
 ## 影响范围（先知道代价）
 

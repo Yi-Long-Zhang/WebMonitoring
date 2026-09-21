@@ -1,15 +1,15 @@
 # 技术架构与选型
 
-## 1. 总体决策
+本文用问答形式说明技术选型、模块边界和部署拓扑。**为什么这么选**的问题，
+能答的都答了；只记录结论、不记录取舍的地方会明确标注。
 
-当前采用“模块化单体控制面 + 独立检测 Worker”的架构。
+---
 
-原因：
+## 总体架构
 
-- 当前处于 MVP，业务模型和规则仍在快速演进。
-- 控制面需要事务一致性和快速迭代。
-- HTTP 检测和浏览器检测有不同资源模型，适合独立扩缩容。
-- 通过队列解耦任务，不需要一开始拆成大量微服务。
+**Q：整体是什么结构？**
+
+「模块化单体控制面 + 独立检测 Worker」。通过队列解耦任务，不拆成大量微服务。
 
 ```text
 Vue Console
@@ -26,20 +26,36 @@ Go HTTP Worker       Playwright Browser Worker
           PostgreSQL + S3/MinIO
 ```
 
-## 2. 前端
+**Q：为什么不直接上微服务？**
 
-### 选型
+- 当前处于 MVP，业务模型和规则仍在快速演进。
+- 控制面需要事务一致性和快速迭代。
+- HTTP 检测和浏览器检测有不同资源模型，适合独立扩缩容——**这两个**才需要拆。
+- 队列解耦已足够，再拆只会增加跨服务事务和排障成本。
 
-- Vue 3 + TypeScript + Vite。
-- Composition API 和 `<script setup>`。
+**Q：为什么控制面不直接执行不可信网页脚本？**
+
+这是不可妥协的隔离边界：控制面不执行客户页面的 JS。HTTP Worker 和 Browser Worker
+隔离运行，各有超时、大小和网络边界。浏览器 Worker 必须容器隔离、限制出口网络、
+限制 CPU/内存/时间和响应体大小。
+
+---
+
+## 前端
+
+**Q：前端选型是什么？**
+
+- Vue 3 + TypeScript + Vite，Composition API 和 `<script setup>`。
 - Element Plus：适合密集型安全运营后台。
 - Pinia：只保存跨页面客户端状态，不把所有服务端数据塞入全局 Store。
 - TanStack Query for Vue：请求缓存、重试、失效和加载状态。
-- ECharts 已作为依赖预留给总览统计；当前页面以摘要和列表为主。
-- 差异详情当前使用结构化信号和证据下载，Monaco Diff Editor 尚未接入。
-- 前端当前有 API client 和 Worker 测试，并有控制台 Playwright E2E（`console-smoke`，纳入 Compose smoke）。
+- ECharts 已作为依赖预留给总览统计。
 
-### 前端分层
+**Q：差异对比用 Monaco Diff Editor 吗？**
+
+**没有。** 差异详情当前使用结构化信号和证据下载，Monaco Diff Editor 尚未接入。
+
+**Q：怎么组织前端代码？**
 
 ```text
 src/
@@ -53,24 +69,34 @@ src/
 └── styles/
 ```
 
-当前实现已按上述边界组织。OpenAPI 类型生成到
-`apps/console/src/types/generated/`，HTTP 调用集中在
-`services/api/`，服务端状态集中在 Pinia Store，页面组件通过
-`features/` 暴露的动作完成写操作。不要在组件中直接拼接后端 URL、
-重复定义 API 类型或实现绕过服务端的权限判断。
+**Q：前端代码有什么硬约束？**
 
-### 前端安全
+OpenAPI 类型生成到 `apps/console/src/types/generated/`，HTTP 调用集中在
+`services/api/`，服务端状态集中在 Pinia Store，页面组件通过 `features/`
+暴露的动作完成写操作。**不要**在组件中直接拼接后端 URL、重复定义 API 类型，
+或实现绕过服务端的权限判断。
 
-- 采集 HTML 默认以转义文本展示。
-- 禁止无审查使用 `v-html`。
-- 必须预览时使用独立 origin 和严格 `sandbox` iframe。
-- 当前证据下载由已认证 API 直接返回，并校验对象大小和 SHA-256；
-  另支持短期签名 URL。
-- 菜单隐藏不等于权限控制，后端必须鉴权。
+**Q：有什么测试？**
 
-## 3. Go 控制面
+有 API client 和 Worker 单元测试，以及控制台 Playwright E2E
+（`console-smoke`，已纳入 Compose smoke）。
 
-目标模块边界：
+**Q：展示采集到的 HTML 安全吗？**
+
+采集 HTML 默认以转义文本展示；禁止无审查使用 `v-html`；必须预览时使用独立 origin
+和严格 `sandbox` iframe。证据下载由已认证 API 直接返回并校验对象大小和 SHA-256，
+另支持短期签名 URL。
+
+**Q：菜单里隐藏了入口，就等于没权限了吗？**
+
+**不等于。** 菜单隐藏不是权限控制，后端必须鉴权。前端权限只到角色级，
+单一来源见 `apps/console/src/app/permissions.ts`。
+
+---
+
+## Go 控制面
+
+**Q：模块怎么划分？**
 
 ```text
 internal/
@@ -87,14 +113,18 @@ internal/
 └── platform/       # 数据库、队列、配置和观测
 ```
 
-推荐使用标准库配合轻量路由和数据库驱动；引入框架必须说明收益和退出成本。
-业务层不应直接依赖 HTTP 请求对象、具体消息队列或对象存储 SDK。
+**Q：依赖方向有什么要求？**
 
-## 4. 检测 Worker
+用标准库配合轻量路由和数据库驱动；引入框架必须说明收益和退出成本。业务层
+**不应**直接依赖 HTTP 请求对象、具体消息队列或对象存储 SDK。
 
-### HTTP Worker
+---
 
-适合高频、低成本检测：
+## 检测 Worker
+
+**Q：HTTP Worker 和 Browser Worker 分别负责什么？**
+
+**HTTP Worker**（高频、低成本）：
 
 - DNS 和 TLS 基础信息。
 - HTTP 状态、响应头、响应大小和响应时间。
@@ -102,26 +132,30 @@ internal/
 - HTML、脚本、链接、表单和 iframe 的静态解析。
 - 内容规范化、摘要和差异信号。
 
-HTTP 无渲染，快照中的 `popups`、`dialogs`、`downloads`、`screenshotHash` 明确留空
-（`resourceRequests` 由静态资源清单近似，仅脚本/样式表/图片/iframe 引用）；这些
-字段只有浏览器 Worker 才产出，跨模式对比时应忽略缺失侧的空值。
-
-### Browser Worker
-
-只在页面需要执行 JavaScript、截图或行为分析时使用：
+**Browser Worker**（需要执行 JS、截图或行为分析）：
 
 - Playwright 页面加载和截图。
 - 最终导航和跨域导航记录。
 - 新窗口、弹窗、下载和表单行为观察。
 - 资源请求清单和脚本变化。
-- 登录态流程只使用专门的密钥管理和客户授权。控制面解密凭据后经内部 HTTP 传给本
-  Worker（[ADR-0004](adr/0004-browser-login-credentials.md)）：凭据只出现在请求体，
-  不写日志、不回显；登录页的请求同样走上下文级 SSRF 拦截，一旦被拦截即失败关闭，
-  避免把渲染失败的登录页当成受保护页面存成快照。
 
-浏览器 Worker 必须容器隔离、限制出口网络、限制 CPU/内存/时间和响应体大小。
+**Q：两种模式的快照字段一样吗？**
 
-## 5. 数据和基础设施
+不一样。HTTP 无渲染，快照中的 `popups`、`dialogs`、`downloads`、`screenshotHash`
+明确留空（`resourceRequests` 由静态资源清单近似，仅脚本/样式表/图片/iframe 引用）；
+这些字段只有浏览器 Worker 才产出，**跨模式对比时应忽略缺失侧的空值**。
+
+**Q：登录态检测的凭据怎么保证不泄露？**
+
+登录态流程只使用专门的密钥管理和客户授权。控制面解密凭据后经内部 HTTP 传给
+Browser Worker（[ADR-0004](adr/0004-browser-login-credentials.md)）：凭据只出现在
+请求体，不写日志、不回显；登录页的请求同样走上下文级 SSRF 拦截，一旦被拦截即
+**失败关闭**，避免把渲染失败的登录页当成受保护页面存成快照。生产门禁要求该端点
+使用 https 或私网地址。
+
+---
+
+## 数据和基础设施
 
 | 组件 | 用途 |
 | --- | --- |
@@ -132,42 +166,60 @@ HTTP 无渲染，快照中的 `popups`、`dialogs`、`downloads`、`screenshotHa
 | OpenTelemetry | Trace 和跨 Worker 关联 |
 | 结构化日志 | 运行排障，不保存敏感原文 |
 
-数据库保存证据元数据和摘要；对象存储保存原始文件。证据对象命名不得包含
-客户敏感信息。当前访问必须经过控制面认证、租户校验和完整性校验；生产阶段
-仍需补充短期签名或等价的短时访问凭证。
+**Q：元数据和证据分别放哪？**
+
+数据库保存证据元数据和摘要；对象存储保存原始文件。证据对象命名不得包含客户
+敏感信息。访问经过控制面认证、租户校验和完整性校验，并支持短期签名访问凭证。
+
+---
 
 ### 可观测性
 
-指标由自研 registry 提供，控制面和 Worker 各自暴露 Prometheus 抓取端点
-`/metrics`；这是文档化的运维接口，不随 OpenTelemetry 的引入而改变。
+**Q：指标怎么暴露？**
 
-Trace 是**附加且默认关闭**的（`internal/telemetry`）。只有设置
-`OTEL_EXPORTER_OTLP_ENDPOINT` 才创建导出器；未设置时全局 provider 保持 SDK
-no-op，所有 span 调用退化为几个纳秒，行为与引入前完全一致。端点、头部、TLS
-和压缩由 OTLP/HTTP 导出器自行读取标准 `OTEL_*` 环境变量，代码内不硬编码采集
-地址；采样率由 `OTEL_TRACES_SAMPLER_ARG` 控制，缺省全采。初始化失败只记录
-告警，不阻止进程启动。
+指标由自研 registry 提供，控制面和 Worker 各自暴露 Prometheus 抓取端点 `/metrics`。
+请求级指标带 `method`/`status`/`path` 标签，路径按集合归并
+（`/api/v1/assets` 而非 `/api/v1/assets/{id}`），**签名令牌不进入标签**。
 
-已埋点位置：
+**Q：本仓库带采集器吗？**
+
+**不带。** `/metrics` 是文档化的运维接口，scrape 配置、告警规则和时序存储由部署方
+提供。边缘 nginx 对外屏蔽 `/metrics`，正是为了让内部采集器成为唯一消费者。
+
+**Q：Trace 默认开启吗？**
+
+**默认关闭**（`internal/telemetry`）。只有设置 `OTEL_EXPORTER_OTLP_ENDPOINT` 才创建
+导出器；未设置时全局 provider 保持 SDK no-op，所有 span 调用退化为几个纳秒。
+端点、头部、TLS 和压缩由 OTLP/HTTP 导出器读取标准 `OTEL_*` 环境变量，代码内不
+硬编码采集地址；采样率由 `OTEL_TRACES_SAMPLER_ARG` 控制，缺省全采。初始化失败
+只记录告警，不阻止进程启动。
+
+**Q：哪些地方埋了点？**
 
 - HTTP 中间件 server span，覆盖整个请求（方法 + 路径）。
 - `detection.process`：任务消费，带 `tenant_id`/`job_id`/`asset_id`/`mode`。
 - `checker.http`：HTTP 检测出站请求。
 - `notify.send`：单个告警渠道投递。
 
-`X-Request-ID` 与导出的 trace ID 一致（未启用追踪时为本地生成），审计记录沿用
-同一 ID，因此日志、审计和 trace 可以互相定位。
+`X-Request-ID` 与导出的 trace ID 一致（未启用追踪时为本地生成），审计记录沿用同一
+ID，因此日志、审计和 trace 可以互相定位。
 
-span 属性只记录租户、任务、资产、渠道类型这类标识。客户 URL、DingTalk 签名、
+**Q：trace 里会出现客户敏感数据吗？**
+
+不会。span 属性只记录租户、任务、资产、渠道类型这类标识。客户 URL、DingTalk 签名、
 Webhook 凭据、邮件收件人和页面内容都不写入 span——trace 会导出到外部采集器。
 `GET /api/v1/evidence/signed/{token}` 的 token 属于凭据，因此该路由的 span 名
 使用路由占位符而不是真实路径。
 
-**已知缺口**：队列消息体只包含任务 JSON，不携带 W3C `traceparent`。Worker 的
-span 与产生该任务的 API 请求因此不是同一个 trace，只能通过 `job_id`/`asset_id`
-属性关联。跨进程 trace 关联需要把 trace 上下文放进队列信封，属于后续工作。
+**Q：日志、审计和 trace 能串起来吗？**
 
-## 6. API 约定
+能，通过同一个请求 ID。但有一个**已知缺口**：队列消息体只包含任务 JSON，不携带
+W3C `traceparent`，Worker 的 span 与产生该任务的 API 请求因此不是同一个 trace，
+只能通过 `job_id`/`asset_id` 属性关联。
+
+---
+
+## API 约定
 
 - API 契约使用 OpenAPI，前端客户端和类型由契约生成。
 - 时间使用 UTC 存储，展示层转换为用户时区。
@@ -175,14 +227,18 @@ span 与产生该任务的 API 请求因此不是同一个 trace，只能通过 
 - 写操作返回稳定资源 ID 和状态，不返回内部存储路径。
 - 异步操作返回任务 ID，使用查询或 SSE 获取进度。
 - 错误返回稳定错误码、可读消息和追踪 ID。
-- 事件状态流转由后端校验，前端不能自行改变状态。
+- 事件状态流转由后端校验，**前端不能自行改变状态**。
 
-## 7. 实时和异步
+---
 
-管理操作使用 REST。告警和任务状态推送优先使用 SSE；只有需要双向实时交互
-时才考虑 WebSocket。
+## 实时和异步
 
-所有队列消费者必须：
+**Q：什么时候用 SSE，什么时候用 WebSocket？**
+
+管理操作使用 REST。告警和任务状态推送**优先使用 SSE**；只有需要双向实时交互时
+才考虑 WebSocket。
+
+**Q：队列消费者必须满足什么？**
 
 - 具备幂等键。
 - 区分可重试和不可重试错误。
@@ -190,10 +246,14 @@ span 与产生该任务的 API 请求因此不是同一个 trace，只能通过 
 - 将最终失败送入死信或失败记录。
 - 记录任务、租户、资产和追踪 ID。
 
-## 8. 多副本支持状态
+---
 
-横向扩容需要逐项满足以下条件。任一未满足时，扩容都会在不报错的情况下重复执行检测或
-重复删除证据：
+## 多副本（HA）支持状态
+
+**Q：能横向扩容吗？**
+
+**能，且已实测。** 但横向扩容需要逐项满足条件，否则扩容会**在不报错的情况下**
+重复执行检测或重复删除证据。三处阻塞点都已解决：
 
 | 位置 | 机制 | 状态 |
 | --- | --- | --- |
@@ -201,11 +261,13 @@ span 与产生该任务的 API 请求因此不是同一个 trace，只能通过 
 | `apps/http-worker` 的消费者身份 | `WORKER_ID` 曾被 Compose 固定为 `http-worker-1` | 已解决：`config.WorkerIdentity` 在未显式配置时按 hostname + 随机后缀生成每进程身份，生产门禁拒绝两个历史固定值 |
 | `internal/maintenance/retention.go` | 无锁，且 `RunDaily` 启动时立即执行一次全量清理 | 已解决：`store.ReplicaLease` 提供 PostgreSQL 会话级 advisory lock，未取得租约的副本直接跳过本轮；定时清理会为实际发生的删除补写审计事件 |
 
-`scripts/multi-replica-drill.ps1` 是这三项的验收脚本：它不通过 API 创建任务，而是让各副本
-调度器自己排队，再断言任务数等于资产数、没有重复的 `(tenant, asset, mode)`、每个 worker
-副本对应一个唯一消费者身份。
+**Q：怎么验证扩容是安全的？**
 
-当前状态是**已验证**。2026-09-20 在真实 `--scale api=2 --scale http-worker=3` 上首次跑通：
+`scripts/multi-replica-drill.ps1` 是这三项的验收脚本：它不通过 API 创建任务，而是让
+各副本调度器自己排队，再断言任务数等于资产数、没有重复的 `(tenant, asset, mode)`、
+每个 worker 副本对应一个唯一消费者身份。
+
+2026-09-20 在真实 `--scale api=2 --scale http-worker=3` 上首次跑通：
 
 ```
 assets            : 40
@@ -216,25 +278,23 @@ wall clock        : 12.2s
 worker consumers  : 3 个互不相同的名字
 ```
 
-同一次运行里做了两个变异检查，都如期失败，因此这些断言不是空转的：
+**Q：这些断言会不会是空转的？**
 
-- `-DropActiveJobIndex`（先删掉迁移 000012 的唯一索引）：任务数 66、重复组 26，脚本以
-  退出码 1 报错。这条演练确实在测它声称要测的东西。
-- 更早的 `WORKER_ID` 变异（把消费者名钉回固定值）使三个副本注册成同一名字。
+不是。同一次运行里做了两个变异检查，都如期失败：`-DropActiveJobIndex`（先删掉迁移
+000012 的唯一索引）使任务数变 66、重复组 26，脚本以退出码 1 报错；更早的 `WORKER_ID`
+变异（把消费者名钉回固定值）使三个副本注册成同一名字。
 
-**修复记录**：本演练在被首次执行前有一个致命缺陷 —— `Wait-Healthy` 用
-`docker compose ps -q`，而该命令默认不列出已退出的容器，一次性的 `migrate` 容器因此
-永远不可见，等待必然超时。它改用 `ps -aq` 后才有第一次通过。换句话说，这个脚本在
-2026-09-20 之前**不可能通过**，此前文档里「脚本已就位」的说法掩盖了这一点。
+**Q：任务租约和超时是怎么保证的？**
 
-任务租约关系现在被强制而不是靠手算。`ReapTimedOut` 会把所有 `started_at` 早于租约的
-`RUNNING` 任务单方面置为 `TIMED_OUT`，`ClaimJob` 也允许抢占超过租约的任务，**两者都不
-校验持有者** —— 所以保证不是「reaper 知道谁持有任务」，而是「没有合法检测能超过租约」。
-租约由 `JOB_LEASE_SECONDS` 配置（`store.JobLease()` 暴露给调度器，避免 reap 截止点与
-reclaim 截止点漂移），并且生产门禁要求它**严格大于** `3 × 90s = 270s`：一次检测受策略
-超时约束（上限 90 秒），而一次 BROWSER 检测会把这份预算花两次（登录页加载 + 目标页导航）。
-改动之前写在这里的那句「只要最慢的一次检测远短于租约就没有实际影响」就是被这个不等式
-替换掉的手算。
+`ReapTimedOut` 会把所有 `started_at` 早于租约的 `RUNNING` 任务单方面置为 `TIMED_OUT`，
+`ClaimJob` 也允许抢占超过租约的任务，**两者都不校验持有者** —— 所以保证不是
+「reaper 知道谁持有任务」，而是「**没有合法检测能超过租约**」。租约由
+`JOB_LEASE_SECONDS` 配置（`store.JobLease()` 暴露给调度器，避免 reap 截止点与
+reclaim 截止点漂移），并且生产门禁要求它**严格大于** `3 × 90s = 270s`：
+一次检测受策略超时约束（上限 90 秒），而一次 BROWSER 检测会把这份预算花两次
+（登录页加载 + 目标页导航）。
 
-若将来策略超时变成无上限，正确做法是改成 worker 周期性写 heartbeat、reaper 按
+**Q：以后策略超时无上限了怎么办？**
+
+当前的不等式就不再成立。正确做法是改成 worker 周期性写 heartbeat、reaper 按
 `last_heartbeat_at` 回收 —— 那是构造上正确，但需要迁移、仓储方法和 worker 管线。
