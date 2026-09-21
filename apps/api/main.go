@@ -154,6 +154,7 @@ func main() {
 		repository, authService, detectionService, evidenceStore, guard, broker, logger, sessionSecure,
 	)
 	server.SetLoginGuard(loginGuard)
+	server.SetAllowedOrigins(config.AllowedOrigins(os.Getenv))
 	if secretCipher != nil {
 		server.SetSecretCipher(secretCipher)
 	}
