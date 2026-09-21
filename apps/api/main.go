@@ -24,6 +24,7 @@ import (
 	"webmonitoring/internal/identity"
 	"webmonitoring/internal/jobqueue"
 	"webmonitoring/internal/notify"
+	"webmonitoring/internal/ratelimit"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
 	"webmonitoring/internal/telemetry"
@@ -155,6 +156,16 @@ func main() {
 	)
 	server.SetLoginGuard(loginGuard)
 	server.SetAllowedOrigins(config.AllowedOrigins(os.Getenv))
+	// The request allowance is shared through Redis when there is one, so the
+	// effective limit does not scale with the number of replicas. Without Redis
+	// the in-process limiter is used, which is correct for the single-process
+	// embedded mode and is what the integration tests run against.
+	rateLimits := ratelimit.ParseLimits(os.Getenv, time.Duration(config.PositiveInt(os.Getenv, "RATE_LIMIT_WINDOW_SECONDS", 60))*time.Second)
+	if redisAddress := os.Getenv("REDIS_ADDR"); redisAddress != "" {
+		server.SetRateLimiter(ratelimit.NewRedisLimiter(redisAddress, rateLimits))
+	} else {
+		server.SetRateLimiter(ratelimit.NewMemoryLimiter(rateLimits))
+	}
 	if secretCipher != nil {
 		server.SetSecretCipher(secretCipher)
 	}

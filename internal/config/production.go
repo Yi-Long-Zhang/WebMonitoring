@@ -104,6 +104,7 @@ func validateCommon(get func(string) string) []error {
 	failures = append(failures, validateSecretKeys(get)...)
 	failures = append(failures, validateRedisCredentials(get)...)
 	failures = append(failures, validateJobLease(get)...)
+	failures = append(failures, validateRateLimits(get)...)
 	failures = append(failures, validateSMTP(get)...)
 	failures = append(failures, validateAllowedOrigins(get)...)
 	return failures
@@ -318,8 +319,7 @@ func validateJobLease(get func(string) string) []error {
 	return nil
 }
 
-// validateRedisCredentials requires// validateRedisCredentials requires a real password when REDIS_ADDR carries
-// credentials. Demanding it only in the credentialed form leaves the bare
+// validateRedisCredentials requires// validateRedisCredentials requires a real password when REDIS_ADDR carries// credentials. Demanding it only in the credentialed form leaves the bare
 // host:port form -- used by the integration tests and a single-node dev stack --
 // working unchanged, so nothing has to change until a deployment opts in.
 func validateRedisCredentials(get func(string) string) []error {
@@ -333,4 +333,45 @@ func validateRedisCredentials(get func(string) string) []error {
 		return []error{errors.New("REDIS_ADDR password must be at least 16 characters in production")}
 	}
 	return nil
+}
+
+// validateRateLimits refuses a production deployment whose request allowance is
+// disabled or absurdly loose.
+//
+// Zero is the value that turns a class off, so it is read as "unlimited" rather
+// than as "the default" -- and a production installation that meant to configure
+// a limit and typed 0 would otherwise end up with none while believing it had
+// set one. The ceiling is generous but finite: a limit high enough to be
+// indistinguishable from unlimited protects nothing, and the whole point of the
+// control is that one tenant cannot consume the installation.
+func validateRateLimits(get func(string) string) []error {
+	var failures []error
+	checks := []struct {
+		name    string
+		ceiling int
+	}{
+		{"RATE_LIMIT_READ_PER_WINDOW", 100000},
+		{"RATE_LIMIT_WRITE_PER_WINDOW", 20000},
+		{"RATE_LIMIT_BULK_PER_WINDOW", 2000},
+	}
+	for _, check := range checks {
+		raw := strings.TrimSpace(get(check.name))
+		if raw == "" {
+			// Unset means the built-in default, which is a real limit.
+			continue
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s must be an integer", check.name))
+			continue
+		}
+		if value <= 0 {
+			failures = append(failures, fmt.Errorf("%s must be positive in production: 0 disables the limit for that class of request", check.name))
+			continue
+		}
+		if value > check.ceiling {
+			failures = append(failures, fmt.Errorf("%s must not exceed %d, which is effectively no limit", check.name, check.ceiling))
+		}
+	}
+	return failures
 }
