@@ -830,6 +830,24 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Site" }
         "403": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteSite
+      description: |
+        删除一个站点。站点只是组织维度，但资产通过 siteId 归属站点，因此
+        站点下仍有资产时返回 409 `SITE_NOT_EMPTY`，调用方需先把这些资产的
+        siteId 置空再重试——静默解除归属属于没人要求过的数据丢失。
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "204":
+          description: 已删除
+        "404": { $ref: "#/components/responses/Error" }
+        "409":
+          description: 站点下仍有资产（SITE_NOT_EMPTY）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403": { $ref: "#/components/responses/Error" }
   /tenants:
     get:
       operationId: listTenants

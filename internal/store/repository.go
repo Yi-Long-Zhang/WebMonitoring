@@ -64,6 +64,14 @@ type Repository interface {
 	UpdateSite(domain.Site) error
 	GetSite(tenantID, id string) (domain.Site, error)
 	ListSites(tenantID string, opts ListOptions) ([]domain.Site, string, error)
+	// DeleteSite removes one site. It reports ErrConflict when any asset still
+	// references the site: site_id is an optional grouping on the asset, so
+	// cascading the delete would silently unfile live assets, and the database
+	// foreign key would refuse the write anyway. The caller unassigns first.
+	DeleteSite(tenantID, id string) error
+	// CountAssetsBySite reports how many assets in the tenant reference the
+	// site, so the handler can name the count in its conflict response.
+	CountAssetsBySite(tenantID, siteID string) (int, error)
 
 	UpsertPolicy(domain.MonitorPolicy) error
 	// RewrapPolicy rewrites one policy's stored login credentials under the

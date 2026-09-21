@@ -354,6 +354,44 @@ func (p *PostgresRepository) ListSites(tenantID string, opts ListOptions) ([]dom
 	return items, next, nil
 }
 
+// CountAssetsBySite counts the assets filed under a site. Nothing cascades
+// site deletion, so this is what lets the delete fail with a count the caller
+// can act on rather than surfacing a raw foreign-key violation.
+func (p *PostgresRepository) CountAssetsBySite(tenantID, siteID string) (int, error) {
+	var count int
+	err := p.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM assets WHERE tenant_id=$1 AND site_id=$2`, tenantID, siteID).Scan(&count)
+	if err != nil {
+		return 0, normalizePostgresError(err)
+	}
+	return count, nil
+}
+
+// DeleteSite removes a site the tenant owns. The tagged-tenant lookup means a
+// cross-tenant id is ErrNotFound rather than a silent no-op, matching every
+// other resource read. The assets foreign key is the backstop: if a row
+// references this site the delete is refused here without inspecting the
+// database error, because a partitioned check would still race an insert.
+func (p *PostgresRepository) DeleteSite(tenantID, id string) error {
+	var referenced int
+	if err := p.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM assets WHERE tenant_id=$1 AND site_id=$2`, tenantID, id).Scan(&referenced); err != nil {
+		return normalizePostgresError(err)
+	}
+	if referenced > 0 {
+		return ErrConflict
+	}
+	tag, err := p.pool.Exec(context.Background(),
+		`DELETE FROM sites WHERE tenant_id=$1 AND id=$2`, tenantID, id)
+	if err != nil {
+		return normalizePostgresError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 const siteSelect = `SELECT id, tenant_id, name, domain, owner_id, created_at, updated_at FROM sites`
 
 func scanSite(row rowScanner) (domain.Site, error) {

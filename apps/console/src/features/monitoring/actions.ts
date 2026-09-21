@@ -1,5 +1,6 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
+  ApiError,
   addIncidentComment,
   approveBaseline,
   cancelJob,
@@ -9,6 +10,7 @@ import {
   createTenant,
   createUser,
   deleteAlertChannel,
+  deleteSiteDetailed,
   deleteTenantDetailed,
   issueVerification,
   rejectBaseline,
@@ -170,6 +172,24 @@ export function useMonitoringActions() {
     ElMessage.success("站点已更新");
   }
 
+  // A site delete is refused while assets are still filed under it, and the
+  // server's 409 SITE_NOT_EMPTY carries the count. The empty-site case is the
+  // common one, so it deletes without a confirmation dialog; the refusal is
+  // what the caller surfaces.
+  async function removeSite(site: Site) {
+    try {
+      await deleteSiteDetailed(site.id);
+      await consoleStore.refresh();
+      ElMessage.success(`站点 ${site.name} 已删除`);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "SITE_NOT_EMPTY") {
+        ElMessage.warning(error.message);
+        return;
+      }
+      throw error;
+    }
+  }
+
   async function createNewTenant(input: { name: string; slug: string; adminUsername: string; adminPassword: string }) {
     await createTenant(input);
     await consoleStore.loadTenants();
@@ -257,6 +277,7 @@ export function useMonitoringActions() {
     testChannel,
     createNewSite,
     saveSite,
+    removeSite,
     createNewTenant,
     saveTenant,
     setTenantDisabled,

@@ -225,6 +225,7 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("POST /api/v1/sites", s.requireRoles(s.createSite, domain.RoleAdmin))
 	protected.HandleFunc("GET /api/v1/sites/{id}", s.getSite)
 	protected.HandleFunc("PATCH /api/v1/sites/{id}", s.requireRoles(s.updateSite, domain.RoleAdmin))
+	protected.HandleFunc("DELETE /api/v1/sites/{id}", s.requireRoles(s.deleteSite, domain.RoleAdmin))
 	protected.HandleFunc("GET /api/v1/tenants", s.requireSuperAdmin(s.listTenants))
 	protected.HandleFunc("POST /api/v1/tenants", s.requireSuperAdmin(s.createTenant))
 	protected.HandleFunc("GET /api/v1/tenants/{id}", s.requireSuperAdmin(s.getTenant))
@@ -968,6 +969,45 @@ func (s *Server) updateSite(writer http.ResponseWriter, request *http.Request) {
 	}
 	s.appendAudit(request, session.User, "site.update", "site", site.ID, "SUCCESS", nil)
 	writeJSON(writer, http.StatusOK, site)
+}
+
+// deleteSite removes an empty site. A site is only an organizational grouping,
+// so deleting one loses nothing as long as no asset is filed under it -- but
+// assets carry site_id, and unfiling them silently would be data loss the
+// operator never asked for. The delete therefore fails closed with the count,
+// and the caller unassigns the assets first (PATCH each asset's siteId to null)
+// before retrying.
+func (s *Server) deleteSite(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	site, err := s.repository.GetSite(session.User.TenantID, request.PathValue("id"))
+	if err != nil {
+		s.notFound(writer, request)
+		return
+	}
+	count, err := s.repository.CountAssetsBySite(session.User.TenantID, site.ID)
+	if err != nil {
+		s.repositoryFailure(writer, request, "count site assets", err)
+		return
+	}
+	if count > 0 {
+		writeError(writer, request, http.StatusConflict, "SITE_NOT_EMPTY",
+			"站点下仍有资产，请先解除归属", map[string]any{"assets": count})
+		return
+	}
+	// Audit before the delete for the same reason tenant deletion does: the
+	// record has to outlive the row it describes.
+	s.appendAudit(request, session.User, "site.delete", "site", site.ID, "SUCCESS", map[string]any{"name": site.Name})
+	if err := s.repository.DeleteSite(session.User.TenantID, site.ID); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			// An asset was filed between the count and the delete.
+			writeError(writer, request, http.StatusConflict, "SITE_NOT_EMPTY",
+				"站点下仍有资产，请先解除归属", nil)
+			return
+		}
+		s.repositoryFailure(writer, request, "delete site", err)
+		return
+	}
+	writer.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) listTenants(writer http.ResponseWriter, request *http.Request) {
