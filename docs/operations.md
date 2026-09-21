@@ -338,7 +338,45 @@ overlay 用 `ports: !reset []` 摘掉 API 的 `8080` 和控制台的 `8088`。�
 「文档建议」变成「不满足就不跑」。
 
 边缘的 `/metrics` 显式返回 404。控制面的 `/metrics` 挂在不带认证的根 mux 上，
-对外发布等于把资产数、任务吞吐和错误率暴露给任何能访问该主机的人；采集器仍在
-Compose 网络内部抓取。`/healthz` 与 `/readyz` 保留对外，外部负载均衡需要它们。
+对外发布等于把资产数、任务吞吐和错误率暴露给任何能访问该主机的人。
+`/healthz` 与 `/readyz` 保留对外，外部负载均衡需要它们。
 `/api/` 关闭了 `proxy_buffering`，因为 `GET /api/v1/events/stream` 是 SSE，
 缓冲会让控制台的实时刷新成批到达或干脆不到。
+
+**本仓库不含采集器。** 控制面按 Prometheus 文本格式暴露 `/metrics`，但
+scrape 配置、告警规则和时序存储都由部署方提供——采集器跑在 Compose 网络的
+内部即可读到 `/metrics`（边缘对外屏蔽了它，正是为了让采集器成为唯一消费者）。
+需要指标时，自行加一个 Prometheus/Grafana Agent 服务挂到同一网络，按
+`api:8080/metrics` 与 `http-worker` 对应的地址抓取；不要为此把 `/metrics`
+重新发布到主机。
+
+### 证书续期
+
+仓库**不签发也不续期证书**。`TLS_CERT_DIR` 是部署方准备的目录，里面放
+`fullchain.pem` 和 `privkey.pem`；至于证书从哪来——主机上的 certbot、别处的
+ACME 客户端、企业 CA，还是采购来的——是部署决策，本仓库不替部署方做。把某个
+ACME 客户端烤进 overlay 就等于替所有人做了这个决定。
+
+但边缘**不会自己发现续期**。nginx 在启动时读一次证书，之后一直用内存里的副本，
+磁盘上换了新证书也看不见，直到收到 reload 信号。`scripts/reload-tls.ps1`
+补的就是这一段：
+
+```powershell
+# 续期完成后，把新证书装进运行中的边缘（不重启容器，不断开已有连接）
+.\scripts\reload-tls.ps1 -CertDir C:\certs\example.com
+
+# 只确认边缘当前在对外提供哪张证书，不做任何改动
+.\scripts\reload-tls.ps1 -CertDir C:\certs\example.com -CheckOnly
+```
+
+脚本先用 `nginx -t` 校验配置，再发 `SIGHUP`。**不重启容器**是有意的：重启会
+丢掉所有在途请求，包括控制台正挂着的 SSE 流；而 reload 是 nginx 在请求之间
+处理的信号，新老 worker 平滑交接。
+
+把它接到已经在做续期的定时任务上（cron、systemd timer、或 ACME 客户端的
+续期后钩子），让 reload 跟着续期走，而不是指望有人记得手动跑。
+
+`-CheckOnly` 通过实际 TLS 握手读边缘对外提供的证书，而不是读磁盘上的文件——
+文件是新的和边缘已经加载了它，不是同一件事，而后者才是要确认的。拿它报告的
+到期时间和 `fullchain.pem` 里的 not-after 时间对比；如果还是旧的那张，说明
+reload 没生效。
