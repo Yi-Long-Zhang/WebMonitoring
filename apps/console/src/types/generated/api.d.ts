@@ -1229,6 +1229,21 @@ export interface components {
             mttaSeconds: number;
             /** Format: double */
             mttrSeconds: number;
+            /**
+             * @description 按天分严重度的事件数，升序排列。没有事件的日期也会出现，计数为零——
+             *     跳过它们会让折线从安静期之前直接连到之后，看起来像那段时间一直有事发生。
+             *     未指定 from/to 时，区间以最新有数据的日期为终点向前 30 天。
+             */
+            trend: {
+                /** Format: date */
+                date: string;
+                critical: number;
+                high: number;
+                medium: number;
+                low: number;
+                info: number;
+                total: number;
+            }[];
         };
         AlertChannelList: {
             items: components["schemas"]["AlertChannel"][];

@@ -48,6 +48,14 @@ button, input { font: inherit; }
 .summary-card strong { display: block; margin: 15px 0 8px; color: var(--ink); font-size: 32px; font-weight: 700; }
 .summary-card small { color: #98a5b5; font-size: 11px; }
 .content-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(330px, 1fr); gap: 22px; }
+/* The trend spans the width; the pie and the gauge sit side by side under it,
+   which is the reading order an operator wants -- the shape of the month first,
+   then what it was made of, then whether detection itself is healthy. */
+.chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; margin-bottom: 22px; }
+.chart-panel { min-width: 0; }
+.chart-panel.wide { grid-column: 1 / -1; }
+.chart-panel .echart { padding: 0 12px 12px; }
+.chart-panel .el-empty { padding: 8px 0 26px; }
 .panel { overflow: hidden; background: var(--panel); border: 1px solid var(--line); }
 .panel.wide { min-width: 0; }
 .list-footer { display: flex; justify-content: center; padding: 14px 24px 18px; border-top: 1px solid #eef1f5; }
@@ -109,6 +117,12 @@ button, input { font: inherit; }
   .view-content { padding: 22px 20px 36px; }
   .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .content-grid { grid-template-columns: 1fr; }
+  .chart-grid { grid-template-columns: 1fr; }
+  /* The generic `.panel { overflow-x: auto }` below is there to let wide tables
+     scroll. A chart inside a scroll container has an ambiguous width, which the
+     ResizeObserver picks up and reports back -- so chart panels opt out and let
+     the canvas fill the column. */
+  .chart-panel { overflow: hidden; }
   .page-toolbar { align-items: flex-start; gap: 14px; flex-wrap: wrap; }
   .panel { overflow-x: auto; }
   .el-table { min-width: 720px; }

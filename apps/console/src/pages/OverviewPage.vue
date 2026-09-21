@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import EChart from "../components/monitoring/EChart.vue";
+import { detectionGaugeOption, severityPieOption, trendOption, type TrendPoint } from "../features/monitoring/charts";
 import type { Asset, Dashboard, Incident } from "../types/domain";
 
 type ReportSummary = {
@@ -10,6 +12,7 @@ type ReportSummary = {
   mttaSeconds: number;
   mttrSeconds: number;
   severityCounts: Record<string, number>;
+  trend: TrendPoint[];
 };
 
 const props = defineProps<{
@@ -24,6 +27,19 @@ const successRate = computed(() => {
   const total = (props.reportSummary?.successfulJobs ?? 0) + (props.reportSummary?.failedJobs ?? 0);
   return total ? Math.round((props.reportSummary?.successfulJobs ?? 0) / total * 100) : 0;
 });
+// The three charts read only what the summary already carries, so they are
+// computed rather than fetched: the page has no second loading state to get
+// wrong, and a summary refresh redraws them for free.
+const trend = computed(() => trendOption(props.reportSummary?.trend ?? []));
+const severityPie = computed(() => severityPieOption(props.reportSummary?.severityCounts ?? {}));
+const detectionGauge = computed(() =>
+  detectionGaugeOption({
+    successfulJobs: props.reportSummary?.successfulJobs ?? 0,
+    failedJobs: props.reportSummary?.failedJobs ?? 0,
+    severityCounts: props.reportSummary?.severityCounts ?? {},
+  }),
+);
+const hasTrend = computed(() => (props.reportSummary?.trend ?? []).some((point) => point.total > 0));
 function formatTime(value: string) { return new Date(value).toLocaleString("zh-CN", { hour12: false }); }
 function formatDuration(seconds = 0) { if (!seconds) return "-"; return seconds < 60 ? `${Math.round(seconds)} 秒` : `${Math.round(seconds / 60)} 分钟`; }
 function statusType(status: string) {
@@ -45,6 +61,22 @@ function statusType(status: string) {
       <div class="panel-header"><div><span class="section-kicker">OPERATIONS METRICS</span><h2>运行质量</h2></div><small class="muted">基于当前租户数据</small></div>
       <div class="metric-row"><div><span>检测成功率</span><strong>{{ successRate }}%</strong></div><div><span>MTTD</span><strong>{{ formatDuration(reportSummary?.mttdSeconds) }}</strong></div><div><span>MTTA</span><strong>{{ formatDuration(reportSummary?.mttaSeconds) }}</strong></div><div><span>MTTR</span><strong>{{ formatDuration(reportSummary?.mttrSeconds) }}</strong></div><div><span>告警事件</span><strong>{{ reportSummary?.incidents ?? 0 }}</strong></div></div>
     </section>
+    <div class="chart-grid">
+      <section class="panel chart-panel wide">
+        <div class="panel-header"><div><span class="section-kicker">INCIDENT TREND</span><h2>事件趋势</h2></div><small class="muted">按天统计，未指定区间时为最近 30 天</small></div>
+        <EChart v-if="hasTrend" :option="trend" height="280px" />
+        <el-empty v-else description="该区间内没有事件" :image-size="70" />
+      </section>
+      <section class="panel chart-panel">
+        <div class="panel-header"><div><span class="section-kicker">SEVERITY MIX</span><h2>风险分布</h2></div></div>
+        <EChart v-if="reportSummary?.incidents" :option="severityPie" height="280px" />
+        <el-empty v-else description="暂无风险数据" :image-size="70" />
+      </section>
+      <section class="panel chart-panel">
+        <div class="panel-header"><div><span class="section-kicker">DETECTION HEALTH</span><h2>检测成功率</h2></div></div>
+        <EChart :option="detectionGauge" height="280px" />
+      </section>
+    </div>
     <div class="content-grid">
       <section class="panel wide">
         <div class="panel-header"><div><span class="section-kicker">ACTIVE CASES</span><h2>待处置事件</h2></div><el-button text @click="emit('navigate', 'incidents')">查看全部 →</el-button></div>
