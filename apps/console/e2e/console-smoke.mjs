@@ -92,6 +92,7 @@ try {
   const downloadHref = await page.locator("a.evidence-link").first().getAttribute("href");
   assert.ok(downloadHref?.startsWith("/api/v1/evidence/"), "the authenticated download link disappeared");
 
+  await assertIncidentResponse(page, baseURL);
   await assertAlertChannelAuthoring(page, baseURL);
   await assertTenantDeletion(page, baseURL);
 
@@ -114,6 +115,115 @@ function fieldIn(scope, label) {
 async function assertPageHasContent(page, title) {
   await page.locator("main").waitFor();
   assert.ok((await page.locator("main").innerText()).includes(title), `console view did not render: ${title}`);
+}
+
+
+// Incident response is the flow the whole platform exists to serve, and until
+// this walk it was the only major screen the browser test never touched: it
+// asserted the view rendered and stopped there. The two things worth proving
+// are that a status transition moves the row and that a note reaches the
+// timeline without overwriting it.
+//
+// The incidents come from the compose smoke, which runs detection before this
+// script and is what creates them. If none is present the walk fails rather
+// than skipping -- a silently skipped assertion is worse than none, because it
+// reports green for a screen it never opened.
+async function assertIncidentResponse(page, baseURL) {
+  await page.goto(`${baseURL}/#/incidents`);
+  await assertPageHasContent(page, "INCIDENT RESPONSE");
+
+  const rows = page.locator(".el-table__row");
+  assert.ok((await rows.count()) > 0, "the compose smoke should have produced at least one incident before this runs");
+
+  // The drawer is where the transitions and the comment box live, and it is
+  // opened by clicking the row rather than a button -- so this is also the
+  // assertion that the row-click affordance still works.
+  await rows.first().click();
+  await page.locator(".el-drawer").waitFor({ timeout: 15000 });
+  const drawer = page.locator(".el-drawer");
+
+  // The comment must land on the timeline and must not replace it. A note that
+  // overwrote the entry it was appended to would still "work" as far as the
+  // request goes, so this checks the timeline grew.
+  const note = `E2E 备注 ${Date.now()}`;
+  const timelineBefore = await drawer.locator(".el-timeline-item").count();
+  const commentBox = drawer.getByPlaceholder(/记录与客户或运维的沟通/);
+  await commentBox.fill(note);
+  // The submit button is disabled below two characters, so this also proves the
+  // guard is wired rather than decorative.
+  const submitComment = drawer.getByRole("button", { name: "记录备注" });
+  for (let attempt = 0; attempt < 50 && (await submitComment.isDisabled()); attempt += 1) {
+    await page.waitForTimeout(100);
+  }
+  assert.equal(await submitComment.isEnabled(), true, "the comment submit stayed disabled after typing");
+  await submitComment.click();
+  // Scoped to the timeline entry rather than a page-wide text match, which the
+  // textarea the note was typed into would also satisfy.
+  await drawer.locator(".timeline-note", { hasText: note }).waitFor({ timeout: 15000 });
+  assert.ok(
+    (await drawer.locator(".el-timeline-item").count()) > timelineBefore,
+    "the note replaced the timeline instead of being appended to it",
+  );
+
+  // A transition is only offered for the status the incident is actually in, so
+  // the walk takes whichever one is available rather than assuming OPEN --
+  // earlier runs of this script leave incidents in whatever state they left
+  // them, and the compose smoke transitions one to ACKNOWLEDGED already. If no
+  // incident is in a transitionable state the walk fails rather than skipping:
+  // a silently skipped assertion reports green for a flow it never exercised.
+  //
+  // RESOLVED is deliberately not in this list. Reaching it opens a prompt for a
+  // disposal note, and a walk that drove that would be asserting the prompt as
+  // much as the transition; the note itself is covered by the resolution field
+  // the prompt feeds, which is exercised in the compose smoke's API half.
+  const transitionable = [
+    ["认领事件", "ACKNOWLEDGED"],
+    ["开始调查", "INVESTIGATING"],
+  ];
+  let moved = false;
+  let movedTitle = "";
+  for (const [label, expectedStatus] of transitionable) {
+    // A fresh drawer on the row that offers this transition. Taking the first
+    // row for every step would only work while it happened to be in the right
+    // state, which is exactly what earlier runs change.
+    await page.locator(".el-drawer__close-btn").click().catch(() => {});
+    await page.locator(".el-drawer").waitFor({ state: "detached", timeout: 15000 }).catch(() => {});
+    const candidate = page.locator(".el-table__row").filter({ has: page.getByRole("button", { name: label }) }).first();
+    if ((await candidate.count()) === 0) continue;
+    await candidate.click();
+    await page.locator(".el-drawer").waitFor({ timeout: 15000 });
+    movedTitle = (await page.locator(".el-drawer .incident-detail-head strong").innerText()).trim();
+    await page.locator(".el-drawer").getByRole("button", { name: label }).click();
+    // The status tag in the drawer head is what the operator reads, so it is
+    // what this asserts rather than a re-fetch.
+    await page.locator(".el-drawer").locator(".detail-status", { hasText: expectedStatus }).waitFor({ timeout: 15000 });
+    moved = true;
+    break;
+  }
+  assert.ok(moved, `no incident offered a transition; the list showed: ${(await page.locator(".el-table").innerText()).slice(0, 300)}`);
+
+  await page.locator(".el-drawer__close-btn").click();
+  await page.locator(".el-drawer").waitFor({ state: "detached", timeout: 15000 });
+
+  // Reopened by title -- the same incident, not whichever is first -- to prove
+  // the transition was persisted rather than only reflected in the drawer that
+  // made it. A status that moved in the UI but not on the server would look
+  // identical until the page was reloaded.
+  const movedRow = page.locator(".el-table__row", { hasText: movedTitle });
+  await movedRow.first().click();
+  await page.locator(".el-drawer").waitFor({ timeout: 15000 });
+  const reopened = page.locator(".el-drawer");
+  const status = (await reopened.locator(".detail-status").innerText()).trim();
+  assert.notEqual(status, "OPEN", `the incident was still OPEN after its transition: ${movedTitle}`);
+  // The affordance that was used must be gone -- a stale one would offer a
+  // transition the server would reject.
+  assert.equal(
+    await reopened.getByRole("button", { name: "认领事件" }).count(),
+    0,
+    `an incident in ${status} still offered the acknowledgement it had already made`,
+  );
+  await page.locator(".el-drawer__close-btn").click();
+  await page.locator(".el-drawer").waitFor({ state: "detached", timeout: 15000 });
 }
 
 // The channel dialog is the only place a credential is ever typed, and the rule
