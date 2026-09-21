@@ -178,6 +178,64 @@ func TestCreateTenantRejectsDuplicateSlug(t *testing.T) {
 	}
 }
 
+// A site is only an organizational grouping, but deleting one that still has
+// assets filed under it would unfile them silently. The database enforces this
+// with a foreign key; the in-memory store has to agree, or the two diverge and a
+// test that passes on one fails in production.
+func TestDeleteSiteRefusesWhileAssetsReferenceIt(t *testing.T) {
+	repository := NewMemoryRepository()
+	now := time.Now().UTC()
+	site := domain.Site{ID: "site-1", TenantID: "tenant", Name: "Main", Domain: "example.com", OwnerID: "owner", CreatedAt: now, UpdatedAt: now}
+	if err := repository.CreateSite(site); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.CreateAsset(domain.Asset{
+		ID: "asset-1", TenantID: "tenant", Name: "filed", URL: "https://filed.example",
+		Type: "OFFICIAL", SiteID: "site-1", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := repository.CountAssetsBySite("tenant", "site-1"); err != nil || count != 1 {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+	if err := repository.DeleteSite("tenant", "site-1"); err != ErrConflict {
+		t.Fatalf("delete with a referencing asset err=%v, want ErrConflict", err)
+	}
+	// Unfiling the asset is what makes the delete succeed.
+	asset, err := repository.GetAsset("tenant", "asset-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset.SiteID = ""
+	if err := repository.UpdateAsset(asset); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.DeleteSite("tenant", "site-1"); err != nil {
+		t.Fatalf("delete after unfiling err=%v", err)
+	}
+	if _, err := repository.GetSite("tenant", "site-1"); err != ErrNotFound {
+		t.Fatalf("site survived the delete: err=%v", err)
+	}
+}
+
+// A cross-tenant id must read as absent rather than deleting another tenant's
+// site, matching every other tenant-scoped read.
+func TestDeleteSiteIsTenantScoped(t *testing.T) {
+	repository := NewMemoryRepository()
+	now := time.Now().UTC()
+	if err := repository.CreateSite(domain.Site{
+		ID: "site-1", TenantID: "tenant-a", Name: "Main", Domain: "example.com", OwnerID: "owner", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.DeleteSite("tenant-b", "site-1"); err != ErrNotFound {
+		t.Fatalf("cross-tenant delete err=%v, want ErrNotFound", err)
+	}
+	if _, err := repository.GetSite("tenant-a", "site-1"); err != nil {
+		t.Fatalf("site was deleted by another tenant: %v", err)
+	}
+}
+
 func TestCreateSiteRejectsDuplicateNameWithinTenant(t *testing.T) {
 	repository := NewMemoryRepository()
 	now := time.Now().UTC()

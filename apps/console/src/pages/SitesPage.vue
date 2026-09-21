@@ -6,6 +6,7 @@ defineProps<{ sites: Site[]; canAdmin: boolean; hasMore: boolean; loadingMore: b
 const emit = defineEmits<{
   create: [];
   edit: [site: Site];
+  remove: [site: Site];
   loadMore: [];
 }>();
 function formatTime(value: string) { return new Date(value).toLocaleString("zh-CN", { hour12: false }); }
@@ -22,7 +23,7 @@ function formatTime(value: string) { return new Date(value).toLocaleString("zh-C
         <el-table-column prop="name" label="站点名称" min-width="180" />
         <el-table-column prop="domain" label="域名" min-width="240" />
         <el-table-column label="创建时间" width="180"><template #default="{ row }">{{ formatTime(row.createdAt) }}</template></el-table-column>
-        <el-table-column v-if="canAdmin" label="操作" width="120" fixed="right"><template #default="{ row }"><el-button text @click="emit('edit', row)">编辑</el-button></template></el-table-column>
+        <el-table-column v-if="canAdmin" label="操作" width="170" fixed="right"><template #default="{ row }"><el-button text @click="emit('edit', row)">编辑</el-button><el-button text type="danger" @click="emit('remove', row)">删除</el-button></template></el-table-column>
       </el-table>
       <ListFooter :has-more="hasMore" :loading="loadingMore" @load-more="emit('loadMore')" />
     </section>

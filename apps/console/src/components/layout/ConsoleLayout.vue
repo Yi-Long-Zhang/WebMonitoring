@@ -135,6 +135,7 @@ async function submitSite() {
     showSiteDialog.value = false;
   } catch (error) { reportError(error, "保存站点失败"); }
 }
+async function removeSite(site: Site) { try { await actions.removeSite(site); } catch (error) { reportError(error, "删除站点失败"); } }
 function openTenantCreate() { editingTenant.value = undefined; tenantForm.value = { name: "", slug: "", adminUsername: "admin", adminPassword: "" }; showTenantDialog.value = true; }
 function openTenantEdit(tenant: Tenant) { editingTenant.value = tenant; tenantForm.value = { name: tenant.name, slug: tenant.slug, adminUsername: "", adminPassword: "" }; showTenantDialog.value = true; }
 async function submitTenant() {
@@ -379,7 +380,7 @@ onUnmounted(() => eventStream?.close());
       <Topbar :title="viewTitle" :loading="data.loading" @refresh="refresh" />
       <OverviewPage v-if="activeView === 'overview'" :dashboard="data.dashboard" :report-summary="data.reportSummary" :assets="data.assets" :incidents="data.incidents" :asset-map="assetMap" @navigate="navigate" />
       <AssetsPage v-else-if="activeView === 'assets'" :assets="data.assets" :policies="data.policies" :can-operate="session.canOperate" :can-admin="session.canAdmin" :has-more="data.hasMore('assets')" :loading-more="data.isLoadingMore('assets')" @load-more="data.loadMore('assets')" @create="showAssetDialog = true" @verify="verify" @toggle="toggle" @detect="detect" @policy="editPolicy" @import="showImportDialog = true" @export="exportAssetList" />
-      <SitesPage v-else-if="activeView === 'sites'" :sites="data.sites" :can-admin="session.canAdmin" :has-more="data.hasMore('sites')" :loading-more="data.isLoadingMore('sites')" @load-more="data.loadMore('sites')" @create="openSiteCreate" @edit="openSiteEdit" />
+      <SitesPage v-else-if="activeView === 'sites'" :sites="data.sites" :can-admin="session.canAdmin" :has-more="data.hasMore('sites')" :loading-more="data.isLoadingMore('sites')" @load-more="data.loadMore('sites')" @create="openSiteCreate" @edit="openSiteEdit" @remove="removeSite" />
       <BaselinesPage v-else-if="activeView === 'baselines'" :baselines="data.baselines" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('baselines')" :loading-more="data.isLoadingMore('baselines')" @load-more="data.loadMore('baselines')" @review="review" @retire="retireBaseline" @preview="openBaselinePreview" />
       <IncidentsPage v-else-if="activeView === 'incidents'" :incidents="data.incidents" :evidence="data.evidence" :deliveries="data.alertDeliveries" :asset-map="assetMap" :can-operate="session.canOperate" :timeline-key="timelineKey" :users="data.users" :on-comment="comment" :has-more="data.hasMore('incidents')" :loading-more="data.isLoadingMore('incidents')" @load-more="data.loadMore('incidents')" @transition="transition" />
       <JobsPage v-else-if="activeView === 'jobs'" :jobs="data.jobs" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('jobs')" :loading-more="data.isLoadingMore('jobs')" @load-more="data.loadMore('jobs')" @cancel="cancelDetectionJob" />

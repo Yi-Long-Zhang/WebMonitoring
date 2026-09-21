@@ -682,7 +682,12 @@ export interface paths {
         get: operations["getSite"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * @description 删除一个站点。站点只是组织维度，但资产通过 siteId 归属站点，因此
+         *     站点下仍有资产时返回 409 `SITE_NOT_EMPTY`，调用方需先把这些资产的
+         *     siteId 置空再重试——静默解除归属属于没人要求过的数据丢失。
+         */
+        delete: operations["deleteSite"];
         options?: never;
         head?: never;
         patch: operations["updateSite"];
@@ -2587,6 +2592,39 @@ export interface operations {
                 };
             };
             404: components["responses"]["Error"];
+        };
+    };
+    deleteSite: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ResourceID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            /** @description 站点下仍有资产（SITE_NOT_EMPTY） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     updateSite: {

@@ -435,6 +435,38 @@ func (m *MemoryRepository) ListSites(tenantID string, opts ListOptions) ([]domai
 	return items, next, nil
 }
 
+// CountAssetsBySite mirrors the PostgreSQL implementation.
+func (m *MemoryRepository) CountAssetsBySite(tenantID, siteID string) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	count := 0
+	for _, asset := range m.assets {
+		if asset.TenantID == tenantID && asset.SiteID == siteID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// DeleteSite refuses to remove a site an asset still points at, matching the
+// PostgreSQL foreign key instead of diverging from it. Assets hold site_id as
+// an optional grouping, so an unfile would be silent data loss.
+func (m *MemoryRepository) DeleteSite(tenantID, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := tenantKey(tenantID, id)
+	if _, ok := m.sites[key]; !ok {
+		return ErrNotFound
+	}
+	for _, asset := range m.assets {
+		if asset.TenantID == tenantID && asset.SiteID == id {
+			return ErrConflict
+		}
+	}
+	delete(m.sites, key)
+	return nil
+}
+
 func (m *MemoryRepository) UpsertPolicy(policy domain.MonitorPolicy) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

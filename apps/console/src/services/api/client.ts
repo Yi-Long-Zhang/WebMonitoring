@@ -391,6 +391,26 @@ export async function deleteTenantDetailed(id: string, confirm: string, cascade 
   return response.json() as Promise<{ tenantId: string; deletedResources: Record<string, number>; orphanedEvidenceObjects: number }>;
 }
 
+// Like deleteTenantDetailed, this carries the code back rather than only the
+// message: the site delete answers 409 SITE_NOT_EMPTY with the asset count, and
+// the caller shows that count instead of re-deriving it.
+export async function deleteSiteDetailed(id: string) {
+  const response = await fetch(`/api/v1/sites/${id}`, {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "X-CSRF-Token": csrfToken },
+  });
+  if (!response.ok) {
+    let payload: { message?: string; code?: string; details?: Record<string, unknown> } = {};
+    try {
+      payload = await response.json();
+    } catch {
+      // Keep the network status as the fallback error.
+    }
+    throw new ApiError(payload.message || `${response.status} ${response.statusText}`, payload.code ?? "", payload.details ?? {});
+  }
+}
+
 export function getUsers() {
   return request<ListResponse<User>>("/users");
 }
