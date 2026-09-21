@@ -22,7 +22,7 @@ import { useMonitoringActions } from "../../features/monitoring/actions";
 import { ApiError, exportAssets, getBaseline } from "../../services/api/client";
 import { saveBlob } from "../../services/download";
 import { roleLabel as roleLabelFor } from "../../app/permissions";
-import { CHANNEL_LABELS, channelNeeds } from "../../app/channels";
+import { channelNeeds } from "../../app/channels";
 import { useSessionStore } from "../../stores/session";
 import { useConsoleStore } from "../../stores/console";
 import { connectEventStream } from "../../services/events/stream";
@@ -73,7 +73,7 @@ const tenantDeleteConfirm = ref("");
 const tenantDeleteError = ref("");
 const tenantDeleteCascade = ref(false);
 const deletingTenantBusy = ref(false);
-let eventStream: EventSource | undefined;
+let eventStream: { close: () => void } | undefined;
 
 const assetMap = computed(() => new Map(data.assets.map((asset) => [asset.id, asset])));
 const roleLabel = computed(() => roleLabelFor(session.user?.role));
@@ -385,16 +385,20 @@ onUnmounted(() => eventStream?.close());
     </main>
     <el-dialog v-model="showAssetDialog" title="登记监测资产" width="520px">
       <el-form label-position="top">
-        <el-form-item label="渠道名称"><el-input v-model="channelForm.name" placeholder="例如：安全运营群" /></el-form-item>
-        <el-form-item label="渠道类型"><el-radio-group v-model="channelForm.type"><el-radio-button v-for="(label, value) in CHANNEL_LABELS" :key="value" :value="value">{{ label }}</el-radio-button></el-radio-group></el-form-item>
-        <!-- Which fields this type needs comes from app/channels.ts, which mirrors
-             the server's createAlertChannel validation. EMAIL takes a recipient
-             list and no URL; the webhook-shaped types take a URL, and WEBHOOK and
-             DINGTALK also sign with a secret. -->
-        <el-form-item v-if="channelNeeds(channelForm.type, 'url')" label="通知地址"><el-input v-model="channelForm.url" type="password" show-password autocomplete="off" placeholder="https://..." /></el-form-item>
-        <el-form-item v-if="channelNeeds(channelForm.type, 'recipients')" label="收件人"><el-input v-model="channelForm.recipients" placeholder="ops@example.com, oncall@example.com（逗号分隔）" /></el-form-item>
-        <el-form-item v-if="channelNeeds(channelForm.type, 'secret')" label="签名密钥"><el-input v-model="channelForm.secret" type="password" show-password autocomplete="new-password" /></el-form-item>
-        <el-form-item label="创建后启用"><el-switch v-model="channelForm.enabled" /></el-form-item>
+        <el-form-item label="资产名称"><el-input v-model="assetForm.name" placeholder="例如：官网首页" /></el-form-item>
+        <el-form-item label="监测地址"><el-input v-model="assetForm.url" placeholder="https://example.com" /></el-form-item>
+        <el-form-item label="资产类型">
+          <el-select v-model="assetForm.type">
+            <el-option label="官方网站" value="OFFICIAL" />
+            <el-option label="监测站点" value="MONITORING" />
+            <el-option label="第三方" value="THIRD_PARTY" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="所属站点">
+          <el-select v-model="assetForm.siteId" clearable placeholder="可选">
+            <el-option v-for="site in data.sites" :key="site.id" :label="site.name" :value="site.id" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer><el-button @click="showAssetDialog = false">取消</el-button><el-button type="primary" @click="createAsset">创建并授权</el-button></template>
     </el-dialog>
