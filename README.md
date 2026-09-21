@@ -59,8 +59,8 @@
 **Q：部署形态为什么是单机 Compose？**
 
 这是**有意选择而非欠债**。`AGENTS.md` 的约束是「确有规模依据后使用 Kubernetes」，
-本项目尚无该依据，因此不预先引入 K8s 或 Helm。Compose 已加固（全服务 CPU/内存
-限制、日志轮转、`no-new-privileges`、Redis 可设密码、生产拒绝 `sslmode=disable`），
+本项目尚无该依据，因此不预先引入 K8s 或 Helm。Compose 已加固（长跑服务设 CPU/内存
+限制、日志轮转、四个应用服务开 `no-new-privileges`、Redis 可设密码、生产拒绝 `sslmode=disable`），
 并提供 nginx TLS 终止 overlay 与 `scripts/reload-tls.ps1`。故障处置见
 [docs/runbooks/](docs/runbooks/README.md)。
 
@@ -122,6 +122,20 @@ docker compose -f deployments/compose/docker-compose.yml up --build
 | `ALLOW_PRIVATE_TARGETS` | 是否允许检测私网地址，默认 `false` |
 | `SESSION_SECURE` | 是否只通过 HTTPS 发送会话 Cookie |
 | `JOB_LEASE_SECONDS` | 检测任务领取租约，默认 600；不得低于 270（见下方说明） |
+| `APP_ENV` | 设为 `production` 时启动前校验生产门禁 |
+| `ADMIN_USERNAME`、`ADMIN_PASSWORD` | 首次启动播种的平台管理员；密码至少 12 字节 |
+| `POSTGRES_SSLMODE` | 写入 `POSTGRES_DSN` 的 `sslmode`；生产不得为 `disable` |
+| `HTTP_ADDR` | API 监听地址（http-worker 用 `WORKER_HTTP_ADDR`） |
+| `DATA_DIR` | 未配 S3 时本地证据目录 |
+| `WORKER_TOKEN` / `WORKER_ID` | worker 向控制面认证的凭据，以及消费者身份（未设时按 hostname 生成） |
+| `EVIDENCE_SIGNED_URL_TTL_SECONDS` | 短时签名证据 URL 的有效期，默认 300 |
+| `EVIDENCE_RETENTION_DAYS`、`AUDIT_RETENTION_DAYS` | 保留期，默认 90 / 365 |
+| `RETENTION_INTERVAL_HOURS` | 后台保留任务间隔，默认 24；设 0 则只保留手动入口 |
+| `LOGIN_MAX_FAILURES`、`LOGIN_LOCKOUT_MINUTES` | 登录失败多少次后锁定，以及锁定时长 |
+| `ALERT_GATE_WINDOW_SECONDS`、`ALERT_QUEUE_MIN_IDLE_SECONDS` | 告警限额窗口与队列重领最短空闲 |
+| `SMTP_HOST`、`SMTP_PORT`、`SMTP_USERNAME`、`SMTP_PASSWORD`、`SMTP_FROM` | EMAIL 渠道的出站邮件中继；`SMTP_HOST` 留空则关闭 |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` 等 `OTEL_*` | Trace 导出，默认 no-op |
+| `BUILD_NETWORK` | 仅影响 `docker compose build` 的构建网络 |
 
 限速与告警投递的配额（不设置则用内置默认）：
 
