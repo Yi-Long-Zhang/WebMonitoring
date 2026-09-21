@@ -295,6 +295,15 @@ async function confirmChannelDelete() {
     deletingChannel.value = undefined;
   } catch (error) { reportError(error, "删除告警渠道失败"); }
 }
+
+// A test send reports its failure through the same error path as everything
+// else here, with the server's redacted reason included: "通知端点返回 401" is
+// the whole answer to why the test failed, and the operator is the one who can
+// act on it.
+async function testChannel(channel: AlertChannel) {
+  try { await actions.testChannel(channel); }
+  catch (error) { reportError(error, `测试告警渠道 ${channel.name} 失败`); }
+}
 async function signOut() { await session.signOut(); eventStream?.close(); await router.replace("/login"); }
 
 // The server writes the CSV so field escaping has one implementation; the export
@@ -375,7 +384,7 @@ onUnmounted(() => eventStream?.close());
       <IncidentsPage v-else-if="activeView === 'incidents'" :incidents="data.incidents" :evidence="data.evidence" :deliveries="data.alertDeliveries" :asset-map="assetMap" :can-operate="session.canOperate" :timeline-key="timelineKey" :users="data.users" :on-comment="comment" :has-more="data.hasMore('incidents')" :loading-more="data.isLoadingMore('incidents')" @load-more="data.loadMore('incidents')" @transition="transition" />
       <JobsPage v-else-if="activeView === 'jobs'" :jobs="data.jobs" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('jobs')" :loading-more="data.isLoadingMore('jobs')" @load-more="data.loadMore('jobs')" @cancel="cancelDetectionJob" />
       <EvidencePage v-else-if="activeView === 'evidence'" :evidence="data.evidence" :assets="data.assets" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('evidence')" :loading-more="data.isLoadingMore('evidence')" @load-more="data.loadMore('evidence')" />
-      <ChannelsPage v-else-if="activeView === 'channels'" :channels="data.alertChannels" :can-admin="session.canAdmin" @create="openChannelCreate" @edit="openChannelEdit" @remove="deletingChannel = $event" />
+      <ChannelsPage v-else-if="activeView === 'channels'" :channels="data.alertChannels" :can-admin="session.canAdmin" @create="openChannelCreate" @edit="openChannelEdit" @remove="deletingChannel = $event" @test="testChannel" />
       <TenantsPage v-else-if="activeView === 'tenants'" :tenants="data.tenants" :self-tenant-id="session.user?.tenantId || ''" :default-tenant-id="DEFAULT_TENANT_ID" :can-delete="session.canSuperAdmin" :has-more="data.hasMore('tenants')" :loading-more="data.isLoadingMore('tenants')" @load-more="data.loadMore('tenants')" @create="openTenantCreate" @edit="openTenantEdit" @toggle="toggleTenant" @remove="openTenantDelete" />
       <UsersPage v-else-if="activeView === 'users'" :users="data.users" :can-admin="session.canAdmin" :self-user-id="session.user?.id || ''" @create="openUserCreate" @edit="openUserEdit" @reset-password="openPasswordReset" />
       <!-- Explicit rather than a v-else fallback: with v-else any view key that

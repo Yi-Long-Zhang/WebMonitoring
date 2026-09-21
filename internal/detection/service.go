@@ -153,6 +153,30 @@ func (s *Service) NotifyIncident(ctx context.Context, incident domain.Incident, 
 	}
 }
 
+// TestChannel sends one throwaway message to a single channel so an operator can
+// find out whether it is configured correctly without waiting for a real
+// incident and reading the delivery table to see what happened.
+//
+// It is the one notification path that does not go through the queue. A test is
+// a question the operator is waiting on the answer to, and the queue is
+// fire-and-forget by design -- routing a test through it would return success
+// for a message that had not been attempted yet, which is worse than no test at
+// all. So this requires the dispatcher to be here, and says so plainly when it
+// is not, rather than reporting a success that never happened.
+//
+// It returns the delivery error rather than logging it, unlike every other
+// method here: the operator asked, and a failure is the answer.
+func (s *Service) TestChannel(ctx context.Context, tenantID, channelID string) error {
+	if s.notifier == nil {
+		return errors.New("this deployment has no inline notifier to test through")
+	}
+	channel, err := s.repository.GetAlertChannel(tenantID, channelID)
+	if err != nil {
+		return err
+	}
+	return s.notifier.SendTest(ctx, channel, domain.Incident{}, domain.Asset{})
+}
+
 func (s *Service) SetMetrics(registry *metrics.Registry) {
 	s.metrics = registry
 }

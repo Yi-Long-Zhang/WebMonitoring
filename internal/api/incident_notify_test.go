@@ -101,3 +101,40 @@ func TestCommentRaisesANotification(t *testing.T) {
 		t.Fatalf("notification reason = %q, want COMMENTED", queue.jobs[0].Reason)
 	}
 }
+
+// TestChannelTestRequiresAnInlineNotifier is the honest-answer case. This test
+// server routes notifications through a queue, so there is no dispatcher for a
+// test to send through -- and a test that cannot run must say so rather than
+// return the success it would have returned had it done something.
+func TestChannelTestRequiresAnInlineNotifier(t *testing.T) {
+	repository, server, admin := verificationServer(t, fakeResolver{txt: map[string][]string{}})
+	cookie, csrf := loginForTest(t, server, admin.Username)
+
+	if err := repository.CreateAlertChannel(domain.AlertChannel{
+		ID: "channel", TenantID: defaultTenant, Name: "ops", Type: "WEBHOOK",
+		URL: "https://hooks.example/ops", Enabled: true, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := doJSON(t, server, http.MethodPost, "/api/v1/alert-channels/channel/test", cookie, csrf, "")
+	if response.Code == http.StatusOK {
+		t.Fatalf("a test with no notifier reported success: %s", response.Body.String())
+	}
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("test status=%d body=%s, want 502", response.Code, response.Body.String())
+	}
+}
+
+// TestChannelTestRejectsAnUnknownChannel: the test must resolve the channel
+// within the caller's tenant, so an id that does not exist there is a 404 --
+// not an attempt against some other tenant's channel.
+func TestChannelTestRejectsAnUnknownChannel(t *testing.T) {
+	_, server, admin := verificationServer(t, fakeResolver{txt: map[string][]string{}})
+	cookie, csrf := loginForTest(t, server, admin.Username)
+
+	response := doJSON(t, server, http.MethodPost, "/api/v1/alert-channels/missing/test", cookie, csrf, "")
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("test status=%d body=%s, want 404", response.Code, response.Body.String())
+	}
+}

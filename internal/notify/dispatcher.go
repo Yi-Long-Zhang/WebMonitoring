@@ -285,6 +285,36 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 	return failures
 }
 
+// SendTest delivers one throwaway message to a channel so an operator can find
+// out whether it is configured correctly, rather than waiting for a real
+// incident and reading the delivery table to see what happened.
+//
+// It deliberately parts ways with SendIncident in three ways, and each is the
+// point of the operation rather than an oversight:
+//
+//   - The gate is not consulted. The breaker refuses a channel precisely when
+//     an operator most wants to test it -- that is what "has it recovered"
+//     means -- and a test that the breaker could refuse would answer a question
+//     nobody asked. It also does not feed an outcome back, because a probe the
+//     operator triggered by hand is not evidence about the channel's automatic
+//     delivery.
+//   - No delivery record is written. The alert delivery table is the history of
+//     what the platform actually alerted on; a manual test would sit in it as a
+//     phantom incident-less row, and the retry worker would find it and treat it
+//     as work.
+//   - There is no retry ladder. A test reports what happened on the first
+//     attempt, now, because the operator is waiting for the answer.
+//
+// It does not skip the SSRF guard: sendForChannel validates the target exactly
+// as a real delivery would, and a test send is one more place a mistyped or
+// hostile URL must not reach.
+func (d *Dispatcher) SendTest(ctx context.Context, channel domain.AlertChannel, incident domain.Incident, asset domain.Asset) error {
+	if !channel.Enabled {
+		return errors.New("channel is disabled")
+	}
+	return d.send(ctx, channel, incident, asset, domain.AlertReasonTest)
+}
+
 func (d *Dispatcher) record(channelType, status string) {
 	if d.metrics != nil {
 		d.metrics.Inc("webmonitoring_alert_deliveries_total", map[string]string{
@@ -424,6 +454,8 @@ func alertHeadline(reason string) string {
 		return "网页风险事件状态变更"
 	case domain.AlertReasonCommented:
 		return "网页风险事件新增备注"
+	case domain.AlertReasonTest:
+		return "网页监测告警渠道测试"
 	default:
 		return "网页风险告警（" + reason + "）"
 	}

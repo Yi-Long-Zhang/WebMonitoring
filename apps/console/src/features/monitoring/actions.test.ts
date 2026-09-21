@@ -8,7 +8,7 @@ vi.mock("element-plus", () => ({
 
 import { useMonitoringActions } from "./actions";
 import { useConsoleStore } from "../../stores/console";
-import type { DetectionJob, Tenant } from "../../types/domain";
+import type { AlertChannel, DetectionJob, Tenant } from "../../types/domain";
 
 let requests: string[] = [];
 
@@ -120,5 +120,47 @@ describe("setTenantDisabled", () => {
     const actions = useMonitoringActions();
 
     await expect(actions.setTenantDisabled(tenant("self"), true)).rejects.toThrow("默认租户或当前登录租户不可停用");
+  });
+});
+
+// A channel test is the one channel action that reports a failure rather than a
+// success toast. The operator asked a direct question about whether the channel
+// works, so "已发送测试消息" on a channel that just returned 401 would be the
+// wrong answer -- and it must not refresh the list, because nothing changed.
+describe("testChannel", () => {
+  it("surfaces the delivery error the server reported", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        requests.push(String(input));
+        return new Response(
+          JSON.stringify({ code: "CHANNEL_TEST_FAILED", message: "notification endpoint returned 401", traceId: "t" }),
+          { status: 502, headers: { "content-type": "application/json" } },
+        );
+      }),
+    );
+    const actions = useMonitoringActions();
+    const channel = { id: "channel-1", name: "运维群" } as AlertChannel;
+
+    await expect(actions.testChannel(channel)).rejects.toThrow("notification endpoint returned 401");
+
+    expect(requests).toEqual(["/api/v1/alert-channels/channel-1/test"]);
+  });
+
+  it("reports success without refreshing the channel list", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        requests.push(String(input));
+        return new Response(JSON.stringify({ status: "DELIVERED" }), { status: 200, headers: { "content-type": "application/json" } });
+      }),
+    );
+    const actions = useMonitoringActions();
+
+    await actions.testChannel({ id: "channel-1", name: "运维群" } as AlertChannel);
+
+    // One request: the test itself. A refresh would be a second, and a test
+    // changes nothing about the channel list.
+    expect(requests).toHaveLength(1);
   });
 });

@@ -2,6 +2,7 @@ package notify
 
 import (
 	"bufio"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -510,5 +511,118 @@ func TestBreakerOpensFromDeliveryFailures(t *testing.T) {
 	}
 	if requests.Load() != 2 {
 		t.Fatalf("the breaker did not stop the attempt (%d requests)", requests.Load())
+	}
+}
+
+// TestSendTestWritesNoDeliveryRecord: the alert delivery table is the history
+// of what the platform actually alerted on. A hand-triggered test would sit in
+// it as an incident-less phantom row, and the retry worker would find it and
+// treat it as work.
+func TestSendTestWritesNoDeliveryRecord(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	repository, guard := webhookChannelRepository(t, server)
+	dispatcher := NewDispatcher(repository, guard)
+	channel, err := repository.GetAlertChannel("tenant", "channel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.SendTest(context.Background(), channel, domain.Incident{}, domain.Asset{}); err != nil {
+		t.Fatalf("test send failed: %v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("the test did not reach the endpoint (%d requests)", requests.Load())
+	}
+	deliveries, _, err := repository.ListAlertDeliveries("tenant", "", store.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 0 {
+		t.Fatalf("a test send left %d delivery records behind, want none", len(deliveries))
+	}
+}
+
+// TestSendTestBypassesTheBreaker: the breaker opens precisely when an operator
+// most wants to know whether the channel has recovered. A test the breaker could
+// refuse would answer a question nobody asked.
+func TestSendTestBypassesTheBreaker(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	repository, guard := webhookChannelRepository(t, server)
+	dispatcher := NewDispatcher(repository, guard)
+	// Open the breaker by failing the threshold, then confirm a test still goes
+	// through where a real delivery would not.
+	gate := notifygate.NewMemoryGate(notifygate.Policy{FailureThreshold: 1, Cooldown: time.Hour, MaxPerWindow: 0})
+	dispatcher.SetGate(gate)
+	gate.RecordOutcome(context.Background(), "channel", false)
+	if !gate.Open(context.Background(), "channel") {
+		t.Fatal("the breaker did not open, so this test proves nothing")
+	}
+	channel, err := repository.GetAlertChannel("tenant", "channel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.SendTest(context.Background(), channel, domain.Incident{}, domain.Asset{}); err != nil {
+		t.Fatalf("a test was refused by an open breaker: %v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("the test did not reach the endpoint (%d requests)", requests.Load())
+	}
+}
+
+// TestSendTestRefusesADisabledChannel: testing a channel an operator has turned
+// off would send a message the platform would not have sent, and report success
+// for a configuration that is not in use.
+func TestSendTestRefusesADisabledChannel(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	repository, guard := webhookChannelRepository(t, server)
+	channel, err := repository.GetAlertChannel("tenant", "channel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel.Enabled = false
+	if err := NewDispatcher(repository, guard).SendTest(
+		context.Background(), channel, domain.Incident{}, domain.Asset{},
+	); err == nil {
+		t.Fatal("a test against a disabled channel reported success")
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("a disabled channel was contacted (%d requests)", requests.Load())
+	}
+}
+
+// TestSendTestStillEnforcesTheSSRFGuard: a test send is one more place a
+// mistyped or hostile URL must not reach. It skips the breaker and the delivery
+// table, but never the guard.
+func TestSendTestStillEnforcesTheSSRFGuard(t *testing.T) {
+	repository := store.NewMemoryRepository()
+	if err := repository.CreateAlertChannel(domain.AlertChannel{
+		ID: "channel", TenantID: "tenant", Type: "WEBHOOK",
+		URL: "http://169.254.169.254/latest/meta-data/", Enabled: true, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	channel, err := repository.GetAlertChannel("tenant", "channel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := security.NewURLGuard(true)
+	if err := NewDispatcher(repository, guard).SendTest(
+		context.Background(), channel, domain.Incident{}, domain.Asset{},
+	); err == nil {
+		t.Fatal("a test send reached a link-local address")
 	}
 }

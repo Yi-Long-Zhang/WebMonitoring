@@ -386,6 +386,11 @@ const (
 	AlertReasonTransitioned = "TRANSITIONED"
 	// AlertReasonCommented is a note added to an incident's timeline.
 	AlertReasonCommented = "COMMENTED"
+	// AlertReasonTest marks a message an operator asked for by hand from the
+	// channel list. It never reaches storage -- a test writes no delivery
+	// record -- but it travels the same rendering path as a real alert, so the
+	// test exercises what the operator will actually receive.
+	AlertReasonTest = "TEST"
 )
 
 type AuditEvent struct {

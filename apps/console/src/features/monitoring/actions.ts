@@ -15,6 +15,7 @@ import {
   resetUserPassword as resetUserPasswordRequest,
   retireBaseline as retireBaselineRequest,
   runDetection,
+  testAlertChannel,
   transitionIncident,
   updateAlertChannel,
   updateAsset,
@@ -148,6 +149,15 @@ export function useMonitoringActions() {
     ElMessage.success(`告警渠道 ${channel.name} 已删除`);
   }
 
+  // A test send is the one channel action that reports a failure as an error
+  // rather than a success toast: the operator asked a direct question about
+  // whether the channel works, and "已发送测试消息" on a channel that just
+  // returned 401 would be the wrong answer. The caller surfaces the reason.
+  async function testChannel(channel: AlertChannel) {
+    await testAlertChannel(channel.id);
+    ElMessage.success(`测试消息已投递到 ${channel.name}`);
+  }
+
   async function createNewSite(input: { name: string; domain: string }) {
     await createSite(input);
     await consoleStore.refresh();
@@ -244,6 +254,7 @@ export function useMonitoringActions() {
     createNewAlertChannel,
     saveAlertChannel,
     removeAlertChannel,
+    testChannel,
     createNewSite,
     saveSite,
     createNewTenant,
