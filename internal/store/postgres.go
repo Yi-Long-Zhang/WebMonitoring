@@ -377,6 +377,29 @@ func (p *PostgresRepository) UpsertPolicy(policy domain.MonitorPolicy) error {
 	return normalizePostgresError(err)
 }
 
+// RewrapPolicy stores one policy's config with its credentials re-sealed. The
+// whole config is rewritten because the credentials live inside the jsonb blob,
+// but the caller has already read the row and only replaced the ciphertext
+// fields, so nothing else can differ.
+func (p *PostgresRepository) RewrapPolicy(policy domain.MonitorPolicy) error {
+	config, err := json.Marshal(policy)
+	if err != nil {
+		return err
+	}
+	tag, err := p.pool.Exec(context.Background(), `
+		UPDATE monitor_policies SET config=$3
+		WHERE tenant_id=$1 AND asset_id=$2`,
+		policy.TenantID, policy.AssetID, config,
+	)
+	if err != nil {
+		return normalizePostgresError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (p *PostgresRepository) GetPolicy(tenantID, assetID string) (domain.MonitorPolicy, error) {
 	var raw []byte
 	err := p.pool.QueryRow(context.Background(), `
@@ -1034,18 +1057,19 @@ func decryptChannelField(secrets security.SecretBox, stored, associatedData stri
 // channelAssociatedData names the row a channel's ciphertext is bound to. The
 // id and tenant are part of it, which is why a channel is updated in place
 // rather than recreated: any other id would change the associated data and the
-// stored ciphertext would never decrypt again.
-func channelAssociatedData(tenantID, id string) string {
-	return tenantID + ":" + id
+// stored ciphertext would never decrypt again. The definition itself lives in
+// the security package, beside the login-credential shape, so the key-rotation
+// pass and this store cannot drift apart.
+func channelAssociatedData(tenantID, id, field string) string {
+	return security.ChannelAssociatedData(tenantID, id, field)
 }
 
 func (p *PostgresRepository) CreateAlertChannel(channel domain.AlertChannel) error {
-	associatedData := channelAssociatedData(channel.TenantID, channel.ID)
-	encryptedURL, err := p.secrets.Encrypt(channel.URL, associatedData+":url")
+	encryptedURL, err := p.secrets.Encrypt(channel.URL, channelAssociatedData(channel.TenantID, channel.ID, "url"))
 	if err != nil {
 		return err
 	}
-	encryptedSecret, err := p.secrets.Encrypt(channel.Secret, associatedData+":secret")
+	encryptedSecret, err := p.secrets.Encrypt(channel.Secret, channelAssociatedData(channel.TenantID, channel.ID, "secret"))
 	if err != nil {
 		return err
 	}
@@ -1071,25 +1095,53 @@ func (p *PostgresRepository) GetAlertChannel(tenantID, id string) (domain.AlertC
 	if err != nil {
 		return domain.AlertChannel{}, normalizePostgresError(err)
 	}
-	associatedData := channelAssociatedData(item.TenantID, item.ID)
-	item.URL, err = decryptChannelField(p.secrets, encryptedURL, associatedData+":url")
+	item.URL, err = decryptChannelField(p.secrets, encryptedURL, channelAssociatedData(item.TenantID, item.ID, "url"))
 	if err != nil {
 		return domain.AlertChannel{}, err
 	}
-	item.Secret, err = decryptChannelField(p.secrets, encryptedSecret, associatedData+":secret")
+	item.Secret, err = decryptChannelField(p.secrets, encryptedSecret, channelAssociatedData(item.TenantID, item.ID, "secret"))
 	if err != nil {
 		return domain.AlertChannel{}, err
 	}
 	return item, nil
 }
 
-func (p *PostgresRepository) UpdateAlertChannel(channel domain.AlertChannel) error {
-	associatedData := channelAssociatedData(channel.TenantID, channel.ID)
-	encryptedURL, err := p.secrets.Encrypt(channel.URL, associatedData+":url")
+// RewrapAlertChannel writes both credential columns of one channel back with
+// new ciphertext. It exists for the key-rotation pass, and is separate from
+// UpdateAlertChannel so a rotation cannot reach any other column: url and
+// secret_ciphertext are the only fields a rotation is allowed to change.
+func (p *PostgresRepository) RewrapAlertChannel(channel domain.AlertChannel) error {
+	encryptedURL, err := p.secrets.Encrypt(channel.URL, channelAssociatedData(channel.TenantID, channel.ID, "url"))
 	if err != nil {
 		return err
 	}
-	encryptedSecret, err := p.secrets.Encrypt(channel.Secret, associatedData+":secret")
+	encryptedSecret, err := p.secrets.Encrypt(channel.Secret, channelAssociatedData(channel.TenantID, channel.ID, "secret"))
+	if err != nil {
+		return err
+	}
+	// updated_at is deliberately not touched. The row's content did not change,
+	// only the key that sealed it, and moving the timestamp would make a rotation
+	// look like an edit in the channel list.
+	tag, err := p.pool.Exec(context.Background(), `
+		UPDATE alert_channels SET url=$3, secret_ciphertext=NULLIF($4,'')
+		WHERE tenant_id=$1 AND id=$2`,
+		channel.TenantID, channel.ID, encryptedURL, encryptedSecret,
+	)
+	if err != nil {
+		return normalizePostgresError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *PostgresRepository) UpdateAlertChannel(channel domain.AlertChannel) error {
+	encryptedURL, err := p.secrets.Encrypt(channel.URL, channelAssociatedData(channel.TenantID, channel.ID, "url"))
+	if err != nil {
+		return err
+	}
+	encryptedSecret, err := p.secrets.Encrypt(channel.Secret, channelAssociatedData(channel.TenantID, channel.ID, "secret"))
 	if err != nil {
 		return err
 	}
@@ -1150,13 +1202,12 @@ func (p *PostgresRepository) listAlertChannels(tenantID string, includeSecret bo
 		); err != nil {
 			return nil, normalizePostgresError(err)
 		}
-		associatedData := item.TenantID + ":" + item.ID
-		item.URL, err = decryptChannelField(p.secrets, encryptedURL, associatedData+":url")
+		item.URL, err = decryptChannelField(p.secrets, encryptedURL, channelAssociatedData(item.TenantID, item.ID, "url"))
 		if err != nil {
 			return nil, err
 		}
 		if includeSecret {
-			item.Secret, err = decryptChannelField(p.secrets, encryptedSecret, associatedData+":secret")
+			item.Secret, err = decryptChannelField(p.secrets, encryptedSecret, channelAssociatedData(item.TenantID, item.ID, "secret"))
 			if err != nil {
 				return nil, err
 			}

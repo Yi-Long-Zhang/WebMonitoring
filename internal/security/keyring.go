@@ -89,6 +89,13 @@ func (k *Keyring) PrimaryKeyMaterial() string {
 	return k.material
 }
 
+// PrimaryVersion is the version Encrypt stamps onto new ciphertext. Callers that
+// have to decide whether a stored value is still current read it here rather
+// than infer it, so "the newest key" means the same thing everywhere.
+func (k *Keyring) PrimaryVersion() int {
+	return k.primary
+}
+
 func (k *Keyring) Encrypt(plaintext, associatedData string) (string, error) {
 	if plaintext == "" {
 		return "", nil

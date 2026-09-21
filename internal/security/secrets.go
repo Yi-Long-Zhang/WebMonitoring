@@ -70,6 +70,18 @@ func AuthAssociatedData(tenantID, assetID string) string {
 	return tenantID + ":" + assetID + ":auth"
 }
 
+// ChannelAssociatedData binds an alert channel's encrypted URL and secret to the
+// row they belong to. The field suffix keeps the two apart: without it the URL
+// ciphertext could be substituted for the secret, which for a webhook would mean
+// signing with the URL as the HMAC key.
+//
+// It lives here rather than beside the repository so the key-rotation pass and
+// the store derive the same value from one definition. Two copies of this string
+// that drifted would look like a lost key at rotation time.
+func ChannelAssociatedData(tenantID, channelID, field string) string {
+	return tenantID + ":" + channelID + ":" + field
+}
+
 func (c *SecretCipher) Decrypt(encoded, associatedData string) (string, error) {
 	if encoded == "" {
 		return "", nil

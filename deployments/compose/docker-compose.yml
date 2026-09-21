@@ -100,6 +100,28 @@ services:
     depends_on:
       minio: { condition: service_healthy }
 
+  # Key-rotation pass. Behind a profile so `up` never starts it, and given the
+  # same key material and DSN the API uses so it re-seals under exactly the key
+  # the API writes with. Run it as:
+  #   docker compose run --rm rewrap --dry-run
+  #   docker compose run --rm rewrap
+  # It takes an advisory lease, so a run overlapping a second one exits without
+  # doing anything rather than re-sealing rows the other just sealed.
+  rewrap:
+    build:
+      context: ../..
+      dockerfile: apps/rewrap/Dockerfile
+      network: ${BUILD_NETWORK:-default}
+    profiles: ["tools"]
+    environment:
+      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:-webmonitoring}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
+      ALERT_SECRET_KEYS: ${ALERT_SECRET_KEYS:-}
+      ALERT_SECRET_KEY: ${ALERT_SECRET_KEY:?set ALERT_SECRET_KEY to a base64-encoded 32-byte key}
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    logging: *default-logging
+
   browser-worker:
     build:
       context: ../..
