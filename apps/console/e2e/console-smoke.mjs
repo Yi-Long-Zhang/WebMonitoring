@@ -59,7 +59,7 @@ try {
   // overlay covers the page, so anything after this would be clicking through
   // it and failing for a reason that has nothing to do with what is tested.
   await page.locator(".el-drawer__close-btn").click();
-  await page.locator(".el-drawer").waitFor({ state: "detached", timeout: 15000 });
+  await closeDrawer(page);
 
   // The short-lived link is minted on demand and is the one credential this
   // screen hands out. It is deliberately NOT fetched from here: the API signs
@@ -94,6 +94,10 @@ try {
 
   await assertIncidentResponse(page, baseURL);
   await assertAlertChannelAuthoring(page, baseURL);
+  await assertAssetRegistration(page, baseURL);
+  await assertSiteManagement(page, baseURL);
+  await assertPolicyEditing(page, baseURL);
+  await assertUserManagement(page, baseURL);
   await assertTenantDeletion(page, baseURL);
 
   await page.getByRole("button", { name: "退出登录" }).click();
@@ -102,14 +106,199 @@ try {
   await browser.close();
 }
 
+// Asset registration is the entry point for everything else on the platform --
+// nothing can be detected until it is registered and authorized -- and it is the
+// precise flow that was broken once already: every field in the dialog was bound
+// to the wrong form object, so submitting always sent the defaults. Asserting
+// the row that appears is what proves the values reached the API instead of only
+// rendering in the inputs.
+async function assertAssetRegistration(page, baseURL) {
+  await page.goto(`${baseURL}/#/assets`);
+  await assertPageHasContent(page, "REGISTERED TARGETS");
+
+  const name = `E2E 资产 ${Date.now()}`;
+  await page.getByRole("button", { name: "登记资产" }).click();
+  const dialog = page.locator(".el-dialog", { hasText: "登记监测资产" });
+  await dialog.waitFor({ timeout: 15000 });
+  await fieldIn(dialog, "资产名称").fill(name);
+  // The registered URL has to pass the SSRF guard, which resolves the host --
+  // a made-up name like e2e.example.com is refused with UNSAFE_TARGET and the
+  // dialog simply stays open. smoke-target is the host this stack serves, so it
+  // is the address that can actually be registered.
+  const assetURL = `http://smoke-target/e2e-asset-${Date.now()}.html`;
+  await fieldIn(dialog, "监测地址").fill(assetURL);
+  await dialog.getByRole("button", { name: "创建并授权" }).click();
+
+  // The row carries the name the dialog was given. If the binding regressed to
+  // another form object, this is where it shows: the server would reject the
+  // empty name, or the row would render under a default.
+  const row = page.locator(".el-table__row", { hasText: name }).first();
+  await row.waitFor({ timeout: 15000 });
+  assert.ok(
+    (await row.innerText()).includes("smoke-target"),
+    "the registered asset did not carry the URL that was typed",
+  );
+
+  // A new asset is unverified, which is what makes it undetectable until an
+  // operator proves ownership. That state is the platform's authorization gate,
+  // so it is worth asserting rather than assuming.
+  assert.equal(
+    await row.getByRole("button", { name: "授权验证" }).count(),
+    1,
+    "a freshly registered asset must still be pending authorization",
+  );
+}
+
+// Sites are pure grouping, so the only behaviour worth proving in the browser is
+// that a site can be created and that it is offered as a grouping when an asset
+// is registered -- the FK-bearing side of the relationship.
+async function assertSiteManagement(page, baseURL) {
+  await page.goto(`${baseURL}/#/sites`);
+  await assertPageHasContent(page, "站点管理");
+
+  const name = `E2E 站点 ${Date.now()}`;
+  await page.getByRole("button", { name: "新增站点" }).click();
+  const dialog = page.locator(".el-dialog", { hasText: "新增站点" });
+  await dialog.waitFor({ timeout: 15000 });
+  await fieldIn(dialog, "站点名称").fill(name);
+  // 域名 is not optional: createSite refuses an empty one with INVALID_SITE.
+  await fieldIn(dialog, "域名").fill("smoke-target");
+  await dialog.getByRole("button", { name: "保存站点" }).click();
+
+  await page.locator(".el-table__row", { hasText: name }).first().waitFor({ timeout: 15000 });
+
+  // Now the grouping has to actually be offered on the asset dialog. A site that
+  // renders in its own list but cannot be selected when filing an asset is a
+  // list, not a grouping.
+  await page.goto(`${baseURL}/#/assets`);
+  await assertPageHasContent(page, "REGISTERED TARGETS");
+  await page.getByRole("button", { name: "登记资产" }).click();
+  const assetDialog = page.locator(".el-dialog", { hasText: "登记监测资产" });
+  await assetDialog.waitFor({ timeout: 15000 });
+  await selectIn(assetDialog, "所属站点").click();
+  await visibleOptions(page).filter({ hasText: name }).first().waitFor({ timeout: 15000 });
+  // Escape rather than submitting: this walk is about the option existing, and
+  // the asset-registration walk above already owns creating one.
+  await page.keyboard.press("Escape");
+  await assetDialog.getByRole("button", { name: "取消" }).click();
+}
+
+// The policy dialog is where detection is tuned, so the assertion is that an
+// edit round-trips: a value that is typed, saved and reopened has to come back.
+// That is the only way to tell a real write from component state.
+//
+// It deliberately targets "Smoke login asset" rather than the asset the
+// registration walk just created. A newly registered asset has no policy, and
+// the dialog renders el-empty with a disabled save button for that reason, so
+// pointing this at it would take the empty branch on every run and never
+// exercise an edit at all -- a skipped assertion dressed up as a passing one.
+// The compose smoke PUTs a policy for this asset before invoking this script,
+// which is what makes the round-trip reachable.
+async function assertPolicyEditing(page, baseURL) {
+  await page.goto(`${baseURL}/#/assets`);
+  await assertPageHasContent(page, "REGISTERED TARGETS");
+
+  const row = page.locator(".el-table__row").filter({ hasText: "Smoke login asset" }).first();
+  await row.waitFor({ timeout: 15000 });
+  await row.getByRole("button", { name: "策略" }).click();
+
+  const dialog = page.locator(".el-dialog", { hasText: "监测策略" });
+  await dialog.waitFor({ timeout: 15000 });
+  const save = dialog.getByRole("button", { name: "保存策略" });
+  assert.equal(
+    await save.isEnabled(),
+    true,
+    "the seeded asset's policy did not load, so the dialog rendered empty",
+  );
+
+  // timeoutSeconds is a useful discriminator because the seed and the
+  // component's own default happen to agree on 30: an edit to 45 can only read
+  // back as 45 if it went to the server and came back, not if the dialog fell
+  // back to its defaults.
+  const timeout = fieldIn(dialog, "超时（秒）");
+  assert.equal(await timeout.inputValue(), "30", "the seeded policy value did not load into the form");
+  await timeout.fill("45");
+  await save.click();
+  await dialog.waitFor({ state: "hidden", timeout: 15000 });
+
+  await row.getByRole("button", { name: "策略" }).click();
+  await dialog.waitFor({ timeout: 15000 });
+  assert.equal(
+    await fieldIn(dialog, "超时（秒）").inputValue(),
+    "45",
+    "the edited policy did not persist across a reopen",
+  );
+  await dialog.getByRole("button", { name: "取消" }).click();
+}
+
+// User management is an admin screen, and the rule that matters is the one the
+// dialog encodes: creation offers only OPERATOR and AUDITOR, because an ADMIN is
+// provisioned by tenant bootstrap rather than handed out from the console. A
+// regression here would silently widen who can be granted administrative access.
+async function assertUserManagement(page, baseURL) {
+  await page.goto(`${baseURL}/#/users`);
+  await assertPageHasContent(page, "用户管理");
+
+  const name = `e2e-user-${Date.now()}`;
+  await page.getByRole("button", { name: "新增用户" }).click();
+  const dialog = page.locator(".el-dialog", { hasText: "新增用户" });
+  await dialog.waitFor({ timeout: 15000 });
+  await fieldIn(dialog, "用户名").fill(name);
+  await fieldIn(dialog, "初始密码").fill("e2e-password-1234");
+
+  // The role options are the security-relevant half of this dialog.
+  await selectIn(dialog, "角色").click();
+  const options = visibleOptions(page);
+  await options.first().waitFor({ timeout: 15000 });
+  const labels = await options.allInnerTexts();
+  assert.ok(labels.includes("安全运营"), "the OPERATOR role disappeared from user creation");
+  assert.ok(labels.includes("审计只读"), "the AUDITOR role disappeared from user creation");
+  assert.ok(
+    !labels.includes("平台管理员"),
+    `user creation must not offer ADMIN; it offered: ${labels.join(", ")}`,
+  );
+  await visibleOptions(page).filter({ hasText: "安全运营" }).first().click();
+
+  await dialog.getByRole("button", { name: "保存" }).click();
+  await page.locator(".el-table__row", { hasText: name }).first().waitFor({ timeout: 15000 });
+}
+
 function loginField(page, label) {
   return page.locator(".login-panel .el-form-item", { hasText: label }).locator("input");
+}
+
+// Closes the drawer and waits for it to actually be gone from the screen.
+//
+// Waiting for the node to be *detached* does not work and never did: Element
+// Plus keeps the drawer mounted after close and only hides it (there is no
+// destroy-on-close on either drawer), so `.el-drawer` resolves to a lingering
+// hidden element and a detached wait times out forever. What the walk actually
+// needs is that the overlay no longer covers the page, which is what being
+// hidden means here -- existence is the wrong question.
+async function closeDrawer(page) {
+  await page.locator(".el-drawer:visible").waitFor({ state: "detached", timeout: 15000 });
 }
 
 // Element Plus form labels are not `for`-bound, so a field is found by the
 // form item that contains its label text.
 function fieldIn(scope, label) {
   return scope.locator(".el-form-item", { hasText: label }).locator("input").first();
+}
+
+// The options of the dropdown that is currently open. Element Plus keeps every
+// dropdown it has shown in the DOM and merely hides the closed ones, so a bare
+// .el-select-dropdown__item picks up a stale hidden <li> from an earlier dialog
+// and waits for it to become visible forever.
+function visibleOptions(page) {
+  return page.locator(".el-select-dropdown__item:visible");
+}
+
+// An el-select is opened by clicking its wrapper, not the <input>: the readonly
+// input is covered by a placeholder element that intercepts pointer events, so
+// a click on the input retries until it times out. The wrapper is what opens the
+// dropdown.
+function selectIn(scope, label) {
+  return scope.locator(".el-form-item", { hasText: label }).locator(".el-select").first();
 }
 
 async function assertPageHasContent(page, title) {
@@ -177,23 +366,27 @@ async function assertIncidentResponse(page, baseURL) {
   // much as the transition; the note itself is covered by the resolution field
   // the prompt feeds, which is exercised in the compose smoke's API half.
   const transitionable = [
-    ["认领事件", "ACKNOWLEDGED"],
-    ["开始调查", "INVESTIGATING"],
+    ["认领", "认领事件", "ACKNOWLEDGED"],
+    ["开始调查", "开始调查", "INVESTIGATING"],
   ];
   let moved = false;
   let movedTitle = "";
-  for (const [label, expectedStatus] of transitionable) {
+  for (const [rowLabel, drawerLabel, expectedStatus] of transitionable) {
     // A fresh drawer on the row that offers this transition. Taking the first
     // row for every step would only work while it happened to be in the right
     // state, which is exactly what earlier runs change.
     await page.locator(".el-drawer__close-btn").click().catch(() => {});
-    await page.locator(".el-drawer").waitFor({ state: "detached", timeout: 15000 }).catch(() => {});
-    const candidate = page.locator(".el-table__row").filter({ has: page.getByRole("button", { name: label }) }).first();
+    await closeDrawer(page);
+    const candidate = page.locator(".el-table__row").filter({ has: page.getByRole("button", { name: rowLabel }) }).first();
     if ((await candidate.count()) === 0) continue;
+    await candidate.scrollIntoViewIfNeeded();
+    // Column 1 is 事件, the cell holding the incident title. Read before the
+    // click, so it is the row that was acted on rather than whatever the drawer
+    // shows afterwards.
+    movedTitle = (await candidate.locator("td").nth(1).locator("strong").innerText()).trim();
     await candidate.click();
     await page.locator(".el-drawer").waitFor({ timeout: 15000 });
-    movedTitle = (await page.locator(".el-drawer .incident-detail-head strong").innerText()).trim();
-    await page.locator(".el-drawer").getByRole("button", { name: label }).click();
+    await page.locator(".el-drawer").getByRole("button", { name: drawerLabel }).click();
     // The status tag in the drawer head is what the operator reads, so it is
     // what this asserts rather than a re-fetch.
     await page.locator(".el-drawer").locator(".detail-status", { hasText: expectedStatus }).waitFor({ timeout: 15000 });
@@ -203,7 +396,7 @@ async function assertIncidentResponse(page, baseURL) {
   assert.ok(moved, `no incident offered a transition; the list showed: ${(await page.locator(".el-table").innerText()).slice(0, 300)}`);
 
   await page.locator(".el-drawer__close-btn").click();
-  await page.locator(".el-drawer").waitFor({ state: "detached", timeout: 15000 });
+  await closeDrawer(page);
 
   // Reopened by title -- the same incident, not whichever is first -- to prove
   // the transition was persisted rather than only reflected in the drawer that
@@ -223,7 +416,7 @@ async function assertIncidentResponse(page, baseURL) {
     `an incident in ${status} still offered the acknowledgement it had already made`,
   );
   await page.locator(".el-drawer__close-btn").click();
-  await page.locator(".el-drawer").waitFor({ state: "detached", timeout: 15000 });
+  await closeDrawer(page);
 }
 
 // The channel dialog is the only place a credential is ever typed, and the rule
