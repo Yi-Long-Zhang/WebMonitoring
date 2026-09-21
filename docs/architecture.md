@@ -49,7 +49,15 @@ Go HTTP Worker       Playwright Browser Worker
 - Element Plus：适合密集型安全运营后台。
 - Pinia：只保存跨页面客户端状态，不把所有服务端数据塞入全局 Store。
 - TanStack Query for Vue：请求缓存、重试、失效和加载状态。
-- ECharts 已作为依赖预留给总览统计。
+- ECharts：总览页的三张图（事件趋势折线、风险分布饼图、检测成功率仪表盘），
+  封装在 `components/monitoring/EChart.vue`，配置与数据变换在
+  `features/monitoring/charts.ts`。
+
+**Q：总览页有图表吗？**
+
+有，三张。趋势图按天统计（未指定区间时为最近 30 天），风险分布按严重度聚合，
+检测成功率是仪表盘。数据来自 `GET /api/v1/reports/summary` 和仪表盘接口，
+没有事件时趋势图与饼图显示空态而不是空坐标轴。
 
 **Q：差异对比用 Monaco Diff Editor 吗？**
 
@@ -98,20 +106,46 @@ OpenAPI 类型生成到 `apps/console/src/types/generated/`，HTTP 调用集中�
 
 **Q：模块怎么划分？**
 
+按**技术职责**分包，不按领域对象分包。`internal/` 下实际存在的包：
+
 ```text
 internal/
-├── auth/           # 认证、授权、租户上下文
-├── asset/          # 资产与授权验证
-├── policy/         # 检测策略、白名单、维护窗口
-├── baseline/       # 基线版本和批准
-├── detection/      # 任务编排和结果接收
-├── analysis/       # 信号、规则和风险评分
-├── incident/       # 事件状态、指派和时间线
-├── alert/          # 去重、渠道和重试
-├── evidence/       # 对象存储、摘要和下载
-├── audit/          # 审计事件
-└── platform/       # 数据库、队列、配置和观测
+├── api/            # HTTP 处理器、路由、中间件、权限校验（最大，25 个文件）
+├── store/          # 仓储接口与 PostgreSQL / 内存实现（15 个文件）
+├── detection/      # 检测编排、HTTP/浏览器检查、差异信号、事件聚合（14 个文件）
+├── security/       # 加密、密钥环、签名 URL、脱敏（12 个文件）
+├── config/         # 配置解析与生产门禁
+├── auth/           # 认证、会话、登录限流
+├── browser/        # 浏览器 Worker 客户端与登录态凭据传递
+├── evidence/       # 证据元数据与对象存储访问
+├── notify/         # 告警渠道与投递
+├── notifygate/     # 出站告警的滑动窗口配额与熔断
+├── ratelimit/      # 通用请求限速
+├── jobqueue/       # Redis Streams 队列
+├── maintenance/    # 保留期清理
+├── metrics/        # 指标注册表与路径归并
+├── telemetry/      # OpenTelemetry（默认 no-op）
+├── rewrap/         # 存量密钥密文再加密
+├── events/         # SSE 广播
+├── identity/       # 标识生成
+├── migrate/        # 迁移执行器
+└── domain/         # 领域类型与枚举（仅 models.go）
 ```
+
+**Q：资产、策略、基线、事件这些领域逻辑在哪个包？**
+
+**没有各自独立的包。** 领域逻辑直接挂在 `api.Server` 的方法上，用动词命名
+（`createAsset`、`approveBaseline`、`transitionIncident`、`cancelJob`…），
+持久化落在 `store/`。设计文档早期画过一张按领域对象分包的图
+（`asset/`、`policy/`、`baseline/`、`analysis/`、`incident/`、`alert/`、`audit/`、
+`platform/`），**那 8 个目录从未存在**，不要按它去找代码。
+
+**Q：差异信号和规则评分在哪个包？**
+
+都在 `detection/`：`diff.go` 定义 16 种信号类型和 `IncidentFingerprint`，
+`checker.go` 执行 HTTP 检测并构造 Snapshot，`html.go` 做静态解析。
+**没有独立的 `analysis/` 包，也没有独立的"风险评分"计算**——事件的风险级别来自
+信号严重性的聚合，不是单独的打分函数。
 
 **Q：依赖方向有什么要求？**
 

@@ -6,10 +6,6 @@ export type ChannelField = "url" | "recipients" | "secret";
 // the server's validation in createAlertChannel: EMAIL requires a recipient
 // list and forces the URL empty; the three webhook-shaped types all require a
 // URL, and WEBHOOK and DINGTALK additionally use a signing secret.
-//
-// The dialog previously offered only WECHAT_WORK and WEBHOOK and always
-// rendered the URL field, so DINGTALK and EMAIL were unreachable from the UI
-// even though the dispatcher implements both.
 const CHANNEL_FIELDS: Record<AlertChannel["type"], ChannelField[]> = {
   WEBHOOK: ["url", "secret"],
   WECHAT_WORK: ["url"],
