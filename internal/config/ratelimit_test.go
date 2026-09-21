@@ -80,3 +80,45 @@ func TestRateLimitsAreCheckedEvenOutsideProduction(t *testing.T) {
 		t.Fatalf("validateCommon did not check the rate limits: %v", failures)
 	}
 }
+
+// TestAlertGateRefusesADisabledControl: 0 turns a notification control off, and
+// an operator who typed it meaning "use the default" would otherwise ship an
+// installation with no runaway guard and no breaker while believing they had
+// configured both. Unlike the request limiter there is no ceiling -- a busy
+// installation may legitimately want a large allowance.
+func TestAlertGateRefusesADisabledControl(t *testing.T) {
+	for _, name := range []string{"ALERT_MAX_PER_CHANNEL_PER_WINDOW", "ALERT_FAILURE_THRESHOLD"} {
+		failures := validateAlertGate(envFrom(map[string]string{name: "0"}))
+		if len(failures) != 1 {
+			t.Fatalf("%s=0 produced %d failures, want exactly one", name, len(failures))
+		}
+		if !strings.Contains(failures[0].Error(), "disables") {
+			t.Fatalf("%s=0 failure does not explain itself: %v", name, failures[0])
+		}
+	}
+	if failures := validateAlertGate(envFrom(map[string]string{"ALERT_GATE_WINDOW_SECONDS": "0"})); len(failures) != 1 {
+		t.Fatalf("a zero window was accepted: %v", failures)
+	}
+}
+
+func TestAlertGateAcceptsUnsetAndConfiguredValues(t *testing.T) {
+	if failures := validateAlertGate(envFrom(nil)); len(failures) != 0 {
+		t.Fatalf("unset alert gate variables were refused: %v", failures)
+	}
+	// A large allowance is legitimate here: only disabling is refused.
+	if failures := validateAlertGate(envFrom(map[string]string{
+		"ALERT_MAX_PER_CHANNEL_PER_WINDOW": "100000",
+		"ALERT_FAILURE_THRESHOLD":          "10",
+		"ALERT_GATE_WINDOW_SECONDS":        "300",
+	})); len(failures) != 0 {
+		t.Fatalf("a plausible configuration was refused: %v", failures)
+	}
+	// The defaults must satisfy the validator, or every deployment that left the
+	// variables alone would be refused.
+	if failures := validateAlertGate(envFrom(map[string]string{
+		"ALERT_MAX_PER_CHANNEL_PER_WINDOW": "60",
+		"ALERT_FAILURE_THRESHOLD":          "5",
+	})); len(failures) != 0 {
+		t.Fatalf("the built-in defaults do not satisfy the validator: %v", failures)
+	}
+}

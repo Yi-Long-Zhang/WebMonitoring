@@ -105,6 +105,7 @@ func validateCommon(get func(string) string) []error {
 	failures = append(failures, validateRedisCredentials(get)...)
 	failures = append(failures, validateJobLease(get)...)
 	failures = append(failures, validateRateLimits(get)...)
+	failures = append(failures, validateAlertGate(get)...)
 	failures = append(failures, validateSMTP(get)...)
 	failures = append(failures, validateAllowedOrigins(get)...)
 	return failures
@@ -371,6 +372,43 @@ func validateRateLimits(get func(string) string) []error {
 		}
 		if value > check.ceiling {
 			failures = append(failures, fmt.Errorf("%s must not exceed %d, which is effectively no limit", check.name, check.ceiling))
+		}
+	}
+	return failures
+}
+
+// validateAlertGate refuses a production deployment that has disabled the
+// outbound notification controls by setting one of them to zero.
+//
+// Zero turns a control off, which is a legitimate thing to want in development
+// but not in an installation that sends alerts to real people: a channel that
+// has been dead for a day and one that is being handed a thousand messages an
+// hour are both silent failures, and the operator would be setting the value
+// believing it configured something. Unlike the request limiter there is no
+// ceiling here -- a busy installation may legitimately want a large allowance --
+// so only the disabling value is refused.
+func validateAlertGate(get func(string) string) []error {
+	var failures []error
+	for _, name := range []string{
+		"ALERT_MAX_PER_CHANNEL_PER_WINDOW",
+		"ALERT_FAILURE_THRESHOLD",
+	} {
+		raw := strings.TrimSpace(get(name))
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s must be an integer", name))
+			continue
+		}
+		if value <= 0 {
+			failures = append(failures, fmt.Errorf("%s must be positive in production: 0 disables that notification control", name))
+		}
+	}
+	if raw := strings.TrimSpace(get("ALERT_GATE_WINDOW_SECONDS")); raw != "" {
+		if value, err := strconv.Atoi(raw); err != nil || value <= 0 {
+			failures = append(failures, errors.New("ALERT_GATE_WINDOW_SECONDS must be a positive number of seconds"))
 		}
 	}
 	return failures

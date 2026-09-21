@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"webmonitoring/internal/domain"
+	"webmonitoring/internal/notifygate"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
 )
@@ -421,5 +423,92 @@ func TestAlertPayloadNamesTheReasonNotJustTheIncident(t *testing.T) {
 func TestUnknownReasonIsEchoedRatherThanGeneric(t *testing.T) {
 	if got := alertHeadline("SOMETHING_NEW"); !strings.Contains(got, "SOMETHING_NEW") {
 		t.Fatalf("an unrecognised reason rendered as %q, losing the reason", got)
+	}
+}
+
+// TestGateSuppressesDeliveryWithoutRecordingOne is the seam between the two
+// packages. A refused notification must not leave a delivery row behind: the
+// table would fill with entries for messages that were deliberately never sent,
+// and a later retry would find them and think it had work to do.
+func TestGateSuppressesDeliveryWithoutRecordingOne(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	repository, guard := webhookChannelRepository(t, server)
+	dispatcher := NewDispatcher(repository, guard)
+	dispatcher.SetGate(notifygate.NewMemoryGate(notifygate.Policy{
+		MaxPerWindow: 1, Window: time.Hour, FailureThreshold: 0,
+	}))
+	incident := domain.Incident{ID: "incident", TenantID: "tenant", AssetID: "asset"}
+	asset := domain.Asset{ID: "asset", TenantID: "tenant"}
+
+	if failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonCreated); len(failures) != 0 {
+		t.Fatalf("first delivery failed: %v", failures)
+	}
+	// A second reason is a second message, but the channel's allowance is spent.
+	failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonTransitioned)
+	if len(failures) != 1 {
+		t.Fatalf("expected one refusal, got %v", failures)
+	}
+	var limited *notifygate.ErrLimited
+	if !errors.As(failures[0], &limited) {
+		t.Fatalf("refusal was not reported as a limit: %v", failures[0])
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("the refused notification still reached the endpoint (%d requests)", requests.Load())
+	}
+	deliveries, _, err := repository.ListAlertDeliveries("tenant", "incident", store.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 1 {
+		t.Fatalf("a refused notification left a delivery row: %#v", deliveries)
+	}
+}
+
+// TestBreakerOpensFromDeliveryFailures: the dispatcher is what knows whether a
+// delivery worked, so it is what must feed the breaker. A channel failing past
+// the threshold must stop being tried at all.
+func TestBreakerOpensFromDeliveryFailures(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		writer.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	repository, guard := webhookChannelRepository(t, server)
+	dispatcher := NewDispatcher(repository, guard)
+	dispatcher.SetRetryPolicy(1, time.Millisecond)
+	dispatcher.SetGate(notifygate.NewMemoryGate(notifygate.Policy{
+		MaxPerWindow: 0, FailureThreshold: 2, Cooldown: time.Hour,
+	}))
+	incident := domain.Incident{ID: "incident", TenantID: "tenant", AssetID: "asset"}
+	asset := domain.Asset{ID: "asset", TenantID: "tenant"}
+
+	for reason, want := range map[string]int{domain.AlertReasonCreated: 1, domain.AlertReasonRecurred: 2} {
+		if failures := dispatcher.SendIncident(t.Context(), incident, asset, reason); len(failures) == 0 {
+			t.Fatalf("%s was expected to fail against a 503 endpoint", reason)
+		}
+		if got := int(requests.Load()); got != want {
+			t.Fatalf("after %s the endpoint saw %d requests, want %d", reason, got, want)
+		}
+	}
+	// The breaker is now open, so a third incident must be refused before any
+	// request is made -- that is the whole saving.
+	failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonTransitioned)
+	if len(failures) != 1 {
+		t.Fatalf("expected one refusal, got %v", failures)
+	}
+	var open *notifygate.ErrCircuitOpen
+	if !errors.As(failures[0], &open) {
+		t.Fatalf("refusal was not reported as an open circuit: %v", failures[0])
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("the breaker did not stop the attempt (%d requests)", requests.Load())
 	}
 }

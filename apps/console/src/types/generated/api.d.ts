@@ -1123,6 +1123,7 @@ export interface components {
             enabled: boolean;
             /** Format: date-time */
             createdAt: string;
+            suspended: boolean;
         };
         CreateAlertChannel: {
             name: string;

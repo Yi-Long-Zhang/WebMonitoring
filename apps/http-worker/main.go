@@ -21,6 +21,7 @@ import (
 	"webmonitoring/internal/jobqueue"
 	"webmonitoring/internal/metrics"
 	"webmonitoring/internal/notify"
+	"webmonitoring/internal/notifygate"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
 	"webmonitoring/internal/telemetry"
@@ -85,6 +86,19 @@ func main() {
 		Password: os.Getenv("SMTP_PASSWORD"),
 		From:     os.Getenv("SMTP_FROM"),
 	})
+	// The worker is where delivery actually happens, so the gate belongs here
+	// rather than in the API: the API only enqueues. It is shared through Redis
+	// so a channel's failure count and allowance are the same across replicas --
+	// otherwise each replica would grant the full allowance and keep its own
+	// count, and a channel failing against one replica would look healthy to
+	// the next.
+	alertPolicy := notifygate.ParsePolicy(os.Getenv,
+		time.Duration(config.PositiveInt(os.Getenv, "ALERT_GATE_WINDOW_SECONDS", 60))*time.Second)
+	if redisAddress := os.Getenv("REDIS_ADDR"); redisAddress != "" {
+		dispatcher.SetGate(notifygate.NewRedisGate(redisAddress, alertPolicy))
+	} else {
+		dispatcher.SetGate(notifygate.NewMemoryGate(alertPolicy))
+	}
 	// The consumer name must be unique per running worker: the group reclaims
 	// anything another consumer has held past QUEUE_MIN_IDLE_SECONDS.
 	consumer := config.WorkerIdentity(os.Getenv)

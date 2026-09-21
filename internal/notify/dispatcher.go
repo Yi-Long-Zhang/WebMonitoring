@@ -23,6 +23,7 @@ import (
 	"webmonitoring/internal/domain"
 	"webmonitoring/internal/identity"
 	"webmonitoring/internal/metrics"
+	"webmonitoring/internal/notifygate"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
 
@@ -43,6 +44,10 @@ type Dispatcher struct {
 	maxAttempts int
 	baseBackoff time.Duration
 	smtp        SMTPConfig
+	// gate bounds and suspends a channel that is being used to death or that has
+	// stopped working. A nil gate is unlimited, which is what a test dispatcher
+	// and an unconfigured deployment get.
+	gate *notifygate.Gate
 }
 
 // SMTPConfig holds the outbound SMTP relay settings for EMAIL alert channels.
@@ -74,6 +79,27 @@ func (d *Dispatcher) SetRetryPolicy(maxAttempts int, baseBackoff time.Duration) 
 
 func (d *Dispatcher) SetSMTP(cfg SMTPConfig) {
 	d.smtp = cfg
+}
+
+// SetGate installs the per-channel limiter and circuit breaker. Without one
+// every channel is unlimited and never suspended, which is what the tests and
+// the embedded single-process mode run with.
+func (d *Dispatcher) SetGate(gate *notifygate.Gate) {
+	d.gate = gate
+}
+
+// Gate exposes the installed gate so the console can read a channel's breaker
+// state without a second copy of the policy living in the API layer.
+func (d *Dispatcher) Gate() *notifygate.Gate {
+	return d.gate
+}
+
+func (d *Dispatcher) recordRefusal(channelType, reason string) {
+	if d.metrics != nil {
+		d.metrics.Inc("webmonitoring_alert_suppressed_total", map[string]string{
+			"channel_type": channelType, "reason": reason,
+		})
+	}
 }
 
 func (d *Dispatcher) ProcessAlert(ctx context.Context, job domain.AlertJob) error {
@@ -156,6 +182,15 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 		if !channel.Enabled {
 			continue
 		}
+		// The gate is consulted before any delivery record is created. A refused
+		// notification is not a delivery that failed -- recording one would fill
+		// the table with rows for messages that were deliberately never sent, and
+		// a later retry would find them and think it had work to do.
+		if decision := d.gate.Allow(ctx, channel.ID); !decision.Allowed {
+			d.recordRefusal(channel.Type, decision.Reason)
+			failures = append(failures, refusalError(channel.ID, decision))
+			continue
+		}
 		dedupKey := incident.ID + ":" + channel.ID + ":" + alertReasonKey(reason)
 		now := time.Now().UTC()
 		delivery := domain.AlertDelivery{
@@ -213,6 +248,10 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 				if updateErr := d.repository.UpdateAlertDelivery(delivery); updateErr != nil {
 					failures = append(failures, fmt.Errorf("channel %s delivery update: %w", channel.ID, updateErr))
 				}
+				// A success is what closes the breaker, so it is recorded before
+				// the loop can run again -- and only on the attempt that actually
+				// reached the endpoint, not on the ones that backed off.
+				d.gate.RecordOutcome(ctx, channel.ID, true)
 				d.record(channel.Type, "DELIVERED")
 				lastErr = nil
 				break
@@ -235,6 +274,10 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 			if updateErr := d.repository.UpdateAlertDelivery(delivery); updateErr != nil {
 				failures = append(failures, fmt.Errorf("channel %s delivery update: %w", channel.ID, updateErr))
 			}
+			// One failure per delivery, after the whole ladder has been spent,
+			// not one per attempt: the breaker is counting dead channels, and a
+			// single message that needed three tries is one channel that failed.
+			d.gate.RecordOutcome(ctx, channel.ID, false)
 			d.record(channel.Type, "FAILED")
 			failures = append(failures, fmt.Errorf("channel %s: %w", channel.ID, lastErr))
 		}
@@ -287,6 +330,16 @@ func safeDeliveryError(err error) string {
 		message = message[:240]
 	}
 	return message
+}
+
+// refusalError renders a gate refusal as the error the caller sees. The two
+// reasons get their own types so a caller can tell "we chose not to send" from
+// "the channel is broken" without parsing a string.
+func refusalError(channelID string, decision notifygate.Decision) error {
+	if decision.Reason == "CIRCUIT_OPEN" {
+		return &notifygate.ErrCircuitOpen{ChannelID: channelID, RetryAfter: decision.RetryAfter}
+	}
+	return &notifygate.ErrLimited{ChannelID: channelID, RetryAfter: decision.RetryAfter}
 }
 func (d *Dispatcher) send(
 	ctx context.Context,
