@@ -482,6 +482,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/evidence/signed/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 通过签名令牌下载证据
+         * @description 令牌由 POST /evidence/{id}/signed-url 签发，内含租户、证据 id 与过期时间。
+         *     过期、签名不匹配或证据文件缺失一律返回 404，不区分原因——能够区分它们
+         *     会让这个无需认证的端点变成一个探测工具。
+         */
+        get: operations["downloadSignedEvidence"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/alert-channels": {
         parameters: {
             query?: never;
@@ -2155,6 +2177,35 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SignedUrl"];
                 };
+            };
+        };
+    };
+    downloadSignedEvidence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 证据文件 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description 令牌无效、已过期，或证据文件不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

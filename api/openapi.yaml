@@ -536,6 +536,33 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SignedUrl" }
+  /evidence/signed/{token}:
+    get:
+      # The token is the credential. It carries the tenant, the evidence id and
+      # an expiry, signed by the server, and it is the whole authorisation for
+      # this request -- which is what makes the URL safe to hand to a browser or
+      # an external reviewer that holds no session. Declaring it as session-
+      # authenticated would describe an endpoint that does not exist.
+      security: []
+      operationId: downloadSignedEvidence
+      summary: 通过签名令牌下载证据
+      description: |
+        令牌由 POST /evidence/{id}/signed-url 签发，内含租户、证据 id 与过期时间。
+        过期、签名不匹配或证据文件缺失一律返回 404，不区分原因——能够区分它们
+        会让这个无需认证的端点变成一个探测工具。
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 证据文件
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "404":
+          description: 令牌无效、已过期，或证据文件不存在
   /alert-channels:
     get:
       operationId: listAlertChannels
