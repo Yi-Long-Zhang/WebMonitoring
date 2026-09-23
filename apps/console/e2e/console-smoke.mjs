@@ -355,23 +355,30 @@ async function assertIncidentResponse(page, baseURL) {
   );
 
   // A transition is only offered for the status the incident is actually in, so
-  // the walk takes whichever one is available rather than assuming OPEN --
-  // earlier runs of this script leave incidents in whatever state they left
-  // them, and the compose smoke transitions one to ACKNOWLEDGED already. If no
-  // incident is in a transitionable state the walk fails rather than skipping:
-  // a silently skipped assertion reports green for a flow it never exercised.
+  // the walk takes whichever one is available rather than assuming OPEN. Order
+  // matters: the first two need no disposal note, so they are preferred when
+  // present. 标记误报 is the fallback because it is offered from both OPEN and
+  // INVESTIGATING -- and those are the only two states a fresh compose smoke
+  // leaves behind, so this path is always reachable. Without it, a repeated run
+  // against a long-lived stack (every incident already past ACKNOWLEDGED) would
+  // find nothing to do and fail, which reads as a defect when it is only
+  // consumed state.
   //
-  // RESOLVED is deliberately not in this list. Reaching it opens a prompt for a
-  // disposal note, and a walk that drove that would be asserting the prompt as
-  // much as the transition; the note itself is covered by the resolution field
-  // the prompt feeds, which is exercised in the compose smoke's API half.
+  // RESOLVED is deliberately not in this list. Reaching it opens the same
+  // disposal prompt as 标记误报, and the prompt is asserted below; adding a
+  // second route to it would only assert the prompt twice.
   const transitionable = [
-    ["认领", "认领事件", "ACKNOWLEDGED"],
-    ["开始调查", "开始调查", "INVESTIGATING"],
+    ["认领", "认领事件", "ACKNOWLEDGED", false],
+    ["开始调查", "开始调查", "INVESTIGATING", false],
+    ["误报", "标记误报", "FALSE_POSITIVE", true],
   ];
   let moved = false;
   let movedTitle = "";
-  for (const [rowLabel, drawerLabel, expectedStatus] of transitionable) {
+  // What the walk actually used, so the persistence check below reopens by the
+  // same wording and asserts the same status rather than the one OPEN case.
+  let movedTo = "";
+  let movedDrawerLabel = "";
+  for (const [rowLabel, drawerLabel, expectedStatus, needsNote] of transitionable) {
     // A fresh drawer on the row that offers this transition. Taking the first
     // row for every step would only work while it happened to be in the right
     // state, which is exactly what earlier runs change.
@@ -387,9 +394,32 @@ async function assertIncidentResponse(page, baseURL) {
     await candidate.click();
     await page.locator(".el-drawer").waitFor({ timeout: 15000 });
     await page.locator(".el-drawer").getByRole("button", { name: drawerLabel }).click();
+
+    if (needsNote) {
+      // The server refuses RESOLVED/FALSE_POSITIVE/CLOSED without a disposal
+      // note, and the console front-runs that with a prompt. Both the prompt's
+      // own guard and the fact that the note reaches the description are worth
+      // asserting: a prompt that accepted a one-character note, or whose value
+      // never left the dialog, would look identical to a working one.
+      const prompt = page.locator(".el-message-box");
+      await prompt.waitFor({ timeout: 15000 });
+      const noteInput = prompt.locator("input");
+      const confirm = prompt.getByRole("button", { name: "确定" });
+      await noteInput.fill("ab");
+      await confirm.click();
+      // The validation message is what holds the box open; the transition must
+      // not have been sent with a two-character note.
+      await prompt.locator(".el-message-box__errormsg").waitFor({ timeout: 15000 });
+      await noteInput.fill(`E2E 处置说明 ${Date.now()}`);
+      await confirm.click();
+      await prompt.waitFor({ state: "hidden", timeout: 15000 });
+    }
+
     // The status tag in the drawer head is what the operator reads, so it is
     // what this asserts rather than a re-fetch.
     await page.locator(".el-drawer").locator(".detail-status", { hasText: expectedStatus }).waitFor({ timeout: 15000 });
+    movedTo = expectedStatus;
+    movedDrawerLabel = drawerLabel;
     moved = true;
     break;
   }
@@ -407,14 +437,24 @@ async function assertIncidentResponse(page, baseURL) {
   await page.locator(".el-drawer").waitFor({ timeout: 15000 });
   const reopened = page.locator(".el-drawer");
   const status = (await reopened.locator(".detail-status").innerText()).trim();
-  assert.notEqual(status, "OPEN", `the incident was still OPEN after its transition: ${movedTitle}`);
+  assert.equal(status, movedTo, `the incident came back as ${status} after moving to ${movedTo}: ${movedTitle}`);
   // The affordance that was used must be gone -- a stale one would offer a
   // transition the server would reject.
   assert.equal(
-    await reopened.getByRole("button", { name: "认领事件" }).count(),
+    await reopened.getByRole("button", { name: movedDrawerLabel }).count(),
     0,
-    `an incident in ${status} still offered the acknowledgement it had already made`,
+    `an incident in ${status} still offered the ${movedDrawerLabel} it had already made`,
   );
+  // FALSE_POSITIVE is terminal, so reaching it must leave no transition at all.
+  // The other two leave the successor available, which is what distinguishes a
+  // terminal state from one that merely moved.
+  if (movedTo === "FALSE_POSITIVE") {
+    assert.equal(
+      await reopened.locator(".detail-actions button").count(),
+      0,
+      `a false positive still offered a transition: ${movedTitle}`,
+    );
+  }
   await page.locator(".el-drawer__close-btn").click();
   await closeDrawer(page);
 }
