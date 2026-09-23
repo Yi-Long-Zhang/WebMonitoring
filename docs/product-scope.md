@@ -233,12 +233,14 @@ Webhook、企业微信、钉钉和邮件。投递有记录、重试和事件级�
 
 **当前不提供。** 主密钥以明文环境变量注入（`ALERT_SECRET_KEY` /
 `ALERT_SECRET_KEYS`）。版本化轮换和存量密文再加密扫描都已具备，
-但**尚未在真实数据上执行过**，也未接入外部密钥托管——进程环境里目前会出现明文密钥。
+但未接入外部密钥托管——进程环境里目前会出现明文密钥。
+`状态：部分实现 —— 轮换与再加密已实现，再加密尚未在真实数据执行。`
 
 **Q：支持 AWS S3 这类外部对象存储吗？**
 
-代码支持 S3 兼容接口，MinIO 上已实测跑通，但**外部 S3 实机演练尚未执行**
-（见 [object-storage-rehearsal.md](object-storage-rehearsal.md)，状态为「尚未执行」）。
+代码支持 S3 兼容接口。
+`状态：部分实现 —— MinIO 已实测跑通，外部 S3 演练尚未执行`
+（方案见 [object-storage-rehearsal.md](object-storage-rehearsal.md)）。
 区域解析与预签名 URL 这两条路径在 AWS S3 上可能不同，未验证前不应假定可用。
 
 **Q：能部署到 Kubernetes 吗？**

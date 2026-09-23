@@ -61,7 +61,8 @@ Go HTTP Worker       Playwright Browser Worker
 
 **Q：差异对比用 Monaco Diff Editor 吗？**
 
-**没有。** 差异详情当前使用结构化信号和证据下载，Monaco Diff Editor 尚未接入。
+**没有。** 差异详情当前使用结构化信号和证据下载。
+`状态：规划中 —— Monaco Diff Editor 差异编辑器未接入。`
 
 **Q：怎么组织前端代码？**
 
