@@ -187,3 +187,40 @@ func TestChangeOwnPassword(t *testing.T) {
 		t.Fatalf("login with old password unexpectedly succeeded")
 	}
 }
+
+// The reset endpoint refuses the platform account to every other caller, or a
+// tenant administrator could take it over. The account itself is the one
+// exemption: without it the seeded SUPER_ADMIN has no administrator-facing way
+// to rotate its own password.
+func TestAdminCanResetOwnSuperAdminPasswordButNotAnotherAccount(t *testing.T) {
+	repository, server := userMgmtServer(t)
+	root := retentionUser(t, repository, "root", domain.RoleSuperAdmin)
+	cookie, csrf := loginForTest(t, server, root.Username)
+
+	self := doJSON(t, server, http.MethodPost, "/api/v1/users/"+root.ID+"/password", cookie, csrf,
+		`{"password":"a-rotated-long-password-1"}`)
+	if self.Code != http.StatusNoContent {
+		t.Fatalf("super admin reset own password status=%d body=%s", self.Code, self.Body.String())
+	}
+	if loginAs(t, server, "root", "a-rotated-long-password-1") != http.StatusCreated {
+		t.Fatalf("login with the rotated password failed")
+	}
+
+	// A second platform account is still off limits: the exemption is by caller
+	// identity, not by role.
+	other := retentionUser(t, repository, "root2", domain.RoleSuperAdmin)
+	blocked := doJSON(t, server, http.MethodPost, "/api/v1/users/"+other.ID+"/password", cookie, csrf,
+		`{"password":"a-rotated-long-password-2"}`)
+	if blocked.Code != http.StatusForbidden {
+		t.Fatalf("resetting another platform account status=%d body=%s", blocked.Code, blocked.Body.String())
+	}
+
+	// And an ordinary tenant ADMIN stays blocked from the platform account.
+	admin := retentionUser(t, repository, "tenant-admin", domain.RoleAdmin)
+	adminCookie, adminCSRF := loginForTest(t, server, admin.Username)
+	tenantAttempt := doJSON(t, server, http.MethodPost, "/api/v1/users/"+root.ID+"/password", adminCookie, adminCSRF,
+		`{"password":"a-rotated-long-password-3"}`)
+	if tenantAttempt.Code != http.StatusForbidden {
+		t.Fatalf("tenant admin resetting a platform account status=%d body=%s", tenantAttempt.Code, tenantAttempt.Body.String())
+	}
+}

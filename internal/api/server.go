@@ -1244,7 +1244,12 @@ func (s *Server) resetUserPassword(writer http.ResponseWriter, request *http.Req
 		s.notFound(writer, request)
 		return
 	}
-	if user.Role == domain.RoleSuperAdmin {
+	// A tenant administrator must not be able to take over the platform account.
+	// The account itself is allowed through when the caller holds it: this is the
+	// only endpoint a tenant administrator could legitimately use to rotate the
+	// seeded SUPER_ADMIN's password. GetUser above already scopes the lookup to
+	// the caller's tenant, so the widened condition is self-service only.
+	if user.Role == domain.RoleSuperAdmin && user.ID != session.User.ID {
 		writeError(writer, request, http.StatusForbidden, "SUPER_ADMIN_PROTECTED", "不能修改平台超级管理员", nil)
 		return
 	}
