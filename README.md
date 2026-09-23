@@ -239,6 +239,11 @@ corepack pnpm test
 corepack pnpm build
 ```
 
+有 `make` 的环境（Linux/macOS/CI/WSL）可以用仓库根的 Makefile：
+`make fmt vet test` 等价于上面的 Go 门禁，`make lint typecheck build`
+覆盖前端，`make help` 列出全部目标（Windows 原生环境没有 `make`，直接跑
+上面的命令即可）。
+
 **Q：改了 API 契约有什么额外门禁？**
 
 改动了 `api/openapi.yaml` 后必须重新生成前端类型并确认没有漂移，这是 CI 的硬门禁：

@@ -58,6 +58,30 @@
 | 不可妥协的约束 | [AGENTS.md](../AGENTS.md)、[CLAUDE.md](../CLAUDE.md) |
 | 为什么当初这么决定 | [adr/](adr/) |
 
+**Q：第一篇读什么？环境要准备什么？**
+
+推荐阅读顺序：[README.md](../README.md) → 本文 →
+[engineering.md](engineering.md) → [AGENTS.md](../AGENTS.md) /
+[CLAUDE.md](../CLAUDE.md) → 按任务选 [architecture.md](architecture.md) /
+[domain-model.md](domain-model.md) / [security-model.md](security-model.md)。
+
+环境前置：Go（版本见 `go.mod`）、Node LTS 并执行过 `corepack enable`
+（pnpm 版本由 `package.json` 固定，无需全局安装）、走完整 Compose 路径
+需要 Docker。
+
+有 `make` 的环境（Linux/macOS/CI/WSL）日常入口是仓库根的 Makefile：
+`make help` 列出全部目标，`make fmt vet test` 是提交前门禁，
+`make compose-up` / `make compose-smoke` 起栈与验收。Windows 原生环境没有
+`make` 时，直接跑 README.md 验证一节列出的底层命令，效果相同。
+
+**Q：为什么 `go test ./...` 全绿还不算数？**
+
+集成测试靠环境变量门控：未设置 `POSTGRES_TEST_DSN` 和 `REDIS_TEST_ADDR` 时，
+`internal/store`、`internal/rewrap`、`internal/jobqueue` 里针对真实
+PostgreSQL/Redis 的用例会全部 skip。**本地全绿 ≠ 集成用例跑过。**要覆盖
+持久化与队列路径，先启动依赖（或复用 Compose 栈），再带上这两个变量重跑。
+CI 的 backend 任务通过服务容器设置了它们（`.github/workflows/ci.yml`）。
+
 ---
 
 ## 状态用语是什么意思？

@@ -401,6 +401,9 @@ pnpm 版本。
 - `GET /metrics`：请求、任务、告警和事件指标。
 - Redis detection/alert Stream 的 pending 和 dead-letter 状态。
 
+完整的只读诊断命令（curl/docker compose 示例）单源在
+[runbooks/README.md](runbooks/README.md) 的「通用只读诊断入口」。
+
 **Q：队列的重试参数怎么调？**
 
 默认任务领取租约为 5 分钟，pending 重领最短空闲时间为 120 秒。**不要把
