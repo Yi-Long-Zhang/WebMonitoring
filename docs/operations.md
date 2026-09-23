@@ -31,9 +31,8 @@ Copy-Item .env.example deployments\compose\.env
 ```
 
 本文档和 `docs/runbooks/` 里的 `docker compose` 命令都同此理，且 `config`、`ps`、
-`logs`、`exec` 这些只读子命令也会先解析清单，**一样要求变量齐备**。只在本机跑
-`go run ./apps/api` 时不受影响——那条路径直接读环境变量，不经过 Compose，此时把
-模板复制成仓库根的 `.env` 即可。
+`logs`、`exec` 这些只读子命令也会先解析清单，**一样要求变量齐备**。仓库里不需要
+第二份 `.env`——Compose 只读清单旁边那一份。
 
 **Q：管理员密码从哪来？装完之后怎么改？**
 
