@@ -1,4 +1,6 @@
-.env
+# Real environment files: deployments/compose/.env beside the manifest (the one
+# Compose reads), and any that predate this rule. The templates that must be
+# committed are exempted below.
 *.env
 !.env.example
 .data/

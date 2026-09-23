@@ -111,10 +111,7 @@ docker compose -f deployments/compose/docker-compose.yml up --build
 **那个目录**找 `.env`，而不是你当前所在的仓库根。所以要把模板复制成
 `deployments/compose/.env`——留在仓库根对 Compose 不可见，栈会因为变量缺失而
 起不来（`config`、`ps`、`logs`、`exec` 这些子命令同样会先解析清单，一样会失败）。
-`docs/` 里的所有 `docker compose` 命令同理。
-
-只在本机跑 `go run ./apps/api` 时不受这条影响——那条路径直接读环境变量，不经过
-Compose；此时把 `.env.example` 复制成仓库根的 `.env` 即可。
+`docs/` 里的所有 `docker compose` 命令同理。仓库里**不需要**第二份 `.env`。
 
 打开 `http://localhost:8088`。API 健康检查在 `http://localhost:8080/healthz`。
 当前 Compose 默认使用 HTTP，因此 `SESSION_SECURE=false`；
