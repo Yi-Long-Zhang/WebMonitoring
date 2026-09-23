@@ -8,9 +8,17 @@
 
 **Q：首次部署前要准备什么？**
 
-复制 `.env.example` 为 `.env`，替换管理员密码、数据库密码、对象存储密钥、
-Worker Token 和 `ALERT_SECRET_KEY`。生产环境必须启用 HTTPS 并将 `SESSION_SECURE`
-设置为 `true`。
+复制 `.env.example` 为 `.env`，替换 `POSTGRES_PASSWORD`、`S3_ACCESS_KEY`、
+`S3_SECRET_KEY`、`BROWSER_WORKER_TOKEN`、`ADMIN_PASSWORD` 和
+`ALERT_SECRET_KEY`。生产环境必须启用 HTTPS 并将 `SESSION_SECURE` 设置为
+`true`。
+
+这五个之外的变量在清单里都有回落，**这六个没有**：compose 清单不带任何
+口令或密钥字面量，缺一个 `docker compose config` 就会失败并点名是哪一个。
+`.env.example` 里带的是开发值，生产必须逐个替换——`APP_ENV=production` 时
+校验会拒绝开发默认值并强制最短长度。数据库密码通过 `POSTGRES_PASSWORD`
+统一下发给各服务（清单用它拼出每个服务的 `POSTGRES_DSN`），因此不要再单独
+去改 `POSTGRES_DSN` 里的口令，除非你确实要绕开这个机制。
 
 **Q：管理员密码从哪来？装完之后怎么改？**
 

@@ -75,6 +75,14 @@ $apiBase = "http://localhost:18082"
 # to be consistent, and it is deliberately not the repository's published default.
 $env:ADMIN_PASSWORD = "mrdrill-admin-password"
 $adminPassword = $env:ADMIN_PASSWORD
+# The remaining secrets the base Compose file requires outright (":?"), set here
+# for the same reason as the admin password above: this stack is torn down at the
+# end of the run, so the values need no secrecy, only consistency. They must not
+# reuse the development defaults from .env.example, which the production gate refuses.
+$env:POSTGRES_PASSWORD = "mrdrill-db-password"
+$env:S3_ACCESS_KEY = "mrdrill-access-key"
+$env:S3_SECRET_KEY = "mrdrill-object-secret"
+$env:BROWSER_WORKER_TOKEN = "mrdrill-worker-token"
 $runID = [guid]::NewGuid().ToString("N").Substring(0, 8)
 $slugPrefix = "mrdrill-$runID"
 

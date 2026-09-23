@@ -17,6 +17,14 @@ $lockoutMaxFailures = 5
 # run, so the password needs no secrecy. The script asserts behaviour, not
 # credentials, so the value only has to be consistent with the overlay.
 $env:ADMIN_PASSWORD = "smoke-test-admin-password"
+# The remaining secrets the base Compose file now requires outright (":?"). Same
+# reasoning as ADMIN_PASSWORD above: a throwaway stack needs values, not secrecy,
+# and this is the single place each is set. They must not reuse the development
+# defaults from .env.example, because the production gate refuses those.
+$env:POSTGRES_PASSWORD = "smoke-test-db-password"
+$env:S3_ACCESS_KEY = "smoke-test-access-key"
+$env:S3_SECRET_KEY = "smoke-test-object-secret"
+$env:BROWSER_WORKER_TOKEN = "smoke-test-worker-token"
 $projectName = if ($env:SMOKE_PROJECT_NAME) { $env:SMOKE_PROJECT_NAME } else { "webmonitoring-smoke" }
 $compose = @(
     "--project-name", $projectName,

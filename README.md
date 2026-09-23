@@ -96,8 +96,11 @@ corepack pnpm dev:console
 ### 完整 Compose 模式
 
 需要 Docker Compose，会启用 PostgreSQL、Redis、MinIO、独立 HTTP Worker 和
-Playwright Worker。首次启动前复制环境文件，并至少替换管理员密码、数据库密码、
-对象存储密钥和 Worker Token：
+Playwright Worker。首次启动前复制环境文件。`POSTGRES_PASSWORD`、
+`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`BROWSER_WORKER_TOKEN` 和
+`ADMIN_PASSWORD` **必须显式提供**——清单文件里没有任何默认值，缺一个
+`docker compose config` 就会失败并指出是哪一个。`.env.example` 已带一份可用的
+开发值，直接复制即可起栈；生产部署必须替换掉它们：
 
 ```powershell
 Copy-Item .env.example .env
