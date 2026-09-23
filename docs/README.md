@@ -79,38 +79,19 @@
 
 下面是**产品与部署边界**，不是待办清单。凡在此范围内的能力，本产品当前不提供，
 也不应被期待。如果你需要其中某一项，说明当前版本不适用于你的场景。
+完整问答（含理由与细节）见 [product-scope.md](product-scope.md) 的
+「当前明确不做」。
 
-**Q：能做资源级细粒度权限和双人审批吗？**
-
-**不能。** 角色只有 ADMIN / OPERATOR / AUDITOR / SUPER_ADMIN 四种，按端点做
-粗粒度校验。**没有** `asset:read` 这类资源级权限集，**没有**字段级授权，
-**没有**高风险操作的双人审批。前端权限只到角色级（单一来源见
-`apps/console/src/app/permissions.ts`）。直接后果：**同一租户内 ADMIN 能读写
-该租户全部资源**。
-
-**Q：能做多租户运营吗（配额、计费、自注册、跨租户管理员）？**
-
-**不能。** 没有租户配额或计费；租户只能由 SUPER_ADMIN 创建，不能自注册；
-没有跨租户切换的管理员视图。SUPER_ADMIN 权限仅限租户 CRUD 与播种租户管理员，
-**不做**任意租户数据的全量可见。
-
-**Q：密钥托管给外部 KMS/Vault 了吗？**
-
-**没有。** 主密钥以明文环境变量注入（`ALERT_SECRET_KEY` / `ALERT_SECRET_KEYS`）。
-已经具备的是**版本化轮换**（`v1:`/`v2:` 多版本共存，新密文盖最高版本）和
-**存量密文再加密扫描**（`apps/rewrap`，支持 `--dry-run`、advisory lease 串行化和审计），
-但该扫描**尚未在真实数据上执行过**——它是一次需要授权的维护操作。
-
-**Q：能部署到 Kubernetes 吗？**
-
-**不能**，当前只有单机 Docker Compose，无 K8s 清单与 Helm chart。这是有意选择：
-在确有规模依据之前不预先引入分布式复杂度。
-
-**Q：验证过外部对象存储吗？**
-
-**没有。** 见 [object-storage-rehearsal.md](object-storage-rehearsal.md)，状态为
-**尚未执行**，需要一组真实 S3 凭据和一个已存在的 bucket。MinIO 上已跑通，
-但区域解析与预签名 URL 在 AWS S3 上可能不同。
+- **资源级授权与双人审批**：当前不提供。角色只有 ADMIN / OPERATOR /
+  AUDITOR / SUPER_ADMIN 四种，按端点做粗粒度校验；**同一租户内 ADMIN 能读写
+  该租户全部资源**。
+- **多租户运营**：当前不提供。无配额计费，租户只能由 SUPER_ADMIN 创建，
+  无跨租户管理员视图。
+- **外部 KMS/Vault**：当前未接入。主密钥以明文环境变量注入；版本化轮换与
+  存量密文再加密扫描已实现，但**尚未在真实数据上执行过**。
+- **Kubernetes**：当前只有单机 Docker Compose，无 K8s 清单与 Helm chart。
+- **外部对象存储**：MinIO 已实测跑通，外部 S3 演练**尚未执行**
+  （方案见 [object-storage-rehearsal.md](object-storage-rehearsal.md)）。
 
 ---
 
