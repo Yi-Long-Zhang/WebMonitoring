@@ -8,17 +8,32 @@
 
 **Q：首次部署前要准备什么？**
 
-复制 `.env.example` 为 `.env`，替换 `POSTGRES_PASSWORD`、`S3_ACCESS_KEY`、
-`S3_SECRET_KEY`、`BROWSER_WORKER_TOKEN`、`ADMIN_PASSWORD` 和
-`ALERT_SECRET_KEY`。生产环境必须启用 HTTPS 并将 `SESSION_SECURE` 设置为
-`true`。
+复制 `deployments/compose/.env.example` 为 `deployments/compose/.env`，替换
+`POSTGRES_PASSWORD`、`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`BROWSER_WORKER_TOKEN`、
+`ADMIN_PASSWORD` 和 `ALERT_SECRET_KEY`。生产环境必须启用 HTTPS 并将
+`SESSION_SECURE` 设置为 `true`。
 
-这五个之外的变量在清单里都有回落，**这六个没有**：compose 清单不带任何
-口令或密钥字面量，缺一个 `docker compose config` 就会失败并点名是哪一个。
-`.env.example` 里带的是开发值，生产必须逐个替换——`APP_ENV=production` 时
-校验会拒绝开发默认值并强制最短长度。数据库密码通过 `POSTGRES_PASSWORD`
-统一下发给各服务（清单用它拼出每个服务的 `POSTGRES_DSN`），因此不要再单独
-去改 `POSTGRES_DSN` 里的口令，除非你确实要绕开这个机制。
+这六个变量在清单里**没有回落**：compose 清单不带任何口令或密钥字面量，缺一个
+`docker compose config` 就会失败并点名是哪一个。`.env.example` 里带的是开发值，
+生产必须逐个替换——`APP_ENV=production` 时校验会拒绝开发默认值并强制最短长度。
+数据库密码通过 `POSTGRES_PASSWORD` 统一下发给各服务（清单用它拼出每个服务的
+`POSTGRES_DSN`），因此不要再单独去改 `POSTGRES_DSN` 里的口令，除非你确实要绕开
+这个机制。
+
+**Q：为什么把 `.env` 复制到仓库根，栈还是起不来？**
+
+因为 `-f` 指向了 `deployments/compose/`，Compose 就去**那个目录**找 `.env`，
+而不是你的仓库根——复制到仓库根的文件根本没被读到，要么 `config` 直接报变量缺失，
+要么等到 `up` 才炸。`.env` 必须和清单放在一起：
+
+```powershell
+Copy-Item deployments\compose\.env.example deployments\compose\.env
+```
+
+本文档和 `docs/runbooks/` 里的 `docker compose` 命令都同此理，且 `config`、`ps`、
+`logs`、`exec` 这些只读子命令也会先解析清单，**一样要求变量齐备**。只在本机跑
+`go run ./apps/api` 时不受影响——那条路径直接读环境变量，不经过 Compose，此时把
+`.env` 放仓库根即可。
 
 **Q：管理员密码从哪来？装完之后怎么改？**
 
