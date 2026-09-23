@@ -301,7 +301,8 @@ W3C `traceparent`，Worker 的 span 与产生该任务的 API 请求因此不是
 各副本调度器自己排队，再断言任务数等于资产数、没有重复的 `(tenant, asset, mode)`、
 每个 worker 副本对应一个唯一消费者身份。
 
-2026-09-20 在真实 `--scale api=2 --scale http-worker=3` 上首次跑通：
+2026-09-20 在真实 `--scale api=2 --scale http-worker=3` 上首次跑通
+（验收总账：[rehearsals.md](rehearsals.md)）：
 
 ```
 assets            : 40

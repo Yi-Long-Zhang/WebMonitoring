@@ -257,7 +257,7 @@ http，Chromium 会丢弃 Secure cookie），变量名必须是 `session` 以对
     -MinimumJobsPerSecond 1 -TimeoutSeconds 1800
 ```
 
-2026-09-20 实测结果：
+2026-09-20 实测结果（验收总账：[rehearsals.md](rehearsals.md)）：
 
 ```
 assets          : 100 across 2 tenant(s)
