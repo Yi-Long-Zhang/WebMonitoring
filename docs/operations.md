@@ -8,7 +8,7 @@
 
 **Q：首次部署前要准备什么？**
 
-复制 `deployments/compose/.env.example` 为 `deployments/compose/.env`，替换
+把模板 `.env.example` 复制为 `deployments/compose/.env`，替换
 `POSTGRES_PASSWORD`、`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`BROWSER_WORKER_TOKEN`、
 `ADMIN_PASSWORD` 和 `ALERT_SECRET_KEY`。生产环境必须启用 HTTPS 并将
 `SESSION_SECURE` 设置为 `true`。
@@ -27,13 +27,13 @@
 要么等到 `up` 才炸。`.env` 必须和清单放在一起：
 
 ```powershell
-Copy-Item deployments\compose\.env.example deployments\compose\.env
+Copy-Item .env.example deployments\compose\.env
 ```
 
 本文档和 `docs/runbooks/` 里的 `docker compose` 命令都同此理，且 `config`、`ps`、
 `logs`、`exec` 这些只读子命令也会先解析清单，**一样要求变量齐备**。只在本机跑
 `go run ./apps/api` 时不受影响——那条路径直接读环境变量，不经过 Compose，此时把
-`.env` 放仓库根即可。
+模板复制成仓库根的 `.env` 即可。
 
 **Q：管理员密码从哪来？装完之后怎么改？**
 
