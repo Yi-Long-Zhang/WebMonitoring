@@ -166,7 +166,7 @@ API/Worker 重启。测试数据保存在 `.data-smoke`（已被 Git 忽略）�
 
 **Q：这些门禁在 CI 里跑哪些？**
 
-三项，见 `.github/workflows/ci.yml`：
+四项，见 `.github/workflows/ci.yml`：
 
 | CI job | 跑什么 |
 | --- | --- |
@@ -370,6 +370,25 @@ pnpm 版本。
 消息可能被重复领取。可通过 `QUEUE_MAX_DELIVERIES`、`QUEUE_RETRY_BASE_MILLISECONDS`、
 `ALERT_QUEUE_MAX_DELIVERIES`、`ALERT_MAX_ATTEMPTS` 和
 `ALERT_RETRY_BASE_MILLISECONDS` 调整重试策略。
+
+**Q：请求限速怎么调？**
+
+按 `(租户, 端点类别)` 分三桶滑动窗口限速，默认每租户每分钟：
+
+| 变量 | 类别 | 默认 | 生产上限 |
+| --- | --- | --- | --- |
+| `RATE_LIMIT_READ_PER_WINDOW` | 读（列表、详情） | 600 | 100000 |
+| `RATE_LIMIT_WRITE_PER_WINDOW` | 写（登记、流转、编辑） | 120 | 20000 |
+| `RATE_LIMIT_BULK_PER_WINDOW` | 重操作（导入、检测触发、保留执行） | 12 | 2000 |
+
+超限返回 `429 RATE_LIMITED`。生产配置校验（`internal/config/production.go`）
+把这三个值卡在**区间的两端**：超过上限会被拒，理由是「等于没有限速」；设为 `0`
+或负数也会被拒，因为 `0` 意味着给那一类请求**关掉**限速。两者都是启动失败，
+不是静默钳制——一个只看上限的校验会放过后者。
+
+冒烟脚本（`compose-smoke.ps1`）在几分钟内从一个租户跑完整个流程，远超生产配额，
+因此在 smoke overlay 里把三类都抬高——配额约束的是真实租户的爆炸半径，对一次性
+的临时栈没有意义。
 
 ---
 

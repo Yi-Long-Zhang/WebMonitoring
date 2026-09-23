@@ -120,7 +120,7 @@ internal/
 ├── evidence/       # 证据元数据与对象存储访问
 ├── notify/         # 告警渠道与投递
 ├── notifygate/     # 出站告警的滑动窗口配额与熔断
-├── ratelimit/      # 通用请求限速
+├── ratelimit/      # 按租户的读/写/重操作配额（600/120/12 每分钟）
 ├── jobqueue/       # Redis Streams 队列
 ├── maintenance/    # 保留期清理
 ├── metrics/        # 指标注册表与路径归并

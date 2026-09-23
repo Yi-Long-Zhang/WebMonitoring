@@ -10,10 +10,11 @@
 `tenantID:assetID:auth`，密文以无填充的 base64 RawURL 编码），检测时由
 `internal/detection/checker.go` 解密，在写入和检测两个阶段各做一次 SSRF 校验。
 
-浏览器路径在 `internal/browser/client.go` 明确失败关闭：遇到 `AuthConfig` 直接返回
+**决策前的现状（下节起为已启动实现的决策）：** 浏览器路径在
+`internal/browser/client.go` 曾明确失败关闭：遇到 `AuthConfig` 直接返回
 「login-state detection is only supported in HTTP mode」，任务归为可重试的
 `CHECK_FAILED`，重试耗尽后失败。因此「后台登录页监测」这个核心场景在浏览器渲染模式下
-不可用。
+不可用。**这一限制已由本 ADR 的决策解除**——见「决策」与「影响」两节。
 
 开启它必须先回答一个问题：**明文凭据如何到达 Node 侧？** 控制面目前从不把明文凭据
 发给任何进程，`SecretCipher` 只在 api 和 http-worker 内实例化；浏览器 Worker 走同步
@@ -68,5 +69,8 @@ HTTP 调用，compose 只给它注入了 `WORKER_TOKEN`。
   策略写入阶段的审计记录已经覆盖，浏览器路径不得新增绕过它的写入点。
 - 生产门禁新增一条约束，`BROWSER_WORKER_URL` 不满足时启动即失败（失败关闭）。这是对
   既有部署配置的收紧，升级时需要先确认该变量。
-- 浏览器 Worker 的测试目前只有 `security.test.ts`，需要补登录流程用例；Go 侧
-  `internal/browser/client_test.go` 需要补凭据透传与失败关闭的负向用例。
+- 浏览器 Worker 的测试目前只有 `security.test.ts`，需要补登录流程用例；
+  **Go 侧已完成**：`internal/browser/login_test.go` 覆盖了凭据透传
+  （`TestCheckSendsDecryptedCredentials`）与失败关闭的负向用例
+  （`TestCheckFailsClosedWithoutCipherWhenLoginIsRequired`、
+  `TestCheckRejectsCredentialsBoundToAnotherAsset`）。Node 侧登录流程用例**仍未补**。

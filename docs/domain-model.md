@@ -52,6 +52,13 @@ Tenant
 可以，保持 nullable 以兼容存量资产。复合外键 `(tenant_id, site_id)` 与
 `(tenant_id, owner_id)` 在数据库层强制站点与资产、负责人同属一个租户。
 
+**Q：站点能删除吗？**
+
+能，但站点下**仍有资产**时拒绝（`409 SITE_NOT_EMPTY`），调用方需先把这些资产的
+`site_id` 置空再重试。失败关闭而非静默解除归属：把资产悄悄挪成「无所属」是没人
+要求过的数据丢失。删除前先写审计记录，理由与租户删除相同——记录必须比它描述的
+那一行活得久。
+
 ---
 
 ## Asset
@@ -266,7 +273,15 @@ ACKNOWLEDGED -> INVESTIGATING
 INVESTIGATING -> RESOLVED
 INVESTIGATING -> FALSE_POSITIVE
 RESOLVED -> CLOSED
+RESOLVED -> INVESTIGATING
+CLOSED -> OPEN              （检测复现，非人工流转）
+FALSE_POSITIVE -> OPEN      （检测复现，非人工流转）
 ```
+
+前七条是人工流转（`internal/detection/diff.go` 的 `ValidateTransition`）；后两条
+由检测复现触发，不接受人工调用——见下面「已关闭/误报的事件再次命中会怎样」。
+注意 `RESOLVED -> OPEN` **不在**其中：只有 `CLOSED` 与 `FALSE_POSITIVE` 会被
+复现重开。
 
 **Q：关闭高风险的流程是自由的吗？**
 
@@ -311,11 +326,17 @@ normalized_signal_fingerprint
 `REOPENED`，事件 ID 与既有时间线全部保留。运营侧因此能看出「这是我关掉的那个
 问题回来了」，而不是看到两条 fingerprint 相同却毫不相干的记录。
 
+**只有 `CLOSED` 与 `FALSE_POSITIVE` 会重开。** `RESOLVED` 复现后状态不变，只是
+`occurrence_count` 与时间线继续增长——它仍然显示为「已恢复」，但计数在涨。
+`resolved_at`、`acknowledged_at` 也**不复位**：重开只改状态与计数，不抹掉上一轮
+的处置时间，否则「上次什么时候恢复的」就查不到了。这是当前实现的实际边界，
+不是「已解决就一定重开」的语义。
+
 这一点是**行为修正**而非新能力：迁移 `000015` 之前 `active_incident_dedup_idx`
 是**部分**唯一索引（`WHERE status NOT IN ('CLOSED','FALSE_POSITIVE')`），终态行
 不参与匹配，于是「关闭后复现」会插出一条全新的重复行，且 `DO UPDATE` 从不写
-`status`，`RESOLVED` 的事件复现后仍停在 `RESOLVED`——两个终态之所以特殊，只是
-因为「行根本不被匹配」，而不是有意为之的重开语义。
+`status`。修正后的重开条件沿用了同一个集合，所以 `RESOLVED` 的行为与迁移前
+一致——变的只是 `CLOSED`/`FALSE_POSITIVE` 两行。
 
 告警理由同时新增 `REOPENED`：投递幂等键含理由，而重开的事件 ID 没变，沿用
 `RECURRED` 会被既有键静默挡掉，运营收不到重开通知。
