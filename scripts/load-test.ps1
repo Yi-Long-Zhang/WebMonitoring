@@ -72,6 +72,14 @@ $apiBase = "http://localhost:18081"
 # deliberately not the repository's published development default.
 $env:ADMIN_PASSWORD = "loadtest-admin-password"
 $adminPassword = $env:ADMIN_PASSWORD
+# The remaining secrets the base Compose file requires outright (":?"), set here
+# for the same reason as the admin password above: this stack is torn down at the
+# end of the run, so the values need no secrecy, only consistency. They must not
+# reuse the development defaults from .env.example, which the production gate refuses.
+$env:POSTGRES_PASSWORD = "loadtest-db-password"
+$env:S3_ACCESS_KEY = "loadtest-access-key"
+$env:S3_SECRET_KEY = "loadtest-object-secret"
+$env:BROWSER_WORKER_TOKEN = "loadtest-worker-token"
 # Tenant slugs must be unique even when a previous run left data behind.
 $runID = [guid]::NewGuid().ToString("N").Substring(0, 8)
 
