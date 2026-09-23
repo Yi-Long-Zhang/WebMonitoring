@@ -491,13 +491,19 @@ func TestBreakerOpensFromDeliveryFailures(t *testing.T) {
 	incident := domain.Incident{ID: "incident", TenantID: "tenant", AssetID: "asset"}
 	asset := domain.Asset{ID: "asset", TenantID: "tenant"}
 
-	for reason, want := range map[string]int{domain.AlertReasonCreated: 1, domain.AlertReasonRecurred: 2} {
+	// Distinct reasons, sent in a fixed order: the threshold is reached on the
+	// second, and the cumulative request count is what proves the first attempt
+	// was not retried. Iterating a map here made the order random, so half the
+	// runs asserted a cumulative count the other order had produced.
+	for _, reason := range []string{domain.AlertReasonCreated, domain.AlertReasonRecurred} {
 		if failures := dispatcher.SendIncident(t.Context(), incident, asset, reason); len(failures) == 0 {
 			t.Fatalf("%s was expected to fail against a 503 endpoint", reason)
 		}
-		if got := int(requests.Load()); got != want {
-			t.Fatalf("after %s the endpoint saw %d requests, want %d", reason, got, want)
-		}
+	}
+	// One request per failing send, with no retry: the retry policy is one
+	// attempt, so two sends must have reached the endpoint exactly twice.
+	if got := int(requests.Load()); got != 2 {
+		t.Fatalf("the endpoint saw %d requests after two failing sends, want 2", got)
 	}
 	// The breaker is now open, so a third incident must be refused before any
 	// request is made -- that is the whole saving.
