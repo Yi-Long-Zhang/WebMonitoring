@@ -58,6 +58,30 @@
 | 不可妥协的约束 | [AGENTS.md](../AGENTS.md)、[CLAUDE.md](../CLAUDE.md) |
 | 为什么当初这么决定 | [adr/](adr/) |
 
+**Q：第一篇读什么？环境要准备什么？**
+
+推荐阅读顺序：[README.md](../README.md) → 本文 →
+[engineering.md](engineering.md) → [AGENTS.md](../AGENTS.md) /
+[CLAUDE.md](../CLAUDE.md) → 按任务选 [architecture.md](architecture.md) /
+[domain-model.md](domain-model.md) / [security-model.md](security-model.md)。
+
+环境前置：Go（版本见 `go.mod`）、Node LTS 并执行过 `corepack enable`
+（pnpm 版本由 `package.json` 固定，无需全局安装）、走完整 Compose 路径
+需要 Docker。
+
+有 `make` 的环境（Linux/macOS/CI/WSL）日常入口是仓库根的 Makefile：
+`make help` 列出全部目标，`make fmt vet test` 是提交前门禁，
+`make compose-up` / `make compose-smoke` 起栈与验收。Windows 原生环境没有
+`make` 时，直接跑 README.md 验证一节列出的底层命令，效果相同。
+
+**Q：为什么 `go test ./...` 全绿还不算数？**
+
+集成测试靠环境变量门控：未设置 `POSTGRES_TEST_DSN` 和 `REDIS_TEST_ADDR` 时，
+`internal/store`、`internal/rewrap`、`internal/jobqueue` 里针对真实
+PostgreSQL/Redis 的用例会全部 skip。**本地全绿 ≠ 集成用例跑过。**要覆盖
+持久化与队列路径，先启动依赖（或复用 Compose 栈），再带上这两个变量重跑。
+CI 的 backend 任务通过服务容器设置了它们（`.github/workflows/ci.yml`）。
+
 ---
 
 ## 状态用语是什么意思？
@@ -67,6 +91,12 @@
 - **已实现**：代码、接口和自动化测试已经覆盖，仍需按发布门禁验证部署环境。
 - **部分实现**：主流程可运行，但存在明确的范围、环境或安全限制。
 - **规划中**：产品或架构目标，当前代码不应被视为已经提供。
+
+**默认不标即已实现。** 部分实现、规划中、尚未执行的能力必须在功能描述处
+就地显式标注，统一格式：`状态：<档位> —— <具体缺口>`。「尚未执行」不作为
+独立档位，只作「部分实现」的限定语。整文描述单次演练的档案
+（如 [object-storage-rehearsal.md](object-storage-rehearsal.md)）可以在
+文件头标注整体状态。
 
 **Q：看到"已实现"就等于生产可用吗？**
 
@@ -79,38 +109,19 @@
 
 下面是**产品与部署边界**，不是待办清单。凡在此范围内的能力，本产品当前不提供，
 也不应被期待。如果你需要其中某一项，说明当前版本不适用于你的场景。
+完整问答（含理由与细节）见 [product-scope.md](product-scope.md) 的
+「当前明确不做」。
 
-**Q：能做资源级细粒度权限和双人审批吗？**
-
-**不能。** 角色只有 ADMIN / OPERATOR / AUDITOR / SUPER_ADMIN 四种，按端点做
-粗粒度校验。**没有** `asset:read` 这类资源级权限集，**没有**字段级授权，
-**没有**高风险操作的双人审批。前端权限只到角色级（单一来源见
-`apps/console/src/app/permissions.ts`）。直接后果：**同一租户内 ADMIN 能读写
-该租户全部资源**。
-
-**Q：能做多租户运营吗（配额、计费、自注册、跨租户管理员）？**
-
-**不能。** 没有租户配额或计费；租户只能由 SUPER_ADMIN 创建，不能自注册；
-没有跨租户切换的管理员视图。SUPER_ADMIN 权限仅限租户 CRUD 与播种租户管理员，
-**不做**任意租户数据的全量可见。
-
-**Q：密钥托管给外部 KMS/Vault 了吗？**
-
-**没有。** 主密钥以明文环境变量注入（`ALERT_SECRET_KEY` / `ALERT_SECRET_KEYS`）。
-已经具备的是**版本化轮换**（`v1:`/`v2:` 多版本共存，新密文盖最高版本）和
-**存量密文再加密扫描**（`apps/rewrap`，支持 `--dry-run`、advisory lease 串行化和审计），
-但该扫描**尚未在真实数据上执行过**——它是一次需要授权的维护操作。
-
-**Q：能部署到 Kubernetes 吗？**
-
-**不能**，当前只有单机 Docker Compose，无 K8s 清单与 Helm chart。这是有意选择：
-在确有规模依据之前不预先引入分布式复杂度。
-
-**Q：验证过外部对象存储吗？**
-
-**没有。** 见 [object-storage-rehearsal.md](object-storage-rehearsal.md)，状态为
-**尚未执行**，需要一组真实 S3 凭据和一个已存在的 bucket。MinIO 上已跑通，
-但区域解析与预签名 URL 在 AWS S3 上可能不同。
+- **资源级授权与双人审批**：当前不提供。角色只有 ADMIN / OPERATOR /
+  AUDITOR / SUPER_ADMIN 四种，按端点做粗粒度校验；**同一租户内 ADMIN 能读写
+  该租户全部资源**。
+- **多租户运营**：当前不提供。无配额计费，租户只能由 SUPER_ADMIN 创建，
+  无跨租户管理员视图。
+- **外部 KMS/Vault**：当前未接入。主密钥以明文环境变量注入。
+  `状态：部分实现 —— 版本化轮换与存量密文再加密扫描已实现，再加密尚未在真实数据执行。`
+- **Kubernetes**：当前只有单机 Docker Compose，无 K8s 清单与 Helm chart。
+- **外部对象存储**：`状态：部分实现 —— MinIO 已实测跑通，外部 S3 演练尚未执行`
+  （方案见 [object-storage-rehearsal.md](object-storage-rehearsal.md)）。
 
 ---
 
@@ -141,18 +152,24 @@
   签名令牌不进入标签）。
 - Repository 错误传播、真实 PostgreSQL/Redis 集成测试和 100 资产调度合成测试。
 
-## 已经实测过什么？（截至 2026-09-20）
+## 已经实测过什么？
 
-- **多副本（HA）**：`--scale api=2 --scale http-worker=3` 实跑，40 资产对应
-  40 个任务、0 个重复分组。三处跨副本阻塞点已修（迁移 `000012` 的活跃任务唯一索引、
-  `config.WorkerIdentity`、`store.ReplicaLease` advisory lock）。
-- **100 资产浏览器压测**：2 租户、100 个 BROWSER 任务全部成功、500 条证据、
-  85.2 秒、1.17 任务/秒。
-- **单机 Compose 验收**（2026-09-15）：smoke 含登录锁定/keyset 分页/暂停恢复/
-  任务取消/控制台 E2E；备份恢复 1198 个受校验文件。
-- **100 资产 HTTP 压测**：吞吐 32.8 任务/秒（下限 1.0），0 假阳性事件。
+截至 2026-09-20，以下演练全部实测通过（脚本、关键断言、结果与专项档案见
+验收总账 [rehearsals.md](rehearsals.md)）：
 
-演练记录见 [operations.md](operations.md) 的验收清单。
+- **多副本（HA）**（2026-09-20）：`--scale api=2 --scale http-worker=3`，
+  40 资产 40 任务、0 重复分组。
+- **100 资产浏览器压测**（2026-09-20）：100 个 BROWSER 任务全部成功、
+  500 条证据、85.2 秒、1.17 任务/秒。
+- **单机 Compose 验收**（2026-09-15）：smoke 含登录锁定/keyset 分页/
+  暂停恢复/任务取消/控制台 E2E。
+- **100 资产 HTTP 压测**（2026-09-15）：吞吐 32.8 任务/秒（下限 1.0），
+  0 假阳性事件。
+- **备份恢复**（2026-09-15）：1198 个受校验文件全部通过，冷启动恢复约
+  7 分钟。
+
+外部对象存储（S3）演练**尚未执行**，方案见
+[object-storage-rehearsal.md](object-storage-rehearsal.md)。
 
 ---
 

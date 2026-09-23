@@ -41,20 +41,28 @@
 | 演练 | 结果 |
 | --- | --- |
 | 单机 Compose 验收（2026-09-15） | 通过（含登录锁定、keyset 分页、暂停/恢复、任务取消、控制台 Playwright E2E） |
-| 100 资产 HTTP 压测 | 100 任务全部 SUCCEEDED，吞吐 32.8 任务/秒（下限 1.0），0 假阳性 |
+| 100 资产 HTTP 压测（2026-09-15） | 100 任务全部 SUCCEEDED，吞吐 32.8 任务/秒（下限 1.0），0 假阳性 |
 | 100 资产浏览器压测（2026-09-20） | 100 个 BROWSER 任务全部成功，500 条证据，85.2 秒，1.17 任务/秒 |
 | 多副本演练（2026-09-20） | `--scale api=2 --scale http-worker=3`，40 资产 40 任务，0 重复分组 |
 | 备份恢复（2026-09-15） | 1198 个受校验文件，恢复后 `/readyz`、SHA-256、任务数、Redis pending 全通过 |
 
+完整记录（脚本、断言、专项档案）见验收总账
+[docs/rehearsals.md](docs/rehearsals.md)。
+
 **Q：现在明确不能干什么？**
 
-- **资源级授权与双人审批**：角色只有 ADMIN / OPERATOR / AUDITOR / SUPER_ADMIN
-  四种，按端点做粗粒度校验。同租户内 ADMIN 能读写该租户全部资源。
-- **多租户运营**：无配额计费、无租户自注册、无跨租户管理员视图。
-- **外部 KMS/Vault**：主密钥以明文环境变量注入。版本化轮换和再加密扫描都已实现，
-  但再加密**尚未在真实数据上执行过**。
-- **外部对象存储**：MinIO 已跑通，但外部 S3 演练**尚未执行**。
-- **Kubernetes**：只有单机 Docker Compose。
+以下是产品边界（不是待办清单），完整表述与理由见
+[docs/product-scope.md](docs/product-scope.md) 的「当前明确不做」：
+
+- **资源级授权与双人审批**：当前不提供。角色只有 ADMIN / OPERATOR /
+  AUDITOR / SUPER_ADMIN 四种，按端点做粗粒度校验；同租户内 ADMIN 能读写
+  该租户全部资源。
+- **多租户运营**：当前不提供。无配额计费，租户只能由 SUPER_ADMIN 创建，
+  无跨租户管理员视图。
+- **外部 KMS/Vault**：当前未接入。主密钥以明文环境变量注入。
+  `状态：部分实现 —— 版本化轮换与再加密扫描已实现，再加密尚未在真实数据执行。`
+- **外部对象存储**：`状态：部分实现 —— MinIO 已实测跑通，外部 S3 演练尚未执行。`
+- **Kubernetes**：当前只有单机 Docker Compose，无 K8s 清单与 Helm chart。
 
 **Q：部署形态为什么是单机 Compose？**
 
@@ -230,6 +238,11 @@ corepack pnpm lint
 corepack pnpm test
 corepack pnpm build
 ```
+
+有 `make` 的环境（Linux/macOS/CI/WSL）可以用仓库根的 Makefile：
+`make fmt vet test` 等价于上面的 Go 门禁，`make lint typecheck build`
+覆盖前端，`make help` 列出全部目标（Windows 原生环境没有 `make`，直接跑
+上面的命令即可）。
 
 **Q：改了 API 契约有什么额外门禁？**
 

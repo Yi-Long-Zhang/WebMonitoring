@@ -28,7 +28,7 @@ Go HTTP Worker       Playwright Browser Worker
 
 **Q：为什么不直接上微服务？**
 
-- 当前处于 MVP，业务模型和规则仍在快速演进。
+- 业务模型已收敛（事件去重与时间线语义稳定），但运维面仍在按场景补齐。
 - 控制面需要事务一致性和快速迭代。
 - HTTP 检测和浏览器检测有不同资源模型，适合独立扩缩容——**这两个**才需要拆。
 - 队列解耦已足够，再拆只会增加跨服务事务和排障成本。
@@ -61,7 +61,8 @@ Go HTTP Worker       Playwright Browser Worker
 
 **Q：差异对比用 Monaco Diff Editor 吗？**
 
-**没有。** 差异详情当前使用结构化信号和证据下载，Monaco Diff Editor 尚未接入。
+**没有。** 差异详情当前使用结构化信号和证据下载。
+`状态：规划中 —— Monaco Diff Editor 差异编辑器未接入。`
 
 **Q：怎么组织前端代码？**
 
@@ -301,7 +302,8 @@ W3C `traceparent`，Worker 的 span 与产生该任务的 API 请求因此不是
 各副本调度器自己排队，再断言任务数等于资产数、没有重复的 `(tenant, asset, mode)`、
 每个 worker 副本对应一个唯一消费者身份。
 
-2026-09-20 在真实 `--scale api=2 --scale http-worker=3` 上首次跑通：
+2026-09-20 在真实 `--scale api=2 --scale http-worker=3` 上首次跑通
+（验收总账：[rehearsals.md](rehearsals.md)）：
 
 ```
 assets            : 40

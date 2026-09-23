@@ -257,7 +257,7 @@ http，Chromium 会丢弃 Secure cookie），变量名必须是 `session` 以对
     -MinimumJobsPerSecond 1 -TimeoutSeconds 1800
 ```
 
-2026-09-20 实测结果：
+2026-09-20 实测结果（验收总账：[rehearsals.md](rehearsals.md)）：
 
 ```
 assets          : 100 across 2 tenant(s)
@@ -400,6 +400,9 @@ pnpm 版本。
 - `GET /readyz`：PostgreSQL、Redis、MinIO 和 Browser Worker 是否就绪。
 - `GET /metrics`：请求、任务、告警和事件指标。
 - Redis detection/alert Stream 的 pending 和 dead-letter 状态。
+
+完整的只读诊断命令（curl/docker compose 示例）单源在
+[runbooks/README.md](runbooks/README.md) 的「通用只读诊断入口」。
 
 **Q：队列的重试参数怎么调？**
 

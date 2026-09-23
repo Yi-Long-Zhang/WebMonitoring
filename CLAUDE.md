@@ -1,6 +1,7 @@
 # WebMonitoring 项目指令
 
-网页篡改监测与安全事件处置平台，面向经授权目标，当前处于 MVP 建设阶段。
+网页篡改监测与安全事件处置平台，面向经授权目标。功能闭环已完成，当前处于
+投产前验证与按场景投产阶段（见 docs/adr/0005-post-mvp-stage.md）。
 
 完整规则见 [AGENTS.md](AGENTS.md)（最高级 Agent 宪法，含版本号）与
 [docs/](docs/README.md)；本文件只保留每个会话都必须遵守、且无法从代码推导的
@@ -23,7 +24,9 @@
 - 不在 `main` 或保护分支上直接开发功能；先创建 `codex/<topic>` 分支。
 - 一个提交只解决一个目标；提交类型用 `feat`/`fix`/`test`/`refactor`/`docs`/`chore`/`security`。
 - 默认只修改和验证，不自动 commit、不 push，除非用户明确要求。
-- 推进多项目 roadmap 时，每完成一项就在该项的 `codex/<topic>` 分支通过验证门槛（gofmt/build/vet/test，涉及前端加 typecheck）后自动提交并合并回 `main`；只 commit 与 merge、不 push（push 需用户明确要求）、不在 main/保护分支上直接开发。这是对上一行「不自动 commit」的明确例外。
+- 自动提交与自动合并的授权规则见 [docs/engineering.md](docs/engineering.md)
+  第 6 节：授权必须来自当前任务的明确指令，本文件不构成授权。roadmap
+  批处理等需要自动提交/合并的场景，由用户在任务指令中显式授权。
 - 不硬编码密钥、客户 URL、账号和环境配置；安全校验优先于业务便利。
 
 ## 架构不变量
