@@ -11,6 +11,12 @@ if (-not $env:ALERT_SECRET_KEY) {
 # instead of whatever the host environment happens to set.
 $env:LOGIN_MAX_FAILURES = "5"
 $lockoutMaxFailures = 5
+# The stack's admin password, exported before `up` so the base compose file's
+# ":?" requirement is satisfied. It is the same value the smoke overlay sets for
+# the API, and both rest on one fact: this stack is torn down at the end of the
+# run, so the password needs no secrecy. The script asserts behaviour, not
+# credentials, so the value only has to be consistent with the overlay.
+$env:ADMIN_PASSWORD = "smoke-test-admin-password"
 $projectName = if ($env:SMOKE_PROJECT_NAME) { $env:SMOKE_PROJECT_NAME } else { "webmonitoring-smoke" }
 $compose = @(
     "--project-name", $projectName,
@@ -255,7 +261,7 @@ try {
     $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
     $login = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/auth/session" `
         -WebSession $session -ContentType "application/json" `
-        -Body '{"username":"admin","password":"change-me-before-production"}'
+        -Body "{`"username`":`"admin`",`"password`":`"$env:ADMIN_PASSWORD`"}"
     $csrf = @{ "X-CSRF-Token" = $login.csrfToken }
     $site = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/sites" `
         -WebSession $session -Headers $csrf -ContentType "application/json" `
@@ -334,7 +340,7 @@ try {
     $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
     $relogin = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/auth/session" `
         -WebSession $session -ContentType "application/json" `
-        -Body '{"username":"admin","password":"change-me-before-production"}'
+        -Body "{`"username`":`"admin`",`"password`":`"$env:ADMIN_PASSWORD`"}"
     # The CSRF token belongs to the session, so the post-restart login needs its
     # own token before any further write request.
     $csrf = @{ "X-CSRF-Token" = $relogin.csrfToken }
@@ -497,8 +503,9 @@ try {
         throw "authenticated browser check saw '$authenticatedTitle', expected the protected page"
     }
 
+    # No ADMIN_PASSWORD export here: it is set before `up` above, because the base
+    # compose file now requires it to build the api service's environment.
     $env:CONSOLE_BASE_URL = "http://localhost:18088"
-    $env:ADMIN_PASSWORD = "change-me-before-production"
     & pnpm --filter @webmonitoring/console e2e
     if ($LASTEXITCODE -ne 0) {
         throw "console E2E failed"

@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -314,8 +315,20 @@ func buildRepository(ctx context.Context, logger *slog.Logger) (store.Repository
 
 func seedAdmin(repository store.Repository) {
 	username := env("ADMIN_USERNAME", "admin")
-	password := env("ADMIN_PASSWORD", "change-me-before-production")
+	// No compiled-in fallback: the development default lives in
+	// deployments/compose/.env.default so the binary carries no password, and a
+	// deployment changes it by editing that file or setting ADMIN_PASSWORD.
+	password := strings.TrimSpace(os.Getenv("ADMIN_PASSWORD"))
+	if password == "" {
+		password = config.DefaultAdminPassword(os.Getenv)
+	}
+	if password == "" {
+		log.Fatal("ADMIN_PASSWORD is not set and no default password file was found; " +
+			"set ADMIN_PASSWORD, or provide deployments/compose/.env.default")
+	}
 	if _, err := repository.FindUserByUsername(defaultTenant, username); err == nil {
+		// Already seeded. Returning here is what keeps a restart from resetting
+		// a password the operator has since changed.
 		return
 	} else if !errors.Is(err, store.ErrNotFound) {
 		log.Fatal(err)
