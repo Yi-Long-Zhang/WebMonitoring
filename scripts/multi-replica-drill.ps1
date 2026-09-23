@@ -68,7 +68,13 @@ $confPath = Join-Path $drillRoot "target-nginx.conf"
 $entryConfPath = Join-Path $drillRoot "api-entry-nginx.conf"
 $overlayPath = Join-Path $drillRoot "docker-compose.mrdrill.yml"
 $apiBase = "http://localhost:18082"
-$adminPassword = "change-me-before-production"
+# The stack's admin password. The base compose file requires ADMIN_PASSWORD to be
+# set (":?"), so it is exported before `up` and pinned to a known value here; the
+# overlay forwards it to the api service and the script logs in with it. The stack
+# is torn down at the end of the run, so the value needs no secrecy -- it only has
+# to be consistent, and it is deliberately not the repository's published default.
+$env:ADMIN_PASSWORD = "mrdrill-admin-password"
+$adminPassword = $env:ADMIN_PASSWORD
 $runID = [guid]::NewGuid().ToString("N").Substring(0, 8)
 $slugPrefix = "mrdrill-$runID"
 
@@ -240,6 +246,10 @@ $aliases
     ports: !reset []
     environment:
       ALLOW_PRIVATE_TARGETS: "true"
+      # 基础 compose 文件现在要求 ADMIN_PASSWORD 必须给值（":?"），因此在 up
+      # 之前就从脚本导出；本栈运行结束即拆除，口令无需保密，只要前后一致，
+      # 且刻意不等于仓库公开的开发默认口令。
+      ADMIN_PASSWORD: "$env:ADMIN_PASSWORD"
 
   http-worker:
     environment:

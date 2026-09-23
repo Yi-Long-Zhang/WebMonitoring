@@ -12,6 +12,22 @@
 Worker Token 和 `ALERT_SECRET_KEY`。生产环境必须启用 HTTPS 并将 `SESSION_SECURE`
 设置为 `true`。
 
+**Q：管理员密码从哪来？装完之后怎么改？**
+
+开发默认口令住在 `deployments/compose/.env.default`，这是它在仓库里的**唯一**
+存放点；源码、compose 清单和脚本都不再自带这个口令。未设 `ADMIN_PASSWORD` 时
+API 回落到该文件，因此开箱即用的栈仍能登录；想换默认值就改这一个文件，或用
+`ADMIN_PASSWORD_FILE` 指向仓库外的自己的文件。
+
+种子账号是 `default` 租户下的 `admin`（平台超管）。它**不会**被任何管理员重置
+——`POST /api/v1/users/{id}/password` 对平台账号拒绝，这是有意的租户隔离。改它
+的口令走**顶栏用户菜单 →「修改密码」**（`POST /api/v1/auth/password`，自助、
+需输当前口令）。首次部署收尾时应当立刻改掉默认口令，改完新口令立即生效，且
+重启不会把它重置回默认值（账号已存在时播种逻辑直接返回）。
+
+`APP_ENV=production` 下：既拒绝使用这个公开默认口令，也拒绝不设 `ADMIN_PASSWORD`
+就启动。
+
 **Q：怎么启动或升级？**
 
 ```powershell

@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { chromium } from "playwright";
 
 const baseURL = process.env.CONSOLE_BASE_URL || "http://localhost:18088";
-const password = process.env.ADMIN_PASSWORD || "change-me-before-production";
+// No fallback: the repository's development default is no longer a constant in
+// any script, and guessing it here would report a login timeout when the real
+// fault is that the caller never exported the stack's password.
+const password = process.env.ADMIN_PASSWORD;
+if (!password) {
+  throw new Error("ADMIN_PASSWORD is not set; export the stack's administrator password before running the console E2E walk");
+}
 const browser = await chromium.launch({ headless: true });
 
 try {

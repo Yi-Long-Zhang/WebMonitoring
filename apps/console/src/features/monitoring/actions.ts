@@ -4,6 +4,7 @@ import {
   addIncidentComment,
   approveBaseline,
   cancelJob,
+  changeOwnPassword as changeOwnPasswordRequest,
   createAlertChannel,
   createAsset,
   createSite,
@@ -260,6 +261,14 @@ export function useMonitoringActions() {
     ElMessage.success(`已重置 ${user.username} 的密码`);
   }
 
+  // Self-service, so it works for an account no administrator may reset -- the
+  // seeded SUPER_ADMIN is rejected by the reset endpoint on purpose, and this is
+  // the only channel that can change that password.
+  async function changeOwnPassword(currentPassword: string, newPassword: string) {
+    await changeOwnPasswordRequest(currentPassword, newPassword);
+    ElMessage.success("密码已修改，请牢记新密码");
+  }
+
   return {
     createNewAsset,
     verifyAssetOwnership,
@@ -285,5 +294,6 @@ export function useMonitoringActions() {
     createNewUser,
     saveUser,
     resetUserPassword,
+    changeOwnPassword,
   };
 }

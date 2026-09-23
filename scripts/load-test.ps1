@@ -65,7 +65,13 @@ $targetRoot = Join-Path $loadRoot "target"
 $confPath = Join-Path $loadRoot "loadtest-nginx.conf"
 $overlayPath = Join-Path $loadRoot "docker-compose.loadtest.yml"
 $apiBase = "http://localhost:18081"
-$adminPassword = "change-me-before-production"
+# The stack's admin password. The base compose file requires ADMIN_PASSWORD to be
+# set (":?"), so it is exported before `up` and pinned to a known value here; the
+# script logs in with the same variable. The stack is torn down at the end of the
+# run, so the value needs no secrecy -- it only has to be consistent, and it is
+# deliberately not the repository's published development default.
+$env:ADMIN_PASSWORD = "loadtest-admin-password"
+$adminPassword = $env:ADMIN_PASSWORD
 # Tenant slugs must be unique even when a previous run left data behind.
 $runID = [guid]::NewGuid().ToString("N").Substring(0, 8)
 

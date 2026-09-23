@@ -158,7 +158,7 @@ services:
       HTTP_ADDR: ":8080"
       DATA_DIR: /data
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-before-production}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD, or copy deployments/compose/.env.default into .env}
       LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-5}
       LOGIN_LOCKOUT_MINUTES: ${LOGIN_LOCKOUT_MINUTES:-15}
       SESSION_SECURE: ${SESSION_SECURE:-false}

@@ -21,7 +21,6 @@ func PositiveInt(get func(string) string, name string, fallback int) int {
 
 const (
 	EnvironmentProduction        = "production"
-	defaultAdminPassword         = "change-me-before-production"
 	defaultDatabasePass          = "webmonitoring"
 	defaultObjectSecret          = "replace-with-a-random-secret"
 	defaultRedisPassword         = "webmonitoring"
@@ -44,8 +43,13 @@ func ValidateProductionAPI(get func(string) string) error {
 		"S3_SECRET_KEY", "BROWSER_WORKER_URL", "BROWSER_WORKER_TOKEN",
 		"ADMIN_PASSWORD",
 	)...)
-	if get("ADMIN_PASSWORD") == defaultAdminPassword {
-		failures = append(failures, errors.New("ADMIN_PASSWORD must be changed in production"))
+	// The published default lives in deployments/compose/.env.default, not in
+	// this package: the point of the check is to reject a deployment that kept
+	// the development password, and embedding it here would put it back in the
+	// source. Skipped when no default file is present -- validateRequired above
+	// already guarantees ADMIN_PASSWORD was supplied at all.
+	if fallback := DefaultAdminPassword(get); fallback != "" && get("ADMIN_PASSWORD") == fallback {
+		failures = append(failures, errors.New("ADMIN_PASSWORD must not be the published development default"))
 	}
 	// ADMIN_PASSWORD is checked here rather than in validateCommon, which the
 	// worker also calls: the worker never reads it, and the compose worker

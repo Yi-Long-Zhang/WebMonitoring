@@ -355,6 +355,12 @@ async function submitPasswordReset() {
   } catch (error) { reportError(error, "重置密码失败"); }
 }
 
+async function submitOwnPasswordChange(currentPassword: string, newPassword: string) {
+  try {
+    await actions.changeOwnPassword(currentPassword, newPassword);
+  } catch (error) { reportError(error, "修改密码失败"); }
+}
+
 onMounted(async () => {
   if (!session.isAuthenticated && !(await session.restore())) { await router.replace("/login"); return; }
   await refresh();
@@ -377,7 +383,7 @@ onUnmounted(() => eventStream?.close());
   <div v-if="session.user" class="app-shell">
     <Sidebar :active-view="activeView" :username="session.user.username" :role="session.user.role" :role-label="roleLabel" :candidate-count="data.baselines.filter((item) => item.status === 'CANDIDATE').length" :open-incident-count="data.dashboard?.openIncidents || 0" @navigate="navigate" @sign-out="signOut" />
     <main class="main-content">
-      <Topbar :title="viewTitle" :loading="data.loading" @refresh="refresh" />
+      <Topbar :title="viewTitle" :loading="data.loading" :username="session.user.username" :role-label="roleLabel" @refresh="refresh" @change-password="submitOwnPasswordChange" />
       <OverviewPage v-if="activeView === 'overview'" :dashboard="data.dashboard" :report-summary="data.reportSummary" :assets="data.assets" :incidents="data.incidents" :asset-map="assetMap" @navigate="navigate" />
       <AssetsPage v-else-if="activeView === 'assets'" :assets="data.assets" :policies="data.policies" :can-operate="session.canOperate" :can-admin="session.canAdmin" :has-more="data.hasMore('assets')" :loading-more="data.isLoadingMore('assets')" @load-more="data.loadMore('assets')" @create="showAssetDialog = true" @verify="verify" @toggle="toggle" @detect="detect" @policy="editPolicy" @import="showImportDialog = true" @export="exportAssetList" />
       <SitesPage v-else-if="activeView === 'sites'" :sites="data.sites" :can-admin="session.canAdmin" :has-more="data.hasMore('sites')" :loading-more="data.isLoadingMore('sites')" @load-more="data.loadMore('sites')" @create="openSiteCreate" @edit="openSiteEdit" @remove="removeSite" />

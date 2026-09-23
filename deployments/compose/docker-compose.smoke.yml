@@ -42,6 +42,12 @@ services:
       - "18080:8080"
     environment:
       ALLOW_PRIVATE_TARGETS: "true"
+      # Set here rather than left to the base file, which now requires the
+      # variable outright (":?") because the script exports it only later, for the
+      # console walk. The smoke stack is torn down at the end of the run, so the
+      # value needs no secrecy; it is deliberately not the repository's published
+      # development default, which the production gate refuses.
+      ADMIN_PASSWORD: "smoke-test-admin-password"
       # The smoke drives the whole API from one tenant in a couple of minutes:
       # it registers assets, queues and cancels jobs, and runs the console walk.
       # That is far past the production quotas (600/120/12 per minute), and the

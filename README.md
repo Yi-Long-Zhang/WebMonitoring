@@ -85,7 +85,13 @@ corepack pnpm dev:console
 ```
 
 控制台在 `http://localhost:5173`，Vite 把 `/api` 代理到 `http://localhost:8080`。
-默认本地账号 `admin` / `change-me-before-production`，**只允许用于开发**。
+默认本地账号 `admin`，口令取自 `deployments/compose/.env.default`
+（**只允许用于开发**）。改这个默认口令 = 改那一个文件；未设 `ADMIN_PASSWORD`
+时 API 回落到它，设了 `ADMIN_PASSWORD`（或 `ADMIN_PASSWORD_FILE`）则以环境
+为准。`APP_ENV=production` 时既不允许用这个默认口令，也不允许不设口令就启动。
+
+登录后可用顶栏用户菜单的「修改密码」自助改密——播种出来的平台超管不会被任何
+管理员重置，自助入口是它唯一能改口令的通道。
 
 ### 完整 Compose 模式
 
@@ -123,7 +129,7 @@ docker compose -f deployments/compose/docker-compose.yml up --build
 | `SESSION_SECURE` | 是否只通过 HTTPS 发送会话 Cookie |
 | `JOB_LEASE_SECONDS` | 检测任务领取租约，默认 600；不得低于 270（见下方说明） |
 | `APP_ENV` | 设为 `production` 时启动前校验生产门禁 |
-| `ADMIN_USERNAME`、`ADMIN_PASSWORD` | 首次启动播种的平台管理员；密码至少 12 字节 |
+| `ADMIN_USERNAME`、`ADMIN_PASSWORD` | 首次启动播种的平台管理员；密码至少 12 字节。`ADMIN_PASSWORD` 留空时回落到 `deployments/compose/.env.default`，另可用 `ADMIN_PASSWORD_FILE` 指向自定义文件 |
 | `POSTGRES_SSLMODE` | 写入 `POSTGRES_DSN` 的 `sslmode`；生产不得为 `disable` |
 | `HTTP_ADDR` | API 监听地址（http-worker 用 `WORKER_HTTP_ADDR`） |
 | `DATA_DIR` | 未配 S3 时本地证据目录 |

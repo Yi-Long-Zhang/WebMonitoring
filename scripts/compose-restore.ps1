@@ -135,7 +135,14 @@ function Test-RestoredEvidence($Manifest, [string]$Bucket, [string]$Root) {
 
 function Test-RestoredTaskState([string]$ApiBase) {
     $username = if ($env:ADMIN_USERNAME) { $env:ADMIN_USERNAME } else { "admin" }
-    $password = if ($env:ADMIN_PASSWORD) { $env:ADMIN_PASSWORD } else { "change-me-before-production" }
+    # No fallback password: the repository's development default is no longer
+    # compiled in anywhere, and a restore is frequently run against a stack whose
+    # admin password was rotated. Guessing would turn a missing variable into a
+    # confusing 401 "invalid credentials" instead of naming what is unset.
+    if (-not $env:ADMIN_PASSWORD) {
+        throw "ADMIN_PASSWORD is not set; export the restored stack's administrator password before verifying its task state"
+    }
+    $password = $env:ADMIN_PASSWORD
     $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
     $loginBody = @{ username = $username; password = $password } | ConvertTo-Json -Compress
     Invoke-RestMethod -Method Post -Uri "$ApiBase/api/v1/auth/session" `
