@@ -10,6 +10,21 @@
 
 ---
 
+## 合并后主链路回归（smoke）— 2026-09-26
+
+- **脚本**：`scripts/compose-smoke.ps1`（`-ExecutionPolicy Bypass`；策略探测本身
+  在本机不可用，故直接绕过）
+- **关键断言**：脚本 `$ErrorActionPreference = "Stop"` 且全程 `throw` 即中止，
+  因此「通过」等于全部断言为真：登录锁定（`ACCOUNT_LOCKED`）、keyset 分页、
+  资产暂停后的 `JOB_REJECTED`、任务取消、浏览器登录态的正负控
+  （无 `AuthConfig` 见登录页 / 有则见受保护页）、控制台 Playwright E2E。
+- **结果**：`Compose smoke test passed`，退出码 0，容器与网络全部正常回收。
+  本次是 `codex/fix-error-leak` 与 `codex/pool-timeouts` 合并进 `main`
+  （`c136530`、`7f0d7df`）后的回归，覆盖前面那条「未跑 `compose-smoke`」的缺口。
+- **未覆盖**：仍未做计划里 `pg_sleep(120)` 的慢查询用例（池的建连/查询边界）；
+  S3 超时仍未对真实 MinIO 造过中途停住的对象。
+- **专项档案**：无。
+
 ## 连接池与配置转发实测 — 2026-09-26
 
 - **脚本**：无（手工实测；`docker compose config --format json` + 真实 Compose 栈
