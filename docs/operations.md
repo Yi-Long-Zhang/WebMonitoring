@@ -452,6 +452,16 @@ pnpm 版本。
 不会因此静默放过**：取值非法（非整数、`0`、负数、`MIN_CONNS` 大于 `MAX_CONNS`）
 会让进程**启动失败并点名变量**，而不是悄悄用一个你以为设过了的值。
 
+这六个变量在 `deployments/compose/docker-compose.yml` 里由 `x-postgres-pool-env`
+锚点**按原样转发**给 `api`、`http-worker` 和 `rewrap`（`migrate` 用它自建的
+一次性池，有意不转发）。清单不写默认值，也不写空值以外的任何字面量：你在
+`deployments/compose/.env` 里写了什么就传什么，没写就是未设置——`${VAR:-}`
+传空串，而代码把空串当未设置。**因此这几个键只能写在 `deployments/compose/.env`
+（或 shell 环境里），写别处不会生效**；同一锚点也覆盖队列重试与告警限流/熔断的
+八个键（`QUEUE_*`、`ALERT_QUEUE_*`、`ALERT_GATE_WINDOW_SECONDS`、
+`ALERT_MAX_PER_CHANNEL_PER_WINDOW`、`ALERT_FAILURE_THRESHOLD`、
+`ALERT_CIRCUIT_COOLDOWN_SECONDS`），它们同样只由 `api` 与 `http-worker` 读取。
+
 配完可以用 `/metrics` 核对是否生效：
 
 ```powershell
