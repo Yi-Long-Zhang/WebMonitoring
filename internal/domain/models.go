@@ -296,8 +296,8 @@ type Incident struct {
 type IncidentEventType string
 
 const (
-	IncidentEventCreated       IncidentEventType = "CREATED"
-	IncidentEventRecurred      IncidentEventType = "RECURRED"
+	IncidentEventCreated  IncidentEventType = "CREATED"
+	IncidentEventRecurred IncidentEventType = "RECURRED"
 	// IncidentEventReopened is a recurrence that landed on an incident an
 	// operator had already closed or dismissed as a false positive. It is kept
 	// apart from RECURRED because the two mean different things to the person
