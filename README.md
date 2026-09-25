@@ -148,6 +148,7 @@ docker compose -f deployments/compose/docker-compose.yml up --build
 | `APP_ENV` | 设为 `production` 时启动前校验生产门禁 |
 | `ADMIN_USERNAME`、`ADMIN_PASSWORD` | 首次启动播种的平台管理员；密码至少 12 字节。`ADMIN_PASSWORD` 留空时回落到 `deployments/compose/.env.default`，另可用 `ADMIN_PASSWORD_FILE` 指向自定义文件 |
 | `POSTGRES_SSLMODE` | 写入 `POSTGRES_DSN` 的 `sslmode`；生产不得为 `disable` |
+| `POSTGRES_MAX_CONNS` 等池参数 | 单副本连接池上限/下限/存活/空闲/健康检查/建连超时，默认 10 / 1 / 3600 / 900 / 60 / 10（秒）；生产拒绝 `0`、负数、超过 1000 与 `MIN_CONNS > MAX_CONNS`（见 `docs/operations.md`） |
 | `HTTP_ADDR` | API 监听地址（http-worker 用 `WORKER_HTTP_ADDR`） |
 | `DATA_DIR` | 未配 S3 时本地证据目录 |
 | `WORKER_TOKEN` / `WORKER_ID` | worker 向控制面认证的凭据，以及消费者身份（未设时按 hostname 生成） |
@@ -176,6 +177,11 @@ docker compose -f deployments/compose/docker-compose.yml up --build
 控制在出事那天之前无法区分）。读/写/重操作三项还各有上限（100000 / 20000 / 2000），
 超过即视为「等同于无限制」而拒绝。告警投递的两项只拒绝 0，不设上限——繁忙的安装
 可能需要很大的额度。
+
+连接池的上限同理：`POSTGRES_MAX_CONNS=0` 的含义是「用 pgxpool 自己的默认值」，
+不是你要求的那个限制，因此也被拒绝；上限 1000 则是为了避免「大到永远碰不到」的
+假限制。解析不了的取值只会退回默认值，但生产环境会因非法取值**直接拒绝启动**，
+不会静默用一个你以为设过了的值。
 
 **Q：`JOB_LEASE_SECONDS` 为什么不能随手调低？**
 

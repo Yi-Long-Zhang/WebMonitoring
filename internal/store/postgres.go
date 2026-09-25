@@ -23,12 +23,24 @@ type PostgresRepository struct {
 	secrets  security.SecretBox
 }
 
-func NewPostgresRepository(ctx context.Context, dsn, alertSecretKey string) (*PostgresRepository, error) {
+func NewPostgresRepository(ctx context.Context, dsn, alertSecretKey string, poolConfig PoolConfig) (*PostgresRepository, error) {
 	secrets, err := security.NewKeyring(alertSecretKey)
 	if err != nil {
 		return nil, err
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	parsed, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("configure postgres: %w", err)
+	}
+	// A DSN can carry its own pool_size and connect_timeout. The explicit
+	// configuration wins, because it is the one the production gate validated.
+	parsed.MaxConns = poolConfig.MaxConns
+	parsed.MinConns = poolConfig.MinConns
+	parsed.MaxConnLifetime = poolConfig.MaxConnLifetime
+	parsed.MaxConnIdleTime = poolConfig.MaxConnIdleTime
+	parsed.HealthCheckPeriod = poolConfig.HealthCheckPeriod
+	parsed.ConnConfig.ConnectTimeout = poolConfig.ConnectTimeout
+	pool, err := pgxpool.NewWithConfig(ctx, parsed)
 	if err != nil {
 		return nil, fmt.Errorf("configure postgres: %w", err)
 	}
@@ -41,6 +53,13 @@ func NewPostgresRepository(ctx context.Context, dsn, alertSecretKey string) (*Po
 
 func (p *PostgresRepository) Close() {
 	p.pool.Close()
+}
+
+// PoolStats reports the live pool counters for the metrics endpoint. It is read
+// per scrape, so the numbers describe the pool now rather than a sample taken by
+// a background ticker.
+func (p *PostgresRepository) PoolStats() *pgxpool.Stat {
+	return p.pool.Stat()
 }
 
 func (p *PostgresRepository) Ready(ctx context.Context) error {

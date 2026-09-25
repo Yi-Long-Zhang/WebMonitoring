@@ -24,7 +24,7 @@ func newMigratedPostgresRepository(t *testing.T, dsn string) *PostgresRepository
 	if err := runner.Up(ctx); err != nil {
 		t.Fatal(err)
 	}
-	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey)
+	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey, DefaultPoolConfig())
 	if err != nil {
 		t.Fatalf("PostgreSQL repository unavailable: %v", err)
 	}

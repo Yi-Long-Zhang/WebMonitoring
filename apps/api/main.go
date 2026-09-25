@@ -24,6 +24,7 @@ import (
 	"webmonitoring/internal/evidence"
 	"webmonitoring/internal/identity"
 	"webmonitoring/internal/jobqueue"
+	"webmonitoring/internal/metrics"
 	"webmonitoring/internal/notify"
 	"webmonitoring/internal/notifygate"
 	"webmonitoring/internal/ratelimit"
@@ -200,6 +201,19 @@ func main() {
 	if alertQueue != nil {
 		alertQueue.SetMetrics(server.Metrics())
 	}
+	// The pool counters are read per scrape rather than sampled on a ticker: the
+	// number that matters is how full the pool is when someone asks, and a
+	// sampler would report the pool as it was at the last tick.
+	if postgres, ok := repository.(*store.PostgresRepository); ok {
+		server.Metrics().OnCollect(func(registry *metrics.Registry) {
+			stats := postgres.PoolStats()
+			registry.Set("webmonitoring_postgres_pool_connections", float64(stats.TotalConns()), map[string]string{"state": "total"})
+			registry.Set("webmonitoring_postgres_pool_connections", float64(stats.AcquiredConns()), map[string]string{"state": "acquired"})
+			registry.Set("webmonitoring_postgres_pool_connections", float64(stats.IdleConns()), map[string]string{"state": "idle"})
+			registry.Set("webmonitoring_postgres_pool_connections", float64(stats.ConstructingConns()), map[string]string{"state": "constructing"})
+			registry.Set("webmonitoring_postgres_pool_max_connections", float64(stats.MaxConns()), nil)
+		})
+	}
 	server.SetReadiness(func(checkContext context.Context) map[string]error {
 		failures := make(map[string]error)
 		if checker, ok := repository.(interface{ Ready(context.Context) error }); ok {
@@ -304,7 +318,7 @@ func buildRepository(ctx context.Context, logger *slog.Logger) (store.Repository
 		logger.Warn("using in-memory repository; data will be lost on restart")
 		return store.NewMemoryRepository(), func() {}
 	}
-	repository, err := store.NewPostgresRepository(ctx, dsn, config.SecretKeyMaterial(os.Getenv))
+	repository, err := store.NewPostgresRepository(ctx, dsn, config.SecretKeyMaterial(os.Getenv), store.PoolConfigFromEnv(os.Getenv))
 	if err != nil {
 		log.Fatal(err)
 	}

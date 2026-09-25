@@ -49,7 +49,7 @@ func main() {
 		}
 	}()
 	dsn := required("POSTGRES_DSN")
-	repository, err := store.NewPostgresRepository(ctx, dsn, secretKeyMaterial())
+	repository, err := store.NewPostgresRepository(ctx, dsn, secretKeyMaterial(), store.PoolConfigFromEnv(os.Getenv))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -69,6 +69,16 @@ func main() {
 	guard := security.NewURLGuard(allowPrivate)
 	broker := events.NewBroker()
 	workerMetrics := metrics.New()
+	// Read per scrape, so the reported pool is the pool now rather than at the
+	// last tick of a sampler.
+	workerMetrics.OnCollect(func(registry *metrics.Registry) {
+		stats := repository.PoolStats()
+		registry.Set("webmonitoring_postgres_pool_connections", float64(stats.TotalConns()), map[string]string{"state": "total"})
+		registry.Set("webmonitoring_postgres_pool_connections", float64(stats.AcquiredConns()), map[string]string{"state": "acquired"})
+		registry.Set("webmonitoring_postgres_pool_connections", float64(stats.IdleConns()), map[string]string{"state": "idle"})
+		registry.Set("webmonitoring_postgres_pool_connections", float64(stats.ConstructingConns()), map[string]string{"state": "constructing"})
+		registry.Set("webmonitoring_postgres_pool_max_connections", float64(stats.MaxConns()), nil)
+	})
 	browserClient := browser.NewClient(os.Getenv("BROWSER_WORKER_URL"), os.Getenv("BROWSER_WORKER_TOKEN"), guard)
 	var browserChecker detection.BrowserChecker
 	if browserClient.Available() {

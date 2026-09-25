@@ -59,7 +59,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	repository, err := store.NewPostgresRepository(ctx, dsn, material)
+	repository, err := store.NewPostgresRepository(ctx, dsn, material, store.PoolConfigFromEnv(os.Getenv))
 	if err != nil {
 		logger.Error("connect repository", "error", err)
 		os.Exit(1)

@@ -38,7 +38,7 @@ func TestPostgresMigrationJobClaimAndRestartRecovery(t *testing.T) {
 		}
 	}
 
-	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey)
+	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey, DefaultPoolConfig())
 	if err != nil {
 		t.Fatalf("PostgreSQL repository unavailable: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestPostgresMigrationJobClaimAndRestartRecovery(t *testing.T) {
 	}
 
 	repository.Close()
-	reopened, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey)
+	reopened, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey, DefaultPoolConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey)
+	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey, DefaultPoolConfig())
 	if err != nil {
 		t.Fatalf("PostgreSQL repository unavailable: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestPostgresKeysetPaginationWalksEveryRowOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey)
+	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey, DefaultPoolConfig())
 	if err != nil {
 		t.Fatalf("PostgreSQL repository unavailable: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestAlertChannelUpdateKeepsCiphertextReadable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey)
+	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey, DefaultPoolConfig())
 	if err != nil {
 		t.Fatalf("PostgreSQL repository unavailable: %v", err)
 	}
