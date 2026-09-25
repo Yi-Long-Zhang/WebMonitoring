@@ -61,7 +61,7 @@ func TestRewrapAgainstPostgres(t *testing.T) {
 
 	// Write the rows on a v1-only repository: the state a deployment is in
 	// immediately after raising ALERT_SECRET_KEYS, and before running this tool.
-	writer, err := store.NewPostgresRepository(ctx, dsn, v1Material)
+	writer, err := store.NewPostgresRepository(ctx, dsn, v1Material, store.DefaultPoolConfig())
 	if err != nil {
 		t.Fatalf("PostgreSQL repository unavailable: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestRewrapAgainstPostgres(t *testing.T) {
 	// A v2-only repository cannot read a v1-sealed row: Keyring.Decrypt refuses a
 	// version it does not hold. Asserting the fixture is genuinely un-rotated is
 	// what stops a pass that did nothing from passing this test.
-	v2Reader, err := store.NewPostgresRepository(ctx, dsn, v2OnlyMaterial)
+	v2Reader, err := store.NewPostgresRepository(ctx, dsn, v2OnlyMaterial, store.DefaultPoolConfig())
 	if err != nil {
 		t.Fatalf("open v2-only repository: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestRewrapAgainstPostgres(t *testing.T) {
 
 	// Run the pass on the rotated keyring -- both versions configured, as they
 	// are during a rotation -- then verify with the retired key gone.
-	repository, err := store.NewPostgresRepository(ctx, dsn, rotatedMaterial)
+	repository, err := store.NewPostgresRepository(ctx, dsn, rotatedMaterial, store.DefaultPoolConfig())
 	if err != nil {
 		t.Fatalf("reopen repository: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestRewrapAgainstPostgres(t *testing.T) {
 	repository.Close()
 
 	// The point of the whole pass: the retired key is no longer needed.
-	v2Reader, err = store.NewPostgresRepository(ctx, dsn, v2OnlyMaterial)
+	v2Reader, err = store.NewPostgresRepository(ctx, dsn, v2OnlyMaterial, store.DefaultPoolConfig())
 	if err != nil {
 		t.Fatalf("reopen v2-only repository: %v", err)
 	}

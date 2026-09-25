@@ -17,6 +17,7 @@ type Registry struct {
 	counters   map[string]float64
 	gauges     map[string]float64
 	histograms map[string]*histogram
+	collectors []func(*Registry)
 }
 
 type histogram struct {
@@ -74,8 +75,30 @@ func (r *Registry) ObserveDuration(name string, duration time.Duration, labels m
 	}
 }
 
+// OnCollect registers a function that is run before each scrape, so a value that
+// is cheaper to read on demand than to keep fresh -- the connection pool's
+// counters -- is current at the moment it is reported instead of lagging behind
+// a background sampler. A collector must not block; it runs on the scrape path.
+func (r *Registry) OnCollect(collect func(*Registry)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.collectors = append(r.collectors, collect)
+}
+
+func (r *Registry) collect() {
+	r.mu.RLock()
+	collectors := make([]func(*Registry), len(r.collectors))
+	copy(collectors, r.collectors)
+	r.mu.RUnlock()
+	// Run outside the lock: a collector calls Set, which takes it.
+	for _, collect := range collectors {
+		collect(r)
+	}
+}
+
 func (r *Registry) Handler() http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		r.collect()
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		writer.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")

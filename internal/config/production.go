@@ -108,6 +108,7 @@ func validateCommon(get func(string) string) []error {
 	failures = append(failures, validateSecretKeys(get)...)
 	failures = append(failures, validateRedisCredentials(get)...)
 	failures = append(failures, validateJobLease(get)...)
+	failures = append(failures, validatePostgresPool(get)...)
 	failures = append(failures, validateRateLimits(get)...)
 	failures = append(failures, validateAlertGate(get)...)
 	failures = append(failures, validateSMTP(get)...)

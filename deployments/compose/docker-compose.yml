@@ -7,6 +7,42 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
+# Connection pool bounds. These are forwarded rather than defaulted here: the
+# numbers live in internal/store/pool.go, and repeating them in this manifest
+# would give a deployment a second, silently stale source of truth. Unset is
+# forwarded as unset, so the code default applies -- which is also what the
+# production gate expects, since it refuses a pool bound that is present and
+# unusable rather than an absent one.
+#
+# The API and the http-worker keep a pool for their lifetime and the rewrap
+# tool opens one per run, so all three read these. The migration runner builds
+# its own one-shot pool and is deliberately not covered: it exits with the run,
+# so there is no long-lived occupancy to bound.
+x-postgres-pool-env: &postgres-pool-env
+  POSTGRES_MAX_CONNS: ${POSTGRES_MAX_CONNS:-}
+  POSTGRES_MIN_CONNS: ${POSTGRES_MIN_CONNS:-}
+  POSTGRES_MAX_CONN_LIFETIME_SECONDS: ${POSTGRES_MAX_CONN_LIFETIME_SECONDS:-}
+  POSTGRES_MAX_CONN_IDLE_SECONDS: ${POSTGRES_MAX_CONN_IDLE_SECONDS:-}
+  POSTGRES_HEALTH_CHECK_SECONDS: ${POSTGRES_HEALTH_CHECK_SECONDS:-}
+  POSTGRES_CONNECT_TIMEOUT_SECONDS: ${POSTGRES_CONNECT_TIMEOUT_SECONDS:-}
+
+# Detection and alert queue retry parameters, and the per-channel alert limiter
+# and circuit breaker. The API and the http-worker both read all eight: the
+# queue knobs are applied where each service builds its consumer, and the gate
+# policy is parsed at startup. .env.example advertises them and the production
+# gate refuses a 0 for the alert controls -- but until they are forwarded here,
+# in the only deployment this repository supports, the operator's value never
+# reached the process the gate inspects.
+x-queue-alert-env: &queue-alert-env
+  QUEUE_MAX_DELIVERIES: ${QUEUE_MAX_DELIVERIES:-}
+  QUEUE_MIN_IDLE_SECONDS: ${QUEUE_MIN_IDLE_SECONDS:-}
+  ALERT_QUEUE_MAX_DELIVERIES: ${ALERT_QUEUE_MAX_DELIVERIES:-}
+  ALERT_QUEUE_MIN_IDLE_SECONDS: ${ALERT_QUEUE_MIN_IDLE_SECONDS:-}
+  ALERT_GATE_WINDOW_SECONDS: ${ALERT_GATE_WINDOW_SECONDS:-}
+  ALERT_MAX_PER_CHANNEL_PER_WINDOW: ${ALERT_MAX_PER_CHANNEL_PER_WINDOW:-}
+  ALERT_FAILURE_THRESHOLD: ${ALERT_FAILURE_THRESHOLD:-}
+  ALERT_CIRCUIT_COOLDOWN_SECONDS: ${ALERT_CIRCUIT_COOLDOWN_SECONDS:-}
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -115,6 +151,7 @@ services:
     profiles: ["tools"]
     environment:
       POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy deployments/compose/.env.example into .env}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
+      <<: *postgres-pool-env
       ALERT_SECRET_KEYS: ${ALERT_SECRET_KEYS:-}
       ALERT_SECRET_KEY: ${ALERT_SECRET_KEY:?set ALERT_SECRET_KEY to a base64-encoded 32-byte key}
     depends_on:
@@ -192,6 +229,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1}
       POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy deployments/compose/.env.example into .env}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
+      <<: [*postgres-pool-env, *queue-alert-env]
       # Set REDIS_ADDR to redis://:password@redis:6379 when REDIS_PASSWORD is set.
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
       S3_ENDPOINT: http://minio:9000
@@ -227,6 +265,7 @@ services:
       SESSION_SECURE: ${SESSION_SECURE:-false}
       ALLOW_PRIVATE_TARGETS: ${ALLOW_PRIVATE_TARGETS:-false}
       POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy deployments/compose/.env.example into .env}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
+      <<: [*postgres-pool-env, *queue-alert-env]
       # Set REDIS_ADDR to redis://:password@redis:6379 when REDIS_PASSWORD is set.
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
       S3_ENDPOINT: http://minio:9000

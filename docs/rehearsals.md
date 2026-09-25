@@ -10,6 +10,45 @@
 
 ---
 
+## 连接池与配置转发实测 — 2026-09-26
+
+- **脚本**：无（手工实测；`docker compose config --format json` + 真实 Compose 栈
+  上的一次性 `webmonitoring-verify`，用完即 `down -v` 拆除）
+- **关键断言**：
+  - 池上限对真实连接生效：给 40 路并发 `/readyz` 打压力时，用
+    `pg_stat_activity` 采样应用侧连接数，上限 2 的那次峰值恰好为 2，上限 10 的
+    对照那次峰值为 3（本轮压力只需 3 条，上限 10 不构成约束）。
+  - 连接池是逐副本的：两个副本各自 `POSTGRES_MAX_CONNS=2`，`pg_stat_activity`
+    里出现 4 条应用连接，即 2×2 —— 与「扩容副本要同步下调单副本上限」这条
+    运维要求一致。
+  - 生产门禁在容器内生效（`APP_ENV=production`）：`POSTGRES_MAX_CONNS=0`
+    与 `ALERT_FAILURE_THRESHOLD=0` 都让进程以退出码 1 失败，且分别点名该变量。
+  - `.env` 里声明的键真的进到服务：改动前三个服务的 environment 里这些键是
+    `<absent>`，改动后 `rewrap` 拿到池上限，`api`/`http-worker` 拿到池上限与
+    全部 8 个队列/告警键。
+- **结果**：
+  - 池上限：`POSTGRES_MAX_CONNS=2` → `/metrics`
+    `webmonitoring_postgres_pool_max_connections 2`，采样峰值 2；对照 10 → 峰值 3。
+  - 逐副本：2 副本 × 2 = 4 条应用连接。
+  - 门禁 A：`invalid production configuration: … POSTGRES_MAX_CONNS must be
+    positive in production: 0 leaves the pool on its own default instead of the
+    limit you asked for`（退出码 1；同一次还报了 S3_ACCESS_KEY 与 sslmode，
+    说明门禁把本条与既有的几条一起判了）。
+  - 门禁 B：`ALERT_FAILURE_THRESHOLD must be positive in production: 0 disables
+    that notification control`（退出码 1）——这正是 `.env.example` 上写的那句
+    承诺，改动前那个 0 根本进不了容器（`validateAlertGate` 对空值 `continue`，
+    而容器的 `os.Getenv` 只会返回空）。
+  - 转发前后（`docker compose config`，shell 里给 `POSTGRES_MAX_CONNS=42`、
+    `ALERT_FAILURE_THRESHOLD=9`）：改动前 `rewrap`/`api`/`http-worker` 三项
+    都是 `<absent>`；改动后 `rewrap` 得 `42`，`api`/`http-worker` 得 `42` 与
+    `9`，`migrate` 两项都不出现（它用自建的一次性池，有意不转发）。
+- **未覆盖（不得当作已验）**：`compose-smoke.ps1` 本轮未跑；计划里那条
+  `pg_sleep(120)` 慢查询用例未执行（本轮只证了池上限与逐副本，未证
+  `POSTGRES_CONNECT_TIMEOUT_SECONDS` 对卡死查询的边界）；S3 超时只在单测里用
+  「接受连接但永不回响应头」的 httptest 服务证过，未对真实 MinIO 造过中途停住的
+  对象。
+- **专项档案**：无（本条为手工实测记录）。
+
 ## 多副本（HA）演练 — 2026-09-20
 
 - **脚本**：`scripts/multi-replica-drill.ps1`（`--scale api=2 --scale http-worker=3`）

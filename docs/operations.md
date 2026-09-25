@@ -398,7 +398,7 @@ pnpm 版本。
 
 - `GET /healthz`：进程是否存活。
 - `GET /readyz`：PostgreSQL、Redis、MinIO 和 Browser Worker 是否就绪。
-- `GET /metrics`：请求、任务、告警和事件指标。
+- `GET /metrics`：请求、任务、告警、事件和数据库连接池指标。
 - Redis detection/alert Stream 的 pending 和 dead-letter 状态。
 
 完整的只读诊断命令（curl/docker compose 示例）单源在
@@ -430,6 +430,74 @@ pnpm 版本。
 冒烟脚本（`compose-smoke.ps1`）在几分钟内从一个租户跑完整个流程，远超生产配额，
 因此在 smoke overlay 里把三类都抬高——配额约束的是真实租户的爆炸半径，对一次性
 的临时栈没有意义。
+
+**Q：数据库连接池怎么配？**
+
+每个 API/Worker 副本各自开一个连接池，默认上限 **10** 条。这个数字是有意压低的：
+一台 PostgreSQL 的 `max_connections` 默认是 100，而一个安装同时跑若干 API 副本和
+若干 worker 副本，额度要在它们之间**分摊**，而不是每个副本都去独占一份。池子上限
+是唯一能阻止单个副本吃满服务端连接数的东西，也是让一条卡住的查询只占一个槽位、
+而不是拖垮整个进程的东西。
+
+| 变量 | 默认 | 含义 |
+| --- | --- | --- |
+| `POSTGRES_MAX_CONNS` | 10 | 单副本连接上限；生产拒绝 `0`（0 是「用 pgxpool 自己的默认值」，不是你要求的那个限制）与超过 1000 的值 |
+| `POSTGRES_MIN_CONNS` | 1 | 保有的空闲连接下限；不得大于 `MAX_CONNS`（pgxpool 只会静默钳制） |
+| `POSTGRES_MAX_CONN_LIFETIME_SECONDS` | 3600 | 连接最长存活时间，到期后被替换 |
+| `POSTGRES_MAX_CONN_IDLE_SECONDS` | 900 | 空闲多久后被回收 |
+| `POSTGRES_HEALTH_CHECK_SECONDS` | 60 | 后台健康检查周期 |
+| `POSTGRES_CONNECT_TIMEOUT_SECONDS` | 10 | 单次建连超时 |
+
+全部为可选；不设置时用上表默认值，解析不了的取值也会退回默认值——但**生产环境
+不会因此静默放过**：取值非法（非整数、`0`、负数、`MIN_CONNS` 大于 `MAX_CONNS`）
+会让进程**启动失败并点名变量**，而不是悄悄用一个你以为设过了的值。
+
+这六个变量在 `deployments/compose/docker-compose.yml` 里由 `x-postgres-pool-env`
+锚点**按原样转发**给 `api`、`http-worker` 和 `rewrap`（`migrate` 用它自建的
+一次性池，有意不转发）。清单不写默认值，也不写空值以外的任何字面量：你在
+`deployments/compose/.env` 里写了什么就传什么，没写就是未设置——`${VAR:-}`
+传空串，而代码把空串当未设置。**因此这几个键只能写在 `deployments/compose/.env`
+（或 shell 环境里），写别处不会生效**；同一锚点也覆盖队列重试与告警限流/熔断的
+八个键（`QUEUE_*`、`ALERT_QUEUE_*`、`ALERT_GATE_WINDOW_SECONDS`、
+`ALERT_MAX_PER_CHANNEL_PER_WINDOW`、`ALERT_FAILURE_THRESHOLD`、
+`ALERT_CIRCUIT_COOLDOWN_SECONDS`），它们同样只由 `api` 与 `http-worker` 读取。
+
+配完可以用 `/metrics` 核对是否生效：
+
+```powershell
+Invoke-RestMethod http://localhost:8080/metrics | Select-String postgres_pool
+# webmonitoring_postgres_pool_max_connections 10
+# webmonitoring_postgres_pool_connections{state="total"} 3
+# webmonitoring_postgres_pool_connections{state="acquired"} 1
+# webmonitoring_postgres_pool_connections{state="idle"} 2
+```
+
+这几个数字是**每次抓取时现读**的（不是后台定时采样），所以 `acquired` 就是抓取
+那一刻真实的占用。想确认服务端侧的总额度，直接问数据库：
+
+```powershell
+docker compose -f deployments/compose/docker-compose.yml exec -T postgres `
+  psql -U webmonitoring -d webmonitoring -c "select count(*) from pg_stat_activity where datname='webmonitoring'"
+```
+
+扩容副本时要同步降低单副本上限（或抬高服务端的 `max_connections`），否则副本数
+乘上 `POSTGRES_MAX_CONNS` 会超过服务端额度，超出部分表现为建连被拒。
+
+**Q：对象存储（MinIO/S3）没响应会拖住控制面吗？**
+
+请求会失败，但**正在传输中的对象不会被切断**——这两件事是分开的。
+
+出站请求走一个带边界的 HTTP transport（`internal/evidence/s3.go`）：建连与 TLS
+握手 10 秒、等待响应头 30 秒。所以「连不上」和「连上了但不回话」都让这次调用
+失败，而不是让处理该请求的 goroutine 一直挂着。`Put` 与 `Delete` 另带 2 分钟的
+完整操作截止时间（正文已在内存里，超时不会丢数据）。
+
+**下载刻意不设整体超时**：`Open` 的契约是返回一个流，它的存活时间属于调用方，
+给整个请求设一个截止时间会把大对象截断，而不是把它限制住。因此一个已经开始
+传输、却在中途停住的对象存储**仍会占住那个请求**——这是已知缺口，闭合它需要把
+调用方的 ctx 穿到 `evidence.Store`（与查询路径的 ctx 改造同批做）。
+
+这些边界不可配置、没有环境变量：它们是防止挂起的边界，不是按部署调优的容量参数。
 
 ---
 
