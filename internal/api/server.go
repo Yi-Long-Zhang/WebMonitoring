@@ -817,7 +817,14 @@ func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) 
 	asset.VerificationTokenHash = ""
 	asset.VerificationExpiresAt = nil
 	asset.UpdatedAt = time.Now().UTC()
-	_ = s.repository.UpdateAsset(asset)
+	if err := s.repository.UpdateAsset(asset); err != nil {
+		// The token was found, but the verified state did not persist. Reporting
+		// success here would leave the client believing an asset is verified that
+		// reverts to its previous state on restart.
+		s.appendAudit(request, session.User, "asset.verification.verify", "asset", asset.ID, "FAILED", nil)
+		s.repositoryFailure(writer, request, "persist verified asset", err)
+		return
+	}
 	s.appendAudit(request, session.User, "asset.verification.verify", "asset", asset.ID, "SUCCESS", nil)
 	writeJSON(writer, http.StatusOK, asset)
 }
@@ -1553,7 +1560,11 @@ func (s *Server) changeBaselineStatus(writer http.ResponseWriter, request *http.
 		baseline.ApprovedAt = &now
 	}
 	if err := s.repository.UpdateBaseline(baseline); err != nil {
-		writeError(writer, request, http.StatusConflict, "BASELINE_UPDATE_FAILED", err.Error(), nil)
+		if errors.Is(err, store.ErrNotFound) {
+			s.notFound(writer, request)
+			return
+		}
+		s.repositoryFailure(writer, request, "update baseline", err)
 		return
 	}
 	s.appendAudit(request, session.User, "baseline."+strings.ToLower(string(status)), "baseline", baseline.ID, "SUCCESS", nil)
@@ -1580,7 +1591,23 @@ func (s *Server) createJob(writer http.ResponseWriter, request *http.Request) {
 	}
 	job, err := s.detection.Queue(session.User.TenantID, input.AssetID, input.Mode)
 	if err != nil {
-		writeError(writer, request, http.StatusConflict, "JOB_REJECTED", err.Error(), nil)
+		// Queue rejections are actionable by the caller; only genuinely internal
+		// failures fall through to a generic 500, and none of them may echo the
+		// repository error back to the client.
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			s.notFound(writer, request)
+		case errors.Is(err, store.ErrJobAlreadyActive):
+			writeError(writer, request, http.StatusConflict, "JOB_REJECTED", "该资产已有排队或运行中的检测任务", nil)
+		case errors.Is(err, detection.ErrAssetNotVerified):
+			writeError(writer, request, http.StatusConflict, "JOB_REJECTED", "资产必须先完成授权验证并启用", nil)
+		case errors.Is(err, detection.ErrNoMonitoringPolicy):
+			writeError(writer, request, http.StatusConflict, "JOB_REJECTED", "资产缺少监测策略", nil)
+		case errors.Is(err, detection.ErrInvalidMode):
+			writeError(writer, request, http.StatusBadRequest, "INVALID_DETECTION_MODE", "检测模式必须是 HTTP 或 BROWSER", nil)
+		default:
+			s.repositoryFailure(writer, request, "queue detection job", err)
+		}
 		return
 	}
 	s.appendAudit(request, session.User, "detection.run", "detection_job", job.ID, "SUCCESS", map[string]any{"assetId": input.AssetID})
@@ -2236,7 +2263,11 @@ func (s *Server) createAlertChannel(writer http.ResponseWriter, request *http.Re
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.repository.CreateAlertChannel(channel); err != nil {
-		writeError(writer, request, http.StatusConflict, "CHANNEL_EXISTS", err.Error(), nil)
+		if errors.Is(err, store.ErrConflict) {
+			writeError(writer, request, http.StatusConflict, "CHANNEL_EXISTS", "同名告警渠道已存在", nil)
+			return
+		}
+		s.repositoryFailure(writer, request, "create alert channel", err)
 		return
 	}
 	s.appendAudit(request, session.User, "alert_channel.create", "alert_channel", channel.ID, "SUCCESS", nil)
