@@ -29,6 +29,15 @@ import (
 // detectionTracer is the no-op tracer until telemetry.Setup installs a provider.
 var detectionTracer = otel.Tracer("webmonitoring/internal/detection")
 
+// Queue rejections the caller can act on, as opposed to internal failures. They
+// are sentinels so the API can answer with a precise status and a fixed message
+// instead of echoing a repository error back to the client.
+var (
+	ErrAssetNotVerified   = errors.New("asset must be enabled and verified before detection")
+	ErrNoMonitoringPolicy = errors.New("asset has no monitoring policy")
+	ErrInvalidMode        = errors.New("mode must be HTTP or BROWSER")
+)
+
 type BrowserChecker interface {
 	Check(context.Context, domain.Asset, domain.MonitorPolicy) (CheckResult, error)
 }
@@ -199,18 +208,23 @@ func (s *Service) Queue(tenantID, assetID, mode string) (domain.DetectionJob, er
 		return domain.DetectionJob{}, err
 	}
 	if !asset.Enabled || asset.VerificationStatus != domain.VerificationVerified {
-		return domain.DetectionJob{}, errors.New("asset must be enabled and verified before detection")
+		return domain.DetectionJob{}, ErrAssetNotVerified
 	}
 	policy, err := s.repository.GetPolicy(tenantID, assetID)
 	if err != nil {
-		return domain.DetectionJob{}, errors.New("asset has no monitoring policy")
+		// Only a genuinely absent policy is a rejection the caller can act on;
+		// a repository failure must stay a failure, not be reported as config.
+		if errors.Is(err, store.ErrNotFound) {
+			return domain.DetectionJob{}, ErrNoMonitoringPolicy
+		}
+		return domain.DetectionJob{}, err
 	}
 	mode = strings.ToUpper(mode)
 	if mode == "" {
 		mode = "HTTP"
 	}
 	if mode != "HTTP" && mode != "BROWSER" {
-		return domain.DetectionJob{}, errors.New("mode must be HTTP or BROWSER")
+		return domain.DetectionJob{}, ErrInvalidMode
 	}
 	job := domain.DetectionJob{
 		ID:            identity.New(),
