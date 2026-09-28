@@ -111,7 +111,12 @@ HTTP 文件令牌（FILE）、DNS TXT（DNS）和 HTML meta 标签（META）。�
 **Q：SUPER_ADMIN 能看到所有租户的数据吗？**（"我不能干什么"的一例）
 
 **不能。** super-admin 权限仅限租户 CRUD 与播种租户管理员，不做任意租户数据的
-全量可见，也不做租户硬删除。
+全量可见。租户删除也只开放给 SUPER_ADMIN，且按失败关闭设计：默认租户和当前
+登录租户不可删（删除当前租户会连带销毁记录这次删除的审计日志）；确认信息必须
+回显租户 `slug`（`CONFIRM_MISMATCH`）；租户仍有关联数据时必须显式
+`cascade=true` 才能级联删除（`409 TENANT_NOT_EMPTY`，响应附各类资源的数量）。
+删除前先写审计记录；对象存储证据删除失败不会静默吞掉，而是在响应中以
+`orphanedEvidenceObjects` 上报。
 
 ### 检测中心
 
