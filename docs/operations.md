@@ -60,6 +60,13 @@ docker compose -f deployments/compose/docker-compose.yml ps
 Invoke-WebRequest http://localhost:8080/readyz
 ```
 
+升级重建容器时，`up -d`/`stop` 发给 worker 的是 SIGTERM：http-worker 收到信号后
+停止领新任务并等待在途检测跑完（上限 `WORKER_DRAIN_TIMEOUT_SECONDS`，默认 60
+秒；compose 里 `stop_grace_period: 75s` 覆盖「最长一次检测 + 排水」），在途任务
+不会被硬杀丢失；browser-worker 走 `server.close()` 等待在途快照，超时才会强制
+退出。消费循环遇到 Redis 读错误按 500ms 起步、30s 封顶的退避重试，不再因一次
+抖动退出进程。所有服务带 `init: true`，PID 1 负责回收 chromium 等子进程。
+
 **Q：可以删掉数据卷来重置升级吗？**
 
 **不可以。** 不得通过删除 PostgreSQL 数据卷来完成升级。

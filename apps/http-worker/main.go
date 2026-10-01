@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"webmonitoring/internal/browser"
@@ -32,7 +35,10 @@ func main() {
 		healthcheck(env("HEALTHCHECK_URL", "http://127.0.0.1:8082/readyz"))
 		return
 	}
-	ctx := context.Background()
+	// SIGTERM/SIGINT stop the read loops; in-flight detection finishes because
+	// the process function below detaches from this context (WithoutCancel).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	logger := slog.New(security.NewRedactingHandler(slog.NewJSONHandler(os.Stdout, nil)))
 	if err := config.ValidateProductionWorker(os.Getenv); err != nil {
 		log.Fatalf("invalid production configuration: %v", err)
@@ -44,7 +50,7 @@ func main() {
 		shutdownTelemetry = func(context.Context) error { return nil }
 	}
 	defer func() {
-		if shutdownErr := shutdownTelemetry(ctx); shutdownErr != nil {
+		if shutdownErr := shutdownTelemetry(context.Background()); shutdownErr != nil {
 			logger.Warn("telemetry shutdown failed", "error", shutdownErr)
 		}
 	}()
@@ -238,16 +244,87 @@ func main() {
 			logger.Error("worker health server stopped", "error", err)
 		}
 	}()
-	defer healthServer.Shutdown(context.Background())
-	logger.Info("detection worker started", "consumer", consumer)
-	errs := make(chan error, 2)
-	go func() { errs <- queue.Consume(ctx, consumer, service.Process) }()
-	dispatcher.SetMetrics(workerMetrics)
-	go func() {
-		errs <- alertQueue.ConsumeAlerts(ctx, consumer+"-alerts", dispatcher.ProcessAlert)
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := healthServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("health server shutdown failed", "error", err)
+		}
 	}()
-	if err := <-errs; err != nil {
-		log.Fatal(err)
+	logger.Info("detection worker started", "consumer", consumer)
+	dispatcher.SetMetrics(workerMetrics)
+	// Each consumer runs behind a retry loop: a single Redis read error must
+	// not kill the worker (the previous log.Fatal here meant one blip exited
+	// the process and stranded every claimed-but-unacked job until the idle
+	// timeout). The loop backs off and re-enters Consume until the signal
+	// context fires. Process receives WithoutCancel(ctx) so a shutdown signal
+	// never aborts a check that is already running: the queue entry stays
+	// unacked until Process returns, and the drain below waits for exactly
+	// that.
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		consumeWithRetry(ctx, logger, "detection", func(consumeCtx context.Context) error {
+			return queue.Consume(consumeCtx, consumer, func(processCtx context.Context, job domain.DetectionJob) error {
+				return service.Process(context.WithoutCancel(processCtx), job)
+			})
+		})
+	}()
+	go func() {
+		defer workers.Done()
+		consumeWithRetry(ctx, logger, "alert", func(consumeCtx context.Context) error {
+			return alertQueue.ConsumeAlerts(consumeCtx, consumer+"-alerts", func(processCtx context.Context, job domain.AlertJob) error {
+				return dispatcher.ProcessAlert(context.WithoutCancel(processCtx), job)
+			})
+		})
+	}()
+	<-ctx.Done()
+	logger.Info("shutdown signal received; draining in-flight work")
+	drain := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(drain)
+	}()
+	drainTimeout := time.Duration(envInt64("WORKER_DRAIN_TIMEOUT_SECONDS", 60)) * time.Second
+	select {
+	case <-drain:
+		logger.Info("in-flight work drained")
+	case <-time.After(drainTimeout):
+		// A check can legitimately take as long as its policy timeout, so the
+		// drain waits rather than aborting; this cap only covers a stuck check.
+		logger.Warn("drain timeout exceeded; exiting with work in flight", "timeout_seconds", int64(drainTimeout/time.Second))
+	}
+}
+
+// consumeWithRetry keeps one consumer alive across Redis read failures: the
+// error is logged, the loop sleeps with backoff (capped), and Consume is
+// re-entered on the same client, whose own connection handling covers the
+// reconnect. A nil return means the signal context fired, not success.
+func consumeWithRetry(ctx context.Context, logger *slog.Logger, name string, consume func(context.Context) error) {
+	backoff := 500 * time.Millisecond
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		err := consume(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		logger.Error("consumer stopped; retrying", "consumer", name, "error", err, "backoff", backoff.String())
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+		}
 	}
 }
 

@@ -10,6 +10,41 @@
 
 ---
 
+## 0.3 worker 优雅停机与消费重试实测 — 2026-10-01
+
+- **脚本**：手工实测，在真实 Compose 栈（分支 `codex/worker-shutdown` 构建的镜像）
+  上加一次性 overlay（compose 内网慢目标：node HTTP 服务固定 20 秒才回响应；
+  `ALLOW_PRIVATE_TARGETS=true` 仅供本网段目标可达，用完即删），检测任务经
+  `POST /api/v1/detection-jobs` 用临时账号（argon2id，用后连同资产/策略/任务/
+  证据/审计行一并删除）触发。
+- **关键断言**：(1) http-worker 在检测在途时收到 SIGTERM，须等该任务跑完再退出，
+  任务不丢、状态落库为 SUCCEEDED；(2) Redis 中断 ~10 秒，worker 打退避重试日志
+  且进程不退出，恢复后仍能消费；(3) browser-worker 在快照在途时收到 SIGTERM，
+  打排水日志、在途检查完成、退出码 0、不触发 60 秒强制退出；(4) 所有服务
+  PID 1 为 init。
+- **结果**：
+  - http-worker 排水：任务 14:56:26 进入 RUNNING（慢目标 20 秒），`stop` 发送
+    SIGTERM，日志 `shutdown signal received; draining in-flight work` → 约 19 秒后
+    `in-flight work drained`，容器退出码 0；任务 `finished_at` 14:56:46，
+    状态 SUCCEEDED。
+  - Redis 中断：`stop redis` 后两条消费线各打一条
+    `consumer stopped; retrying ... backoff=500ms`，进程存活；`start redis` 后
+    再触发任务，正常消费至 SUCCEEDED（期间无进程重启）。
+  - browser-worker 排水：BROWSER 任务 RUNNING 后 `stop`，日志
+    `received SIGTERM; draining in-flight checks`，容器约 33 秒后退出码 0
+    （未触发 `drain timeout exceeded; forcing exit`），任务 SUCCEEDED。
+  - `docker top compose-browser-worker-1`：PID 1 为 `/sbin/docker-init`，
+    node 为其子进程；api `stop` 退出码 0。
+- **顺带修复（独立提交 `641ed60`）**：migrate 按原始字节校验迁移文件，
+  autocrlf 曾把 worktree 副本翻成 CRLF 导致重建镜像校验和不符、migrate 拒绝
+  启动。已加 `.gitattributes`（`db/migrations/*.sql text eol=lf`），并把
+  schema_migrations 里 11 条按 CRLF 记录的 checksum 修回 LF  canonical 值
+  （逐文件核对 worktree 字节与 git blob 一致后才更新）。
+- **未覆盖**：浏览器 worker 排水期间 chromium 子进程的逐一存活清点（以容器
+  整体退出、退出码 0 与 init PID 1 为证据）；api 在途请求排水的精确时序。
+
+---
+
 ## 0.2 有界查询与任务保留实测 — 2026-10-01
 
 - **脚本**：手工实测，在真实 Compose 栈（`deployments/compose/docker-compose.yml`，

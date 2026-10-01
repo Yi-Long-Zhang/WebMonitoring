@@ -45,6 +45,13 @@ x-queue-alert-env: &queue-alert-env
 
 services:
   postgres:
+
+    # PID 1 must reap orphaned children (browser-worker spawns chromium
+    # per check); without init the runtime leaves them to accumulate.
+    init: true
+    # In-flight work drains on SIGTERM (see the worker's drain log);
+    # the grace period must exceed the longest check plus the drain log.
+    stop_grace_period: 30s
     image: postgres:17-alpine
     environment:
       POSTGRES_DB: webmonitoring
@@ -66,6 +73,13 @@ services:
       retries: 20
 
   redis:
+
+    # PID 1 must reap orphaned children (browser-worker spawns chromium
+    # per check); without init the runtime leaves them to accumulate.
+    init: true
+    # In-flight work drains on SIGTERM (see the worker's drain log);
+    # the grace period must exceed the longest check plus the drain log.
+    stop_grace_period: 30s
     image: redis:8-alpine
     # Setting REDIS_PASSWORD turns on requirepass. The application must then
     # carry the same password in REDIS_ADDR (redis://:password@redis:6379);
@@ -90,6 +104,10 @@ services:
       retries: 20
 
   migrate:
+
+    # PID 1 must reap orphaned children (browser-worker spawns chromium
+    # per check); without init the runtime leaves them to accumulate.
+    init: true
     build:
       context: ../..
       dockerfile: apps/migrate/Dockerfile
@@ -103,6 +121,13 @@ services:
     logging: *default-logging
 
   minio:
+
+    # PID 1 must reap orphaned children (browser-worker spawns chromium
+    # per check); without init the runtime leaves them to accumulate.
+    init: true
+    # In-flight work drains on SIGTERM (see the worker's drain log);
+    # the grace period must exceed the longest check plus the drain log.
+    stop_grace_period: 30s
     image: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     command: server /data --console-address ":9001"
     environment:
@@ -131,6 +156,10 @@ services:
   # Publish the object store's console the same way if an operator needs it:
   # add a service with the same image and `profiles: ["tools"]`.
   mc:
+
+    # PID 1 must reap orphaned children (browser-worker spawns chromium
+    # per check); without init the runtime leaves them to accumulate.
+    init: true
     image: quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     profiles: ["tools"]
     depends_on:
@@ -144,6 +173,10 @@ services:
   # It takes an advisory lease, so a run overlapping a second one exits without
   # doing anything rather than re-sealing rows the other just sealed.
   rewrap:
+
+    # PID 1 must reap orphaned children (browser-worker spawns chromium
+    # per check); without init the runtime leaves them to accumulate.
+    init: true
     build:
       context: ../..
       dockerfile: apps/rewrap/Dockerfile
@@ -160,6 +193,13 @@ services:
     logging: *default-logging
 
   browser-worker:
+
+    # PID 1 must reap orphaned children (browser-worker spawns chromium
+    # per check); without init the runtime leaves them to accumulate.
+    init: true
+    # In-flight work drains on SIGTERM (see the worker's drain log);
+    # the grace period must exceed the longest check plus the drain log.
+    stop_grace_period: 75s
     build:
       context: ../..
       dockerfile: apps/browser-worker/Dockerfile
@@ -186,6 +226,13 @@ services:
       retries: 12
 
   api:
+
+    # PID 1 must reap orphaned children (browser-worker spawns chromium
+    # per check); without init the runtime leaves them to accumulate.
+    init: true
+    # In-flight work drains on SIGTERM (see the worker's drain log);
+    # the grace period must exceed the longest check plus the drain log.
+    stop_grace_period: 30s
     build:
       context: ../..
       dockerfile: apps/api/Dockerfile
@@ -256,6 +303,13 @@ services:
     logging: *default-logging
 
   http-worker:
+
+    # PID 1 must reap orphaned children (browser-worker spawns chromium
+    # per check); without init the runtime leaves them to accumulate.
+    init: true
+    # In-flight work drains on SIGTERM (see the worker's drain log);
+    # the grace period must exceed the longest check plus the drain log.
+    stop_grace_period: 75s
     build:
       context: ../..
       dockerfile: apps/http-worker/Dockerfile
@@ -318,6 +372,13 @@ services:
     logging: *default-logging
 
   console:
+
+    # PID 1 must reap orphaned children (browser-worker spawns chromium
+    # per check); without init the runtime leaves them to accumulate.
+    init: true
+    # In-flight work drains on SIGTERM (see the worker's drain log);
+    # the grace period must exceed the longest check plus the drain log.
+    stop_grace_period: 15s
     build:
       context: ../..
       dockerfile: apps/console/Dockerfile

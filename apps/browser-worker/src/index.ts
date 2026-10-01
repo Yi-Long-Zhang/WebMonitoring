@@ -116,6 +116,29 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   server.listen(port, "0.0.0.0", () => {
     console.log(`browser worker listening on :${port}`);
   });
+  // Docker stop delivers SIGTERM to the container. Without a handler the
+  // process dies mid-check and the chromium launched for it is orphaned until
+  // the runtime reaps the whole container. Closing the server stops accepting
+  // new checks and waits for in-flight ones -- each already bounded by its own
+  // timeout -- before the process exits and takes its chromium children down.
+  const drainTimeoutMillis = 60_000;
+  const shutdown = (signal: string) => {
+    console.log(`received ${signal}; draining in-flight checks`);
+    const forceExit = setTimeout(() => {
+      console.error("drain timeout exceeded; forcing exit");
+      process.exit(1);
+    }, drainTimeoutMillis);
+    forceExit.unref();
+    server.close(() => {
+      clearTimeout(forceExit);
+      process.exit(0);
+    });
+    // Idle keep-alive connections would otherwise hold the close callback
+    // hostage; connections with an in-flight request are unaffected.
+    server.closeIdleConnections?.();
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 export async function check(input: CheckRequest) {
