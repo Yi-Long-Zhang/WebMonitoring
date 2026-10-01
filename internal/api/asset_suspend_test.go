@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -27,10 +28,10 @@ func TestAssetSuspendAndResume(t *testing.T) {
 		Enabled: false, VerificationStatus: domain.VerificationPending,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	if err := repository.CreateAsset(verified); err != nil {
+	if err := repository.CreateAsset(context.Background(), verified); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.CreateAsset(pending); err != nil {
+	if err := repository.CreateAsset(context.Background(), pending); err != nil {
 		t.Fatal(err)
 	}
 	evidenceStore, err := evidence.NewLocalStore(t.TempDir())

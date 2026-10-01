@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -18,14 +19,14 @@ func seedIncidentFixture(t *testing.T, repository Repository) (string, string, s
 	now := time.Now().UTC()
 	suffix := identity.New()
 	tenant := domain.Tenant{ID: identity.New(), Slug: "timeline-" + suffix, Name: "timeline", CreatedAt: now}
-	if err := repository.CreateTenant(tenant); err != nil {
+	if err := repository.CreateTenant(context.Background(), tenant); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
 	owner := domain.User{
 		ID: identity.New(), TenantID: tenant.ID, Username: "owner-" + suffix,
 		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
 	}
-	if err := repository.CreateUser(owner); err != nil {
+	if err := repository.CreateUser(context.Background(), owner); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	asset := domain.Asset{
@@ -34,14 +35,14 @@ func seedIncidentFixture(t *testing.T, repository Repository) (string, string, s
 		OwnerID: owner.ID, Enabled: true, VerificationStatus: domain.VerificationVerified,
 		VerificationMethod: domain.VerificationFile, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := repository.CreateAsset(asset); err != nil {
+	if err := repository.CreateAsset(context.Background(), asset); err != nil {
 		t.Fatalf("create asset: %v", err)
 	}
 	baseline := domain.BaselineVersion{
 		ID: identity.New(), TenantID: tenant.ID, AssetID: asset.ID, Version: 1,
 		Status: domain.BaselineApproved, CreatedBy: owner.ID, CreatedAt: now,
 	}
-	if err := repository.CreateBaseline(baseline); err != nil {
+	if err := repository.CreateBaseline(context.Background(), baseline); err != nil {
 		t.Fatalf("create baseline: %v", err)
 	}
 	return tenant.ID, asset.ID, baseline.ID
@@ -86,24 +87,24 @@ func TestRecurrenceKeepsPerOccurrenceSignals(t *testing.T) {
 			fingerprint := identity.New()
 			clock := roundClock()
 
-			if _, outcome, err := repository.UpsertIncident(
+			if _, outcome, err := repository.UpsertIncident(context.Background(),
 				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityLow, []domain.Signal{signal("first")}, []string{"ev-1"}, clock()),
 			); err != nil || outcome != IncidentCreated {
 				t.Fatalf("first round: outcome=%v err=%v", outcome, err)
 			}
-			if _, outcome, err := repository.UpsertIncident(
+			if _, outcome, err := repository.UpsertIncident(context.Background(),
 				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityMedium, []domain.Signal{signal("second")}, []string{"ev-2"}, clock()),
 			); err != nil || outcome != IncidentRecurred {
 				t.Fatalf("second round: outcome=%v err=%v", outcome, err)
 			}
-			merged, outcome, err := repository.UpsertIncident(
+			merged, outcome, err := repository.UpsertIncident(context.Background(),
 				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityHigh, []domain.Signal{signal("third")}, []string{"ev-3"}, clock()),
 			)
 			if err != nil || outcome != IncidentRecurred {
 				t.Fatalf("third round: outcome=%v err=%v", outcome, err)
 			}
 
-			events, _, err := repository.ListIncidentEvents(tenantID, merged.ID, ListOptions{})
+			events, _, err := repository.ListIncidentEvents(context.Background(), tenantID, merged.ID, ListOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -139,20 +140,20 @@ func TestRecurrenceEntryUsesTheMergedIncidentID(t *testing.T) {
 			tenantID, assetID, baselineID := seedIncidentFixture(t, repository)
 			fingerprint := identity.New()
 			clock := roundClock()
-			first, _, err := repository.UpsertIncident(
+			first, _, err := repository.UpsertIncident(context.Background(),
 				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityLow, []domain.Signal{signal("a")}, []string{"ev-1"}, clock()))
 			if err != nil {
 				t.Fatal(err)
 			}
 			round := incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityLow, []domain.Signal{signal("b")}, []string{"ev-2"}, clock())
-			merged, _, err := repository.UpsertIncident(round)
+			merged, _, err := repository.UpsertIncident(context.Background(), round)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if round.ID == first.ID {
 				t.Fatal("fixture produced the same id twice")
 			}
-			events, _, err := repository.ListIncidentEvents(tenantID, first.ID, ListOptions{})
+			events, _, err := repository.ListIncidentEvents(context.Background(), tenantID, first.ID, ListOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -186,16 +187,16 @@ func TestClosedIncidentRecurrenceReopensTheSameIncident(t *testing.T) {
 			tenantID, assetID, baselineID := seedIncidentFixture(t, repository)
 			fingerprint := identity.New()
 			clock := roundClock()
-			first, _, err := repository.UpsertIncident(
+			first, _, err := repository.UpsertIncident(context.Background(),
 				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityLow, []domain.Signal{signal("a")}, []string{"ev-1"}, clock()))
 			if err != nil {
 				t.Fatal(err)
 			}
 			first.Status = domain.IncidentClosed
-			if err := repository.UpdateIncident(first); err != nil {
+			if err := repository.UpdateIncident(context.Background(), first); err != nil {
 				t.Fatal(err)
 			}
-			reopened, outcome, err := repository.UpsertIncident(
+			reopened, outcome, err := repository.UpsertIncident(context.Background(),
 				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityLow, []domain.Signal{signal("b")}, []string{"ev-2"}, clock()))
 			if err != nil || outcome != IncidentReopened {
 				t.Fatalf("recurrence after close: outcome=%v err=%v", outcome, err)
@@ -209,7 +210,7 @@ func TestClosedIncidentRecurrenceReopensTheSameIncident(t *testing.T) {
 			if reopened.OccurrenceCount != 2 {
 				t.Fatalf("reopened occurrence count = %d, want 2", reopened.OccurrenceCount)
 			}
-			events, _, err := repository.ListIncidentEvents(tenantID, first.ID, ListOptions{})
+			events, _, err := repository.ListIncidentEvents(context.Background(), tenantID, first.ID, ListOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -238,16 +239,16 @@ func TestFalsePositiveIncidentRecurrenceReopensTheSameIncident(t *testing.T) {
 			tenantID, assetID, baselineID := seedIncidentFixture(t, repository)
 			fingerprint := identity.New()
 			clock := roundClock()
-			first, _, err := repository.UpsertIncident(
+			first, _, err := repository.UpsertIncident(context.Background(),
 				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityLow, []domain.Signal{signal("a")}, []string{"ev-1"}, clock()))
 			if err != nil {
 				t.Fatal(err)
 			}
 			first.Status = domain.IncidentFalsePositive
-			if err := repository.UpdateIncident(first); err != nil {
+			if err := repository.UpdateIncident(context.Background(), first); err != nil {
 				t.Fatal(err)
 			}
-			reopened, outcome, err := repository.UpsertIncident(
+			reopened, outcome, err := repository.UpsertIncident(context.Background(),
 				incidentRound(tenantID, assetID, baselineID, fingerprint, domain.SeverityLow, []domain.Signal{signal("b")}, []string{"ev-2"}, clock()))
 			if err != nil || outcome != IncidentReopened {
 				t.Fatalf("recurrence after dismissal: outcome=%v err=%v", outcome, err)
@@ -271,12 +272,12 @@ func TestIncidentMergeAgreesAcrossStores(t *testing.T) {
 			fingerprint := identity.New()
 			clock := roundClock()
 
-			if _, _, err := repository.UpsertIncident(incidentRound(
+			if _, _, err := repository.UpsertIncident(context.Background(), incidentRound(
 				tenantID, assetID, baselineID, fingerprint, domain.SeverityHigh,
 				[]domain.Signal{signal("first")}, []string{"ev-1", "ev-2", "ev-1"}, clock())); err != nil {
 				t.Fatal(err)
 			}
-			merged, _, err := repository.UpsertIncident(incidentRound(
+			merged, _, err := repository.UpsertIncident(context.Background(), incidentRound(
 				tenantID, assetID, baselineID, fingerprint, domain.SeverityLow,
 				[]domain.Signal{signal("second")}, []string{"ev-2", "ev-3"}, clock()))
 			if err != nil {
@@ -304,7 +305,7 @@ func TestAppendIncidentEventRequiresAnIncidentInTheTenant(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			tenantID, assetID, baselineID := seedIncidentFixture(t, repository)
 			otherTenant, _, _ := seedIncidentFixture(t, repository)
-			incident, _, err := repository.UpsertIncident(incidentRound(
+			incident, _, err := repository.UpsertIncident(context.Background(), incidentRound(
 				tenantID, assetID, baselineID, identity.New(), domain.SeverityLow,
 				[]domain.Signal{signal("a")}, []string{"ev-1"}, roundClock()()))
 			if err != nil {
@@ -315,16 +316,16 @@ func TestAppendIncidentEventRequiresAnIncidentInTheTenant(t *testing.T) {
 				ID: identity.New(), TenantID: tenantID, IncidentID: identity.New(),
 				Type: domain.IncidentEventCommented, CreatedAt: time.Now().UTC(),
 			}
-			if err := repository.AppendIncidentEvent(missing); !errors.Is(err, ErrNotFound) {
+			if err := repository.AppendIncidentEvent(context.Background(), missing); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("entry for a missing incident: err = %v, want ErrNotFound", err)
 			}
 			crossTenant := missing
 			crossTenant.IncidentID = incident.ID
 			crossTenant.TenantID = otherTenant
-			if err := repository.AppendIncidentEvent(crossTenant); !errors.Is(err, ErrNotFound) {
+			if err := repository.AppendIncidentEvent(context.Background(), crossTenant); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("cross-tenant entry: err = %v, want ErrNotFound", err)
 			}
-			if _, _, err := repository.ListIncidentEvents(tenantID, incident.ID, ListOptions{}); err != nil {
+			if _, _, err := repository.ListIncidentEvents(context.Background(), tenantID, incident.ID, ListOptions{}); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -337,20 +338,20 @@ func TestListIncidentEventsIsolatesIncidentsAndPages(t *testing.T) {
 			tenantID, assetID, baselineID := seedIncidentFixture(t, repository)
 			otherTenant, otherAsset, otherBaseline := seedIncidentFixture(t, repository)
 			clock := roundClock()
-			first, _, err := repository.UpsertIncident(incidentRound(
+			first, _, err := repository.UpsertIncident(context.Background(), incidentRound(
 				tenantID, assetID, baselineID, identity.New(), domain.SeverityLow,
 				[]domain.Signal{signal("a")}, []string{"ev-1"}, clock()))
 			if err != nil {
 				t.Fatal(err)
 			}
-			other, _, err := repository.UpsertIncident(incidentRound(
+			other, _, err := repository.UpsertIncident(context.Background(), incidentRound(
 				otherTenant, otherAsset, otherBaseline, identity.New(), domain.SeverityLow,
 				[]domain.Signal{signal("b")}, []string{"ev-2"}, clock()))
 			if err != nil {
 				t.Fatal(err)
 			}
 			for index := 0; index < 4; index++ {
-				if err := repository.AppendIncidentEvent(domain.IncidentEvent{
+				if err := repository.AppendIncidentEvent(context.Background(), domain.IncidentEvent{
 					ID: identity.New(), TenantID: tenantID, IncidentID: first.ID,
 					Type: domain.IncidentEventCommented, Details: map[string]any{"note": "seen"},
 					CreatedAt: clock(),
@@ -359,7 +360,7 @@ func TestListIncidentEventsIsolatesIncidentsAndPages(t *testing.T) {
 				}
 			}
 
-			events, _, err := repository.ListIncidentEvents(tenantID, first.ID, ListOptions{})
+			events, _, err := repository.ListIncidentEvents(context.Background(), tenantID, first.ID, ListOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -367,7 +368,7 @@ func TestListIncidentEventsIsolatesIncidentsAndPages(t *testing.T) {
 				t.Fatalf("entries = %d, want 5", len(events))
 			}
 			// Another incident's timeline must not leak in, in either direction.
-			otherEvents, _, err := repository.ListIncidentEvents(otherTenant, other.ID, ListOptions{})
+			otherEvents, _, err := repository.ListIncidentEvents(context.Background(), otherTenant, other.ID, ListOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -379,7 +380,7 @@ func TestListIncidentEventsIsolatesIncidentsAndPages(t *testing.T) {
 			seen := map[string]bool{}
 			cursor := ""
 			for page := 0; page < 10; page++ {
-				items, next, err := repository.ListIncidentEvents(tenantID, first.ID, ListOptions{Limit: 2, Cursor: cursor})
+				items, next, err := repository.ListIncidentEvents(context.Background(), tenantID, first.ID, ListOptions{Limit: 2, Cursor: cursor})
 				if err != nil {
 					t.Fatal(err)
 				}

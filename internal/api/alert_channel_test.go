@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -75,7 +76,7 @@ func TestUpdateAlertChannelKeepsSecretWhenBlank(t *testing.T) {
 	if renamed.Code != http.StatusOK {
 		t.Fatalf("update status=%d body=%s", renamed.Code, renamed.Body.String())
 	}
-	stored, err := repository.GetAlertChannel(admin.TenantID, channel.ID)
+	stored, err := repository.GetAlertChannel(context.Background(), admin.TenantID, channel.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +97,7 @@ func TestUpdateAlertChannelKeepsSecretWhenBlank(t *testing.T) {
 	if replaced.Code != http.StatusOK {
 		t.Fatalf("update status=%d body=%s", replaced.Code, replaced.Body.String())
 	}
-	stored, err = repository.GetAlertChannel(admin.TenantID, channel.ID)
+	stored, err = repository.GetAlertChannel(context.Background(), admin.TenantID, channel.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +158,7 @@ func TestDeleteAlertChannel(t *testing.T) {
 	if deleted.Code != http.StatusNoContent {
 		t.Fatalf("delete status=%d body=%s", deleted.Code, deleted.Body.String())
 	}
-	if _, err := repository.GetAlertChannel(admin.TenantID, channel.ID); err != store.ErrNotFound {
+	if _, err := repository.GetAlertChannel(context.Background(), admin.TenantID, channel.ID); err != store.ErrNotFound {
 		t.Fatalf("channel survived the delete: %v", err)
 	}
 

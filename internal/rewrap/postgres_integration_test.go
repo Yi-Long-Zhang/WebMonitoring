@@ -69,14 +69,14 @@ func TestRewrapAgainstPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build v1 keyring: %v", err)
 	}
-	if err := writer.CreateAsset(domain.Asset{
+	if err := writer.CreateAsset(context.Background(), domain.Asset{
 		ID: assetID, TenantID: tenantID, Name: "rewrap integration", URL: "https://rewrap-" + assetID + ".example",
 		Type: domain.AssetOfficial, VerificationStatus: domain.VerificationPending,
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("create asset: %v", err)
 	}
-	if err := writer.CreateAlertChannel(domain.AlertChannel{
+	if err := writer.CreateAlertChannel(context.Background(), domain.AlertChannel{
 		ID: channelID, TenantID: tenantID, Name: "rewrap integration", Type: "WEBHOOK",
 		URL: "https://hooks.example.com/" + channelID, Secret: "integration-hmac",
 		Enabled: true, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
@@ -92,7 +92,7 @@ func TestRewrapAgainstPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seal password: %v", err)
 	}
-	if err := writer.UpsertPolicy(domain.MonitorPolicy{
+	if err := writer.UpsertPolicy(context.Background(), domain.MonitorPolicy{
 		ID: identity.New(), TenantID: tenantID, AssetID: assetID, Version: 1,
 		Auth: &domain.AuthConfig{
 			LoginURL: "https://example.com/login", CredentialsSet: true,
@@ -109,10 +109,10 @@ func TestRewrapAgainstPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open v2-only repository: %v", err)
 	}
-	if _, err := v2Reader.GetAlertChannel(tenantID, channelID); err == nil {
+	if _, err := v2Reader.GetAlertChannel(context.Background(), tenantID, channelID); err == nil {
 		t.Fatal("the fixture channel was already readable with v2 only; the test proves nothing")
 	}
-	if _, err := v2Reader.GetPolicy(tenantID, assetID); err == nil {
+	if _, err := v2Reader.GetPolicy(context.Background(), tenantID, assetID); err == nil {
 		t.Fatal("the fixture policy was already readable with v2 only; the test proves nothing")
 	}
 	v2Reader.Close()
@@ -148,14 +148,14 @@ func TestRewrapAgainstPostgres(t *testing.T) {
 		t.Fatalf("reopen v2-only repository: %v", err)
 	}
 	defer v2Reader.Close()
-	channel, err := v2Reader.GetAlertChannel(tenantID, channelID)
+	channel, err := v2Reader.GetAlertChannel(context.Background(), tenantID, channelID)
 	if err != nil {
 		t.Fatalf("v2-only repository cannot read the rewrapped channel: %v", err)
 	}
 	if channel.URL != "https://hooks.example.com/"+channelID || channel.Secret != "integration-hmac" {
 		t.Fatalf("channel = %+v, want the original plaintext", channel)
 	}
-	policy, err := v2Reader.GetPolicy(tenantID, assetID)
+	policy, err := v2Reader.GetPolicy(context.Background(), tenantID, assetID)
 	if err != nil {
 		t.Fatalf("v2-only repository cannot read the rewrapped policy: %v", err)
 	}

@@ -1,6 +1,7 @@
 package detection
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"testing"
@@ -24,7 +25,7 @@ func TestProcessExportsAConsumerSpan(t *testing.T) {
 		ID: "job-trace", TenantID: "tenant-trace", AssetID: "asset-trace", Mode: "HTTP",
 		Status: domain.JobQueued, MaxAttempts: 1, CreatedAt: time.Now().UTC(),
 	}
-	if err := repository.CreateJob(job); err != nil {
+	if err := repository.CreateJob(context.Background(), job); err != nil {
 		t.Fatal(err)
 	}
 	// No asset is registered for the job, so the run fails fast after the span

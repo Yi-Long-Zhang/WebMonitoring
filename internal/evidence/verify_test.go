@@ -1,6 +1,7 @@
 package evidence
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -18,7 +19,7 @@ func (m memoryStore) Put(string, string, string, string, string, []byte) (domain
 	panic("not implemented")
 }
 
-func (m memoryStore) Open(string) (io.ReadCloser, error) {
+func (m memoryStore) Open(context.Context, string) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(string(m.content))), nil
 }
 
@@ -33,7 +34,7 @@ func TestReadVerifiedRejectsTamperedContent(t *testing.T) {
 		Size: int64(len(content)), SHA256: hex.EncodeToString(sum[:]), ObjectKey: "evidence",
 	}
 
-	if _, err := ReadVerified(memoryStore{content: []byte("tampered")}, item); err == nil {
+	if _, err := ReadVerified(context.Background(), memoryStore{content: []byte("tampered")}, item); err == nil {
 		t.Fatal("expected checksum mismatch")
 	}
 }
@@ -45,7 +46,7 @@ func TestReadVerifiedReturnsExactContent(t *testing.T) {
 		Size: int64(len(content)), SHA256: hex.EncodeToString(sum[:]), ObjectKey: "evidence",
 	}
 
-	got, err := ReadVerified(memoryStore{content: content}, item)
+	got, err := ReadVerified(context.Background(), memoryStore{content: content}, item)
 	if err != nil {
 		t.Fatal(err)
 	}

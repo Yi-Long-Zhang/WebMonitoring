@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -28,7 +29,7 @@ func TestListAssetsPaginationHandler(t *testing.T) {
 			CreatedAt: base.Add(time.Duration(i) * time.Second),
 			UpdatedAt: base.Add(time.Duration(i) * time.Second),
 		}
-		if err := repository.CreateAsset(asset); err != nil {
+		if err := repository.CreateAsset(context.Background(), asset); err != nil {
 			t.Fatal(err)
 		}
 	}

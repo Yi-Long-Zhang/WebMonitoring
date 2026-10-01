@@ -58,10 +58,10 @@ func (s Stats) Rewrapped() bool {
 // be exercised against an in-memory fake, and so it is obvious from the type
 // which reads this operation is allowed to perform.
 type Enumerator interface {
-	ListTenants(opts store.ListOptions) ([]domain.Tenant, string, error)
-	ListAssets(tenantID string, opts store.ListOptions) ([]domain.Asset, string, error)
-	ListAlertChannelsWithSecrets(tenantID string) ([]domain.AlertChannel, error)
-	GetPolicy(tenantID, assetID string) (domain.MonitorPolicy, error)
+	ListTenants(ctx context.Context, opts store.ListOptions) ([]domain.Tenant, string, error)
+	ListAssets(ctx context.Context, tenantID string, opts store.ListOptions) ([]domain.Asset, string, error)
+	ListAlertChannelsWithSecrets(ctx context.Context, tenantID string) ([]domain.AlertChannel, error)
+	GetPolicy(ctx context.Context, tenantID, assetID string) (domain.MonitorPolicy, error)
 }
 
 // Target is what this pass reads from and writes back to. The two writes are
@@ -71,8 +71,8 @@ type Enumerator interface {
 // produce a value that no longer decrypts.
 type Target interface {
 	Enumerator
-	RewrapAlertChannel(channel domain.AlertChannel) error
-	RewrapPolicy(policy domain.MonitorPolicy) error
+	RewrapAlertChannel(ctx context.Context, channel domain.AlertChannel) error
+	RewrapPolicy(ctx context.Context, policy domain.MonitorPolicy) error
 }
 
 // Runner performs the rewrite. Keys is the same keyring the API writes with, so
@@ -102,7 +102,7 @@ func (r *Runner) Run(ctx context.Context, dryRun bool) (Stats, error) {
 	if r.keys == nil {
 		return stats, errors.New("rewrap needs a keyring: without one there is no primary key version to move values to")
 	}
-	tenants, _, err := r.target.ListTenants(store.ListOptions{})
+	tenants, _, err := r.target.ListTenants(ctx, store.ListOptions{})
 	if err != nil {
 		return stats, fmt.Errorf("list tenants: %w", err)
 	}
@@ -119,7 +119,7 @@ func (r *Runner) Run(ctx context.Context, dryRun bool) (Stats, error) {
 }
 
 func (r *Runner) rewrapTenant(ctx context.Context, tenant domain.Tenant, dryRun bool, stats *Stats) {
-	channels, err := r.target.ListAlertChannelsWithSecrets(tenant.ID)
+	channels, err := r.target.ListAlertChannelsWithSecrets(ctx, tenant.ID)
 	if err != nil {
 		stats.Failures = append(stats.Failures, fmt.Sprintf("tenant %s: list alert channels: %v", tenant.ID, err))
 		return
@@ -128,10 +128,10 @@ func (r *Runner) rewrapTenant(ctx context.Context, tenant domain.Tenant, dryRun 
 		if err := ctx.Err(); err != nil {
 			return
 		}
-		r.rewrapChannel(channel, dryRun, stats)
+		r.rewrapChannel(ctx, channel, dryRun, stats)
 	}
 
-	assets, _, err := r.target.ListAssets(tenant.ID, store.ListOptions{})
+	assets, _, err := r.target.ListAssets(ctx, tenant.ID, store.ListOptions{})
 	if err != nil {
 		stats.Failures = append(stats.Failures, fmt.Sprintf("tenant %s: list assets: %v", tenant.ID, err))
 		return
@@ -140,7 +140,7 @@ func (r *Runner) rewrapTenant(ctx context.Context, tenant domain.Tenant, dryRun 
 		if err := ctx.Err(); err != nil {
 			return
 		}
-		r.rewrapPolicy(tenant, asset, dryRun, stats)
+		r.rewrapPolicy(ctx, tenant, asset, dryRun, stats)
 	}
 }
 
@@ -148,7 +148,7 @@ func (r *Runner) rewrapTenant(ctx context.Context, tenant domain.Tenant, dryRun 
 // separately because they carry different associated data suffixes, so one can
 // be current while the other is not -- a channel whose secret was rotated
 // through the API but whose URL predates the key change is exactly that case.
-func (r *Runner) rewrapChannel(channel domain.AlertChannel, dryRun bool, stats *Stats) {
+func (r *Runner) rewrapChannel(ctx context.Context, channel domain.AlertChannel, dryRun bool, stats *Stats) {
 	url, urlMoved, err := r.reseal(channel.URL, security.ChannelAssociatedData(channel.TenantID, channel.ID, "url"))
 	if err != nil {
 		stats.Failures = append(stats.Failures, fmt.Sprintf("alert channel %s url: %v", channel.ID, err))
@@ -169,7 +169,7 @@ func (r *Runner) rewrapChannel(channel domain.AlertChannel, dryRun bool, stats *
 		return
 	}
 	channel.URL, channel.Secret = url, secret
-	if err := r.target.RewrapAlertChannel(channel); err != nil {
+	if err := r.target.RewrapAlertChannel(ctx, channel); err != nil {
 		stats.Failures = append(stats.Failures, fmt.Sprintf("alert channel %s: %v", channel.ID, err))
 		return
 	}
@@ -180,8 +180,8 @@ func (r *Runner) rewrapChannel(channel domain.AlertChannel, dryRun bool, stats *
 // credentials stored, has nothing encrypted and is left out of the totals
 // entirely rather than counted as current -- it holds no ciphertext, so it is
 // not evidence about the state of the rotation either way.
-func (r *Runner) rewrapPolicy(tenant domain.Tenant, asset domain.Asset, dryRun bool, stats *Stats) {
-	policy, err := r.target.GetPolicy(tenant.ID, asset.ID)
+func (r *Runner) rewrapPolicy(ctx context.Context, tenant domain.Tenant, asset domain.Asset, dryRun bool, stats *Stats) {
+	policy, err := r.target.GetPolicy(ctx, tenant.ID, asset.ID)
 	if err != nil {
 		// An asset without a policy is the normal state before its first
 		// detection, so a not-found is not a failure.
@@ -215,7 +215,7 @@ func (r *Runner) rewrapPolicy(tenant domain.Tenant, asset domain.Asset, dryRun b
 		return
 	}
 	policy.Auth.EncryptedUsername, policy.Auth.EncryptedPassword = username, password
-	if err := r.target.RewrapPolicy(policy); err != nil {
+	if err := r.target.RewrapPolicy(ctx, policy); err != nil {
 		stats.Failures = append(stats.Failures, fmt.Sprintf("asset %s policy: %v", asset.ID, err))
 		return
 	}

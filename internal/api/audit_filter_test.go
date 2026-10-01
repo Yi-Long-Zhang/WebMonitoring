@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +22,7 @@ func auditFilterServer(t *testing.T, events ...domain.AuditEvent) (*Server, *htt
 		if event.TenantID == "" {
 			event.TenantID = defaultTenant
 		}
-		if err := repository.AppendAudit(event); err != nil {
+		if err := repository.AppendAudit(context.Background(), event); err != nil {
 			t.Fatal(err)
 		}
 	}

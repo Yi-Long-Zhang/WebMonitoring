@@ -144,7 +144,7 @@ func main() {
 	queue.SetMetrics(workerMetrics)
 	queue.SetMaxDeliveries(envInt64("QUEUE_MAX_DELIVERIES", 5))
 	queue.SetMinIdle(time.Duration(envInt64("QUEUE_MIN_IDLE_SECONDS", 120)) * time.Second)
-	queue.SetDeadLetterHandler(func(_ context.Context, payload []byte, cause error) error {
+	queue.SetDeadLetterHandler(func(ctx context.Context, payload []byte, cause error) error {
 		var job domain.DetectionJob
 		if err := json.Unmarshal(payload, &job); err != nil {
 			logger.Error("invalid detection dead-letter payload", "error", err)
@@ -155,10 +155,10 @@ func main() {
 		job.ErrorCode = "DEAD_LETTER"
 		job.ErrorMessage = "message exceeded the maximum delivery count"
 		job.FinishedAt = &now
-		if err := repository.UpdateJob(job); err != nil {
+		if err := repository.UpdateJob(ctx, job); err != nil {
 			return err
 		}
-		return repository.AppendAudit(domain.AuditEvent{
+		return repository.AppendAudit(ctx, domain.AuditEvent{
 			ID: identity.New(), TenantID: job.TenantID, Action: "detection.dead_letter",
 			ResourceType: "detection_job", ResourceID: job.ID, Result: "FAILED",
 			TraceID: "worker:" + consumer, Details: map[string]any{
@@ -184,7 +184,7 @@ func main() {
 		if err := dispatcher.MarkDeadLetter(ctx, job); err != nil {
 			return err
 		}
-		return repository.AppendAudit(domain.AuditEvent{
+		return repository.AppendAudit(ctx, domain.AuditEvent{
 			ID: identity.New(), TenantID: job.TenantID, Action: "alert.dead_letter",
 			ResourceType: "incident", ResourceID: job.IncidentID, Result: "FAILED",
 			TraceID: "worker:" + consumer, Details: map[string]any{

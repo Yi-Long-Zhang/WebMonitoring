@@ -73,7 +73,7 @@ func TestObjectStoreRequestsAreBoundedAgainstAnUnresponsiveStore(t *testing.T) {
 			return putErr
 		},
 		"Open": func() error {
-			_, openErr := store.Open("tenant/asset/2026/09/26/object-html")
+			_, openErr := store.Open(context.Background(), "tenant/asset/2026/09/26/object-html")
 			return openErr
 		},
 		"Delete": func() error {

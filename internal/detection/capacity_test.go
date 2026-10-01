@@ -30,14 +30,14 @@ func TestSchedulerQueues100AssetsWithoutDuplicateJobs(t *testing.T) {
 	now := time.Now().UTC()
 	for index := 0; index < 100; index++ {
 		assetID := "asset-" + string(rune('a'+index/26)) + string(rune('a'+index%26))
-		if err := repository.CreateAsset(domain.Asset{
+		if err := repository.CreateAsset(context.Background(), domain.Asset{
 			ID: assetID, TenantID: "tenant", Name: assetID, URL: "https://example.com/" + assetID,
 			OwnerID: "owner", Enabled: true, VerificationStatus: domain.VerificationVerified,
 			CreatedAt: now, UpdatedAt: now,
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := repository.UpsertPolicy(domain.MonitorPolicy{
+		if err := repository.UpsertPolicy(context.Background(), domain.MonitorPolicy{
 			ID: "policy-" + assetID, TenantID: "tenant", AssetID: assetID, Version: 1,
 			HTTPIntervalSeconds: 300, BrowserIntervalSeconds: 300,
 			TimeoutSeconds: 30, MaxResponseBytes: 5 * 1024 * 1024, CreatedAt: now, UpdatedAt: now,
@@ -50,7 +50,7 @@ func TestSchedulerQueues100AssetsWithoutDuplicateJobs(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	service.SetQueue(queue)
 	scheduler := NewScheduler(repository, service, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	scheduler.schedule("tenant")
+	scheduler.schedule(context.Background(), "tenant")
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
 	if len(queue.jobs) != 200 {

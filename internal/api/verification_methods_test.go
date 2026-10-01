@@ -109,7 +109,7 @@ func TestVerificationIssueInstructionsByMethod(t *testing.T) {
 				URL: tc.url, Type: domain.AssetOfficial, OwnerID: admin.ID,
 				VerificationStatus: domain.VerificationPending, VerificationMethod: tc.method,
 			}
-			if err := repository.CreateAsset(asset); err != nil {
+			if err := repository.CreateAsset(context.Background(), asset); err != nil {
 				t.Fatal(err)
 			}
 			response := doJSON(t, server, http.MethodPost, "/api/v1/assets/"+asset.ID+"/verification", cookie, csrf, `{"action":"ISSUE"}`)
@@ -146,7 +146,7 @@ func TestDNSVerificationFlow(t *testing.T) {
 		URL: "https://verify.example", Type: domain.AssetOfficial, OwnerID: admin.ID,
 		VerificationStatus: domain.VerificationPending, VerificationMethod: domain.VerificationDNS,
 	}
-	if err := repository.CreateAsset(asset); err != nil {
+	if err := repository.CreateAsset(context.Background(), asset); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,7 +205,7 @@ func TestMetaVerificationFlow(t *testing.T) {
 		URL: target.URL, Type: domain.AssetOfficial, OwnerID: admin.ID,
 		VerificationStatus: domain.VerificationPending, VerificationMethod: domain.VerificationMeta,
 	}
-	if err := repository.CreateAsset(asset); err != nil {
+	if err := repository.CreateAsset(context.Background(), asset); err != nil {
 		t.Fatal(err)
 	}
 

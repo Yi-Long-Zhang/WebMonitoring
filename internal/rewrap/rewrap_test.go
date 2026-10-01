@@ -50,15 +50,15 @@ func newFakeTarget() *fakeTarget {
 	}
 }
 
-func (f *fakeTarget) ListTenants(store.ListOptions) ([]domain.Tenant, string, error) {
+func (f *fakeTarget) ListTenants(context.Context, store.ListOptions) ([]domain.Tenant, string, error) {
 	return f.tenants, "", nil
 }
 
-func (f *fakeTarget) ListAssets(tenantID string, _ store.ListOptions) ([]domain.Asset, string, error) {
+func (f *fakeTarget) ListAssets(_ context.Context, tenantID string, _ store.ListOptions) ([]domain.Asset, string, error) {
 	return f.assets[tenantID], "", nil
 }
 
-func (f *fakeTarget) ListAlertChannelsWithSecrets(tenantID string) ([]domain.AlertChannel, error) {
+func (f *fakeTarget) ListAlertChannelsWithSecrets(_ context.Context, tenantID string) ([]domain.AlertChannel, error) {
 	result := make([]domain.AlertChannel, 0)
 	for _, channel := range f.channels {
 		if channel.TenantID == tenantID {
@@ -68,7 +68,7 @@ func (f *fakeTarget) ListAlertChannelsWithSecrets(tenantID string) ([]domain.Ale
 	return result, nil
 }
 
-func (f *fakeTarget) GetPolicy(tenantID, assetID string) (domain.MonitorPolicy, error) {
+func (f *fakeTarget) GetPolicy(_ context.Context, tenantID, assetID string) (domain.MonitorPolicy, error) {
 	policy, ok := f.policies[tenantID+"/"+assetID]
 	if !ok {
 		return domain.MonitorPolicy{}, store.ErrNotFound
@@ -76,7 +76,7 @@ func (f *fakeTarget) GetPolicy(tenantID, assetID string) (domain.MonitorPolicy, 
 	return policy, nil
 }
 
-func (f *fakeTarget) RewrapAlertChannel(channel domain.AlertChannel) error {
+func (f *fakeTarget) RewrapAlertChannel(_ context.Context, channel domain.AlertChannel) error {
 	if channel.ID == f.failRewrapChannel {
 		return errors.New("write refused")
 	}
@@ -85,7 +85,7 @@ func (f *fakeTarget) RewrapAlertChannel(channel domain.AlertChannel) error {
 	return nil
 }
 
-func (f *fakeTarget) RewrapPolicy(policy domain.MonitorPolicy) error {
+func (f *fakeTarget) RewrapPolicy(_ context.Context, policy domain.MonitorPolicy) error {
 	if policy.AssetID == f.failRewrapPolicy {
 		return errors.New("write refused")
 	}

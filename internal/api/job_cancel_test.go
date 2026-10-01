@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -23,10 +24,10 @@ func TestCancelDetectionJob(t *testing.T) {
 		ID: "succeeded-job", TenantID: defaultTenant, AssetID: "asset", Mode: "HTTP",
 		Status: domain.JobSucceeded, PolicyVersion: 1, MaxAttempts: 3, CreatedAt: now,
 	}
-	if err := repository.CreateJob(queued); err != nil {
+	if err := repository.CreateJob(context.Background(), queued); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.CreateJob(succeeded); err != nil {
+	if err := repository.CreateJob(context.Background(), succeeded); err != nil {
 		t.Fatal(err)
 	}
 	evidenceStore, err := evidence.NewLocalStore(t.TempDir())

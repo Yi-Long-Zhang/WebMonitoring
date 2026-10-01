@@ -60,7 +60,7 @@ func main() {
 	}()
 	repository, closeRepository := buildRepository(ctx, logger)
 	defer closeRepository()
-	seedAdmin(repository)
+	seedAdmin(ctx, repository)
 
 	dataDir := env("DATA_DIR", ".data")
 	evidenceStore, err := buildEvidenceStore(ctx, dataDir)
@@ -327,7 +327,7 @@ func buildRepository(ctx context.Context, logger *slog.Logger) (store.Repository
 	return repository, repository.Close
 }
 
-func seedAdmin(repository store.Repository) {
+func seedAdmin(ctx context.Context, repository store.Repository) {
 	username := env("ADMIN_USERNAME", "admin")
 	// No compiled-in fallback: the development default lives in
 	// deployments/compose/.env.default so the binary carries no password, and a
@@ -340,7 +340,7 @@ func seedAdmin(repository store.Repository) {
 		log.Fatal("ADMIN_PASSWORD is not set and no default password file was found; " +
 			"set ADMIN_PASSWORD, or provide deployments/compose/.env.default")
 	}
-	if _, err := repository.FindUserByUsername(defaultTenant, username); err == nil {
+	if _, err := repository.FindUserByUsername(ctx, defaultTenant, username); err == nil {
 		// Already seeded. Returning here is what keeps a restart from resetting
 		// a password the operator has since changed.
 		return
@@ -351,7 +351,7 @@ func seedAdmin(repository store.Repository) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = repository.CreateUser(domain.User{
+	err = repository.CreateUser(ctx, domain.User{
 		ID: identity.New(), TenantID: defaultTenant, Username: username,
 		PasswordHash: hash, Role: domain.RoleSuperAdmin, CreatedAt: time.Now().UTC(),
 	})

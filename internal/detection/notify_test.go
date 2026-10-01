@@ -84,7 +84,7 @@ func TestNotifyIncidentSurvivesAFailingQueue(t *testing.T) {
 // and queueing it would park a job that fails forever in the alert worker.
 func TestNotifyIncidentFallsBackToInlineDeliveryWithoutAQueue(t *testing.T) {
 	repository := store.NewMemoryRepository()
-	if err := repository.CreateAsset(domain.Asset{
+	if err := repository.CreateAsset(context.Background(), domain.Asset{
 		ID: "asset", TenantID: "tenant", Name: "site", URL: "https://example.com",
 		CreatedAt: time.Now().UTC(),
 	}); err != nil {

@@ -41,7 +41,7 @@ func (s *Service) SetSessionStore(store SessionStore) {
 }
 
 func (s *Service) Login(ctx context.Context, tenantID, username, password string) (Session, error) {
-	user, err := s.repository.FindUserByUsername(tenantID, username)
+	user, err := s.repository.FindUserByUsername(ctx, tenantID, username)
 	if err != nil || !security.VerifyPassword(user.PasswordHash, password) {
 		return Session{}, ErrInvalidCredentials
 	}
@@ -50,7 +50,7 @@ func (s *Service) Login(ctx context.Context, tenantID, username, password string
 		// the login path does not reveal which usernames exist in the tenant.
 		return Session{}, ErrInvalidCredentials
 	}
-	tenant, err := s.repository.GetTenant(tenantID)
+	tenant, err := s.repository.GetTenant(ctx, tenantID)
 	if err != nil || tenant.Disabled {
 		// Fail closed: an unresolvable or disabled tenant is treated as invalid
 		// credentials so the caller cannot probe tenant existence or state
@@ -83,14 +83,14 @@ func (s *Service) Get(ctx context.Context, id string) (Session, bool) {
 		}
 		return Session{}, false
 	}
-	user, err := s.repository.GetUser(record.TenantID, record.UserID)
+	user, err := s.repository.GetUser(ctx, record.TenantID, record.UserID)
 	if err != nil || user.Disabled {
 		// Deleted or disabled users lose their session immediately: the record
 		// is re-hydrated from the repository on every authenticated request.
 		_ = s.store.Delete(ctx, id)
 		return Session{}, false
 	}
-	tenant, err := s.repository.GetTenant(record.TenantID)
+	tenant, err := s.repository.GetTenant(ctx, record.TenantID)
 	if err != nil || tenant.Disabled {
 		// A disabled or deleted tenant loses its live sessions on the next
 		// request rather than waiting for the session TTL to expire.

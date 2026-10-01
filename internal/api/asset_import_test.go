@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -61,7 +62,7 @@ func TestImportAssetsReportsPartialFailure(t *testing.T) {
 	}
 
 	// The rejected row must not exist; the accepted rows must.
-	assets, _, err := repository.ListAssets(defaultTenant, store.ListOptions{})
+	assets, _, err := repository.ListAssets(context.Background(), defaultTenant, store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +121,7 @@ func TestImportAssetsDryRunWritesNothing(t *testing.T) {
 	if result.Created != 0 || result.Results[0].Status != "VALIDATED" {
 		t.Fatalf("unexpected dry run result: %+v", result)
 	}
-	assets, _, err := repository.ListAssets(defaultTenant, store.ListOptions{})
+	assets, _, err := repository.ListAssets(context.Background(), defaultTenant, store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,8 +178,8 @@ func TestExportAssetsJSONAndCSV(t *testing.T) {
 // cross-tenant scoping checks have something real to reject.
 func retentionUserInTenant(t *testing.T, repository *store.MemoryRepository, tenantID, username string, role domain.Role) domain.User {
 	t.Helper()
-	if _, err := repository.GetTenant(tenantID); err != nil {
-		if err := repository.CreateTenant(domain.Tenant{ID: tenantID, Slug: "t" + username, Name: username}); err != nil {
+	if _, err := repository.GetTenant(context.Background(), tenantID); err != nil {
+		if err := repository.CreateTenant(context.Background(), domain.Tenant{ID: tenantID, Slug: "t" + username, Name: username}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -190,7 +191,7 @@ func retentionUserInTenant(t *testing.T, repository *store.MemoryRepository, ten
 		ID: identity.New(), TenantID: tenantID, Username: username,
 		PasswordHash: hash, Role: role, CreatedAt: time.Now().UTC(),
 	}
-	if err := repository.CreateUser(user); err != nil {
+	if err := repository.CreateUser(context.Background(), user); err != nil {
 		t.Fatal(err)
 	}
 	return user

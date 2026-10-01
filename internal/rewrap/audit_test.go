@@ -15,7 +15,7 @@ type auditRecorder struct {
 	err    error
 }
 
-func (a *auditRecorder) AppendAudit(event domain.AuditEvent) error {
+func (a *auditRecorder) AppendAudit(_ context.Context, event domain.AuditEvent) error {
 	if a.err != nil {
 		return a.err
 	}

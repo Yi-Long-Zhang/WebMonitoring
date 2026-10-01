@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -29,7 +30,7 @@ func TestSessionAndCSRFGates(t *testing.T) {
 		ID: identity.New(), TenantID: defaultTenant, Username: "admin",
 		PasswordHash: hash, Role: domain.RoleAdmin, CreatedAt: time.Now().UTC(),
 	}
-	if err := repository.CreateUser(user); err != nil {
+	if err := repository.CreateUser(context.Background(), user); err != nil {
 		t.Fatal(err)
 	}
 	evidenceStore, err := evidence.NewLocalStore(t.TempDir())

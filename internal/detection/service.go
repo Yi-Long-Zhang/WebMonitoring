@@ -150,7 +150,7 @@ func (s *Service) NotifyIncident(ctx context.Context, incident domain.Incident, 
 	if s.notifier == nil {
 		return
 	}
-	asset, err := s.repository.GetAsset(incident.TenantID, incident.AssetID)
+	asset, err := s.repository.GetAsset(ctx, incident.TenantID, incident.AssetID)
 	if err != nil {
 		s.logger.Warn("load asset for notification failed",
 			"incident_id", incident.ID, "reason", reason, "error", err)
@@ -179,7 +179,7 @@ func (s *Service) TestChannel(ctx context.Context, tenantID, channelID string) e
 	if s.notifier == nil {
 		return errors.New("this deployment has no inline notifier to test through")
 	}
-	channel, err := s.repository.GetAlertChannel(tenantID, channelID)
+	channel, err := s.repository.GetAlertChannel(ctx, tenantID, channelID)
 	if err != nil {
 		return err
 	}
@@ -202,15 +202,15 @@ func (s *Service) SetEvidenceRetention(delay time.Duration) {
 	}
 }
 
-func (s *Service) Queue(tenantID, assetID, mode string) (domain.DetectionJob, error) {
-	asset, err := s.repository.GetAsset(tenantID, assetID)
+func (s *Service) Queue(ctx context.Context, tenantID, assetID, mode string) (domain.DetectionJob, error) {
+	asset, err := s.repository.GetAsset(ctx, tenantID, assetID)
 	if err != nil {
 		return domain.DetectionJob{}, err
 	}
 	if !asset.Enabled || asset.VerificationStatus != domain.VerificationVerified {
 		return domain.DetectionJob{}, ErrAssetNotVerified
 	}
-	policy, err := s.repository.GetPolicy(tenantID, assetID)
+	policy, err := s.repository.GetPolicy(ctx, tenantID, assetID)
 	if err != nil {
 		// Only a genuinely absent policy is a rejection the caller can act on;
 		// a repository failure must stay a failure, not be reported as config.
@@ -236,7 +236,7 @@ func (s *Service) Queue(tenantID, assetID, mode string) (domain.DetectionJob, er
 		MaxAttempts:   3,
 		CreatedAt:     time.Now().UTC(),
 	}
-	if err := s.repository.CreateJob(job); err != nil {
+	if err := s.repository.CreateJob(ctx, job); err != nil {
 		return domain.DetectionJob{}, err
 	}
 	if s.metrics != nil {
@@ -244,12 +244,15 @@ func (s *Service) Queue(tenantID, assetID, mode string) (domain.DetectionJob, er
 	}
 	s.broker.Publish("detection.job.queued", job)
 	if s.queue != nil {
-		if err := s.queue.Enqueue(context.Background(), job); err != nil {
-			_ = s.failJob(context.Background(), job, "QUEUE_FAILED", err)
+		if err := s.queue.Enqueue(ctx, job); err != nil {
+			_ = s.failJob(ctx, job, "QUEUE_FAILED", err)
 			return domain.DetectionJob{}, err
 		}
 	} else {
-		go s.Process(context.Background(), job)
+		// WithoutCancel keeps trace values but drops the caller's cancellation:
+		// the inline job must survive the API client disconnecting, or Queue
+		// would report a queued job that the disconnect silently killed.
+		go s.Process(context.WithoutCancel(ctx), job)
 	}
 	return job, nil
 }
@@ -265,7 +268,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 		))
 	defer span.End()
 	started := time.Now().UTC()
-	claimed, err := s.repository.ClaimJob(job.TenantID, job.ID, started)
+	claimed, err := s.repository.ClaimJob(ctx, job.TenantID, job.ID, started)
 	if err != nil {
 		s.logger.Error("claim detection job failed", "job_id", job.ID, "error", err)
 		span.RecordError(err)
@@ -273,7 +276,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 		return err
 	}
 	if !claimed {
-		current, getErr := s.repository.GetJob(job.TenantID, job.ID)
+		current, getErr := s.repository.GetJob(ctx, job.TenantID, job.ID)
 		if getErr != nil {
 			return fmt.Errorf("inspect unclaimed detection job: %w", getErr)
 		}
@@ -284,7 +287,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 			return fmt.Errorf("detection job %s is still %s", job.ID, current.Status)
 		}
 	}
-	current, err := s.repository.GetJob(job.TenantID, job.ID)
+	current, err := s.repository.GetJob(ctx, job.TenantID, job.ID)
 	if err != nil {
 		return fmt.Errorf("refresh claimed detection job: %w", err)
 	}
@@ -296,11 +299,11 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 	job.StartedAt = &started
 	s.broker.Publish("detection.job.running", job)
 
-	asset, err := s.repository.GetAsset(job.TenantID, job.AssetID)
+	asset, err := s.repository.GetAsset(ctx, job.TenantID, job.AssetID)
 	if err != nil {
 		return s.failJob(ctx, job, "ASSET_NOT_FOUND", err)
 	}
-	policy, err := s.repository.GetPolicy(job.TenantID, job.AssetID)
+	policy, err := s.repository.GetPolicy(ctx, job.TenantID, job.AssetID)
 	if err != nil {
 		return s.failJob(ctx, job, "POLICY_NOT_FOUND", err)
 	}
@@ -332,7 +335,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 	}
 	retainUntil := htmlEvidence.CreatedAt.Add(s.evidenceRetention)
 	htmlEvidence.RetainUntil = &retainUntil
-	if err := s.repository.CreateEvidence(htmlEvidence); err != nil {
+	if err := s.repository.CreateEvidence(ctx, htmlEvidence); err != nil {
 		return s.failJob(ctx, job, "EVIDENCE_METADATA_FAILED", err)
 	}
 	s.recordEvidenceWrite("page.html", "success")
@@ -345,7 +348,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 	}
 	snapshotRetainUntil := snapshotEvidence.CreatedAt.Add(s.evidenceRetention)
 	snapshotEvidence.RetainUntil = &snapshotRetainUntil
-	if err := s.repository.CreateEvidence(snapshotEvidence); err != nil {
+	if err := s.repository.CreateEvidence(ctx, snapshotEvidence); err != nil {
 		return s.failJob(ctx, job, "EVIDENCE_METADATA_FAILED", err)
 	}
 	s.recordEvidenceWrite("snapshot.json", "success")
@@ -360,7 +363,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 		}
 		screenshotRetainUntil := screenshotEvidence.CreatedAt.Add(s.evidenceRetention)
 		screenshotEvidence.RetainUntil = &screenshotRetainUntil
-		if createErr := s.repository.CreateEvidence(screenshotEvidence); createErr != nil {
+		if createErr := s.repository.CreateEvidence(ctx, screenshotEvidence); createErr != nil {
 			return s.failJob(ctx, job, "EVIDENCE_METADATA_FAILED", createErr)
 		}
 		s.recordEvidenceWrite("screenshot.png", "success")
@@ -368,9 +371,9 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 		result.Snapshot.ScreenshotHash = screenshotEvidence.SHA256
 	}
 
-	baseline, baselineErr := s.repository.GetApprovedBaseline(asset.TenantID, asset.ID)
+	baseline, baselineErr := s.repository.GetApprovedBaseline(ctx, asset.TenantID, asset.ID)
 	if errors.Is(baselineErr, store.ErrNotFound) {
-		baselines, _, listErr := s.repository.ListBaselines(asset.TenantID, asset.ID, store.ListOptions{})
+		baselines, _, listErr := s.repository.ListBaselines(ctx, asset.TenantID, asset.ID, store.ListOptions{})
 		if listErr != nil {
 			return s.failJob(ctx, job, "BASELINE_READ_FAILED", listErr)
 		}
@@ -385,7 +388,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 			CreatedBy:   "system",
 			CreatedAt:   time.Now().UTC(),
 		}
-		if err := s.repository.CreateBaseline(candidate); err != nil {
+		if err := s.repository.CreateBaseline(ctx, candidate); err != nil {
 			return s.failJob(ctx, job, "BASELINE_CREATE_FAILED", err)
 		}
 		s.broker.Publish("baseline.candidate.created", candidate)
@@ -418,7 +421,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 				// run that observed it.
 				JobID: job.ID,
 			}
-			saved, outcome, upsertErr := s.repository.UpsertIncident(incident)
+			saved, outcome, upsertErr := s.repository.UpsertIncident(ctx, incident)
 			if upsertErr != nil {
 				return s.failJob(ctx, job, "INCIDENT_WRITE_FAILED", upsertErr)
 			}
@@ -466,12 +469,12 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 
 	finished := time.Now().UTC()
 	// A cancel that lands while the check runs must win over a late success.
-	if s.jobCancelled(job) {
+	if s.jobCancelled(ctx, job) {
 		return nil
 	}
 	job.Status = domain.JobSucceeded
 	job.FinishedAt = &finished
-	if err := s.repository.UpdateJob(job); err != nil {
+	if err := s.repository.UpdateJob(ctx, job); err != nil {
 		return fmt.Errorf("persist successful detection job: %w", err)
 	}
 	s.broker.Publish("detection.job.succeeded", job)
@@ -482,7 +485,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 }
 
 func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code string, err error) error {
-	if s.jobCancelled(job) {
+	if s.jobCancelled(ctx, job) {
 		return nil
 	}
 	if isRetryable(code) {
@@ -498,7 +501,7 @@ func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code str
 			job.ErrorMessage = safeError(err)
 			job.StartedAt = nil
 			job.FinishedAt = nil
-			if updateErr := s.repository.UpdateJob(job); updateErr != nil {
+			if updateErr := s.repository.UpdateJob(ctx, job); updateErr != nil {
 				s.logger.Error("persist detection retry failed", "job_id", job.ID, "error", updateErr)
 				return updateErr
 			} else {
@@ -511,7 +514,9 @@ func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code str
 						return enqueueErr
 					}
 				} else {
-					go s.enqueueRetry(context.Background(), job)
+					// Detach from the failing request: the retry timer and the
+					// re-process must outlive the caller that just got an error.
+					go s.enqueueRetry(context.WithoutCancel(ctx), job)
 				}
 				return nil
 			}
@@ -525,7 +530,7 @@ func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code str
 	job.ErrorCode = code
 	job.ErrorMessage = safeError(err)
 	job.FinishedAt = &finished
-	if updateErr := s.repository.UpdateJob(job); updateErr != nil {
+	if updateErr := s.repository.UpdateJob(ctx, job); updateErr != nil {
 		s.logger.Error("persist detection failure failed", "job_id", job.ID, "error", updateErr)
 		return updateErr
 	}
@@ -548,8 +553,8 @@ func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code str
 // jobCancelled reports whether the persisted job has been cancelled since it
 // was claimed. It is the best-effort guard that lets CANCELLED win over a late
 // SUCCEEDED/FAILED write from a check that was already in flight.
-func (s *Service) jobCancelled(job domain.DetectionJob) bool {
-	current, err := s.repository.GetJob(job.TenantID, job.ID)
+func (s *Service) jobCancelled(ctx context.Context, job domain.DetectionJob) bool {
+	current, err := s.repository.GetJob(ctx, job.TenantID, job.ID)
 	if err != nil {
 		return false
 	}
@@ -571,8 +576,10 @@ func (s *Service) enqueueRetry(ctx context.Context, job domain.DetectionJob) err
 		}
 		return nil
 	}
+	// The retry already outlived its request via WithoutCancel upstream; keep
+	// the same detached context for the re-process it triggers.
 	go func() {
-		if err := s.Process(context.Background(), job); err != nil {
+		if err := s.Process(context.WithoutCancel(ctx), job); err != nil {
 			s.logger.Error("process embedded detection retry failed", "job_id", job.ID, "error", err)
 		}
 	}()

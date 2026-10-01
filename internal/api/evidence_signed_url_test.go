@@ -35,7 +35,7 @@ func seedEvidence(t *testing.T, repository store.Repository, evidenceStore evide
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.CreateEvidence(item); err != nil {
+	if err := repository.CreateEvidence(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
 	return item

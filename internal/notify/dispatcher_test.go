@@ -42,7 +42,7 @@ func TestSendIncidentPersistsAndDeduplicatesDelivery(t *testing.T) {
 		ID: "channel", TenantID: "tenant", Type: "WEBHOOK", URL: server.URL,
 		Secret: "secret", Enabled: true, CreatedAt: time.Now().UTC(),
 	}
-	if err := repository.CreateAlertChannel(channel); err != nil {
+	if err := repository.CreateAlertChannel(context.Background(), channel); err != nil {
 		t.Fatal(err)
 	}
 	dispatcher := NewDispatcher(repository, guard)
@@ -58,7 +58,7 @@ func TestSendIncidentPersistsAndDeduplicatesDelivery(t *testing.T) {
 	if requests.Load() != 1 {
 		t.Fatalf("expected one webhook request, got %d", requests.Load())
 	}
-	deliveries, _, err := repository.ListAlertDeliveries("tenant", "incident", store.ListOptions{})
+	deliveries, _, err := repository.ListAlertDeliveries(context.Background(), "tenant", "incident", store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestSendIncidentRetriesWithPersistedAttemptCount(t *testing.T) {
 	guard := security.NewURLGuard(true)
 	port := server.Listener.Addr().(*net.TCPAddr).Port
 	guard.AllowedPorts[strconv.Itoa(port)] = struct{}{}
-	if err := repository.CreateAlertChannel(domain.AlertChannel{
+	if err := repository.CreateAlertChannel(context.Background(), domain.AlertChannel{
 		ID: "channel", TenantID: "tenant", Type: "WEBHOOK", URL: server.URL,
 		Enabled: true, CreatedAt: time.Now().UTC(),
 	}); err != nil {
@@ -96,7 +96,7 @@ func TestSendIncidentRetriesWithPersistedAttemptCount(t *testing.T) {
 	if failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonCreated); len(failures) != 0 {
 		t.Fatalf("delivery failed: %v", failures)
 	}
-	deliveries, _, err := repository.ListAlertDeliveries("tenant", "incident", store.ListOptions{})
+	deliveries, _, err := repository.ListAlertDeliveries(context.Background(), "tenant", "incident", store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestMarkDeadLetterFinalizesPendingDeliveries(t *testing.T) {
 		{ID: "pending", TenantID: "tenant", IncidentID: "incident", ChannelID: "one", DedupKey: "one", Status: "PENDING", CreatedAt: now},
 		{ID: "delivered", TenantID: "tenant", IncidentID: "incident", ChannelID: "two", DedupKey: "two", Status: "DELIVERED", CreatedAt: now},
 	} {
-		if err := repository.CreateAlertDelivery(delivery); err != nil {
+		if err := repository.CreateAlertDelivery(context.Background(), delivery); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -123,7 +123,7 @@ func TestMarkDeadLetterFinalizesPendingDeliveries(t *testing.T) {
 	if err := dispatcher.MarkDeadLetter(t.Context(), domain.AlertJob{TenantID: "tenant", IncidentID: "incident"}); err != nil {
 		t.Fatal(err)
 	}
-	deliveries, _, err := repository.ListAlertDeliveries("tenant", "incident", store.ListOptions{})
+	deliveries, _, err := repository.ListAlertDeliveries(context.Background(), "tenant", "incident", store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestSendDingTalkChannel(t *testing.T) {
 	guard := security.NewURLGuard(true)
 	port := server.Listener.Addr().(*net.TCPAddr).Port
 	guard.AllowedPorts[strconv.Itoa(port)] = struct{}{}
-	if err := repository.CreateAlertChannel(domain.AlertChannel{
+	if err := repository.CreateAlertChannel(context.Background(), domain.AlertChannel{
 		ID: "channel", TenantID: "tenant", Type: "DINGTALK", URL: server.URL,
 		Secret: "secret", Enabled: true, CreatedAt: time.Now().UTC(),
 	}); err != nil {
@@ -258,7 +258,7 @@ func TestSendEmailChannel(t *testing.T) {
 
 	repository := store.NewMemoryRepository()
 	guard := security.NewURLGuard(true)
-	if err := repository.CreateAlertChannel(domain.AlertChannel{
+	if err := repository.CreateAlertChannel(context.Background(), domain.AlertChannel{
 		ID: "channel", TenantID: "tenant", Type: "EMAIL",
 		Recipients: "a@example.com, b@example.com", Enabled: true, CreatedAt: time.Now().UTC(),
 	}); err != nil {
@@ -285,7 +285,7 @@ func TestSendEmailChannel(t *testing.T) {
 func TestSendEmailChannelWithoutSMTPConfig(t *testing.T) {
 	repository := store.NewMemoryRepository()
 	guard := security.NewURLGuard(true)
-	if err := repository.CreateAlertChannel(domain.AlertChannel{
+	if err := repository.CreateAlertChannel(context.Background(), domain.AlertChannel{
 		ID: "channel", TenantID: "tenant", Type: "EMAIL",
 		Recipients: "a@example.com", Enabled: true, CreatedAt: time.Now().UTC(),
 	}); err != nil {
@@ -333,7 +333,7 @@ func TestSendIncidentNotifiesOncePerReason(t *testing.T) {
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("a repeated reason produced %d webhook requests, want it deduplicated to 2", got)
 	}
-	deliveries, _, err := repository.ListAlertDeliveries("tenant", "incident", store.ListOptions{})
+	deliveries, _, err := repository.ListAlertDeliveries(context.Background(), "tenant", "incident", store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func webhookChannelRepository(t *testing.T, server *httptest.Server) (store.Repo
 	repository := store.NewMemoryRepository()
 	guard := security.NewURLGuard(true)
 	guard.AllowedPorts[strconv.Itoa(server.Listener.Addr().(*net.TCPAddr).Port)] = struct{}{}
-	if err := repository.CreateAlertChannel(domain.AlertChannel{
+	if err := repository.CreateAlertChannel(context.Background(), domain.AlertChannel{
 		ID: "channel", TenantID: "tenant", Type: "WEBHOOK", URL: server.URL,
 		Enabled: true, CreatedAt: time.Now().UTC(),
 	}); err != nil {
@@ -462,7 +462,7 @@ func TestGateSuppressesDeliveryWithoutRecordingOne(t *testing.T) {
 	if requests.Load() != 1 {
 		t.Fatalf("the refused notification still reached the endpoint (%d requests)", requests.Load())
 	}
-	deliveries, _, err := repository.ListAlertDeliveries("tenant", "incident", store.ListOptions{})
+	deliveries, _, err := repository.ListAlertDeliveries(context.Background(), "tenant", "incident", store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +533,7 @@ func TestSendTestWritesNoDeliveryRecord(t *testing.T) {
 	defer server.Close()
 	repository, guard := webhookChannelRepository(t, server)
 	dispatcher := NewDispatcher(repository, guard)
-	channel, err := repository.GetAlertChannel("tenant", "channel")
+	channel, err := repository.GetAlertChannel(context.Background(), "tenant", "channel")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,7 +543,7 @@ func TestSendTestWritesNoDeliveryRecord(t *testing.T) {
 	if requests.Load() != 1 {
 		t.Fatalf("the test did not reach the endpoint (%d requests)", requests.Load())
 	}
-	deliveries, _, err := repository.ListAlertDeliveries("tenant", "", store.ListOptions{})
+	deliveries, _, err := repository.ListAlertDeliveries(context.Background(), "tenant", "", store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func TestSendTestBypassesTheBreaker(t *testing.T) {
 	if !gate.Open(context.Background(), "channel") {
 		t.Fatal("the breaker did not open, so this test proves nothing")
 	}
-	channel, err := repository.GetAlertChannel("tenant", "channel")
+	channel, err := repository.GetAlertChannel(context.Background(), "tenant", "channel")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +595,7 @@ func TestSendTestRefusesADisabledChannel(t *testing.T) {
 	}))
 	defer server.Close()
 	repository, guard := webhookChannelRepository(t, server)
-	channel, err := repository.GetAlertChannel("tenant", "channel")
+	channel, err := repository.GetAlertChannel(context.Background(), "tenant", "channel")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -615,13 +615,13 @@ func TestSendTestRefusesADisabledChannel(t *testing.T) {
 // table, but never the guard.
 func TestSendTestStillEnforcesTheSSRFGuard(t *testing.T) {
 	repository := store.NewMemoryRepository()
-	if err := repository.CreateAlertChannel(domain.AlertChannel{
+	if err := repository.CreateAlertChannel(context.Background(), domain.AlertChannel{
 		ID: "channel", TenantID: "tenant", Type: "WEBHOOK",
 		URL: "http://169.254.169.254/latest/meta-data/", Enabled: true, CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	channel, err := repository.GetAlertChannel("tenant", "channel")
+	channel, err := repository.GetAlertChannel(context.Background(), "tenant", "channel")
 	if err != nil {
 		t.Fatal(err)
 	}

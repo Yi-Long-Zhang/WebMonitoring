@@ -47,7 +47,7 @@ func TestPostgresMigrationJobClaimAndRestartRecovery(t *testing.T) {
 		ID: identity.New(), TenantID: tenantID, Username: "integration-" + identity.New(),
 		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: time.Now().UTC(),
 	}
-	if err := repository.CreateUser(user); err != nil {
+	if err := repository.CreateUser(context.Background(), user); err != nil {
 		repository.Close()
 		t.Fatal(err)
 	}
@@ -58,12 +58,12 @@ func TestPostgresMigrationJobClaimAndRestartRecovery(t *testing.T) {
 		VerificationStatus: domain.VerificationVerified,
 		CreatedAt:          time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
-	if err := repository.CreateAsset(asset); err != nil {
+	if err := repository.CreateAsset(context.Background(), asset); err != nil {
 		repository.Close()
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if err := repository.UpsertPolicy(domain.MonitorPolicy{
+	if err := repository.UpsertPolicy(context.Background(), domain.MonitorPolicy{
 		ID: identity.New(), TenantID: tenantID, AssetID: asset.ID, Version: 1,
 		HTTPIntervalSeconds: 300, BrowserIntervalSeconds: 1800, TimeoutSeconds: 30,
 		MaxResponseBytes: 1024, CreatedAt: now, UpdatedAt: now,
@@ -75,21 +75,21 @@ func TestPostgresMigrationJobClaimAndRestartRecovery(t *testing.T) {
 		ID: identity.New(), TenantID: tenantID, AssetID: asset.ID, Mode: "HTTP",
 		Status: domain.JobQueued, PolicyVersion: 1, MaxAttempts: 3, CreatedAt: now,
 	}
-	if err := repository.CreateJob(job); err != nil {
+	if err := repository.CreateJob(context.Background(), job); err != nil {
 		repository.Close()
 		t.Fatal(err)
 	}
-	claimed, err := repository.ClaimJob(tenantID, job.ID, now)
+	claimed, err := repository.ClaimJob(context.Background(), tenantID, job.ID, now)
 	if err != nil || !claimed {
 		repository.Close()
 		t.Fatalf("claim queued job: claimed=%v err=%v", claimed, err)
 	}
-	claimedAgain, err := repository.ClaimJob(tenantID, job.ID, now.Add(time.Second))
+	claimedAgain, err := repository.ClaimJob(context.Background(), tenantID, job.ID, now.Add(time.Second))
 	if err != nil || claimedAgain {
 		repository.Close()
 		t.Fatalf("reclaimed active job: claimed=%v err=%v", claimedAgain, err)
 	}
-	current, err := repository.GetJob(tenantID, job.ID)
+	current, err := repository.GetJob(context.Background(), tenantID, job.ID)
 	if err != nil {
 		repository.Close()
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestPostgresMigrationJobClaimAndRestartRecovery(t *testing.T) {
 		repository.Close()
 		t.Fatalf("job status=%s, want RUNNING", current.Status)
 	}
-	jobs, _, err := repository.ListJobs(tenantID, ListOptions{})
+	jobs, _, err := repository.ListJobs(context.Background(), tenantID, ListOptions{})
 	if err != nil || len(jobs) == 0 {
 		repository.Close()
 		t.Fatalf("list jobs: count=%d err=%v", len(jobs), err)
@@ -110,7 +110,7 @@ func TestPostgresMigrationJobClaimAndRestartRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	persisted, err := reopened.GetJob(tenantID, job.ID)
+	persisted, err := reopened.GetJob(context.Background(), tenantID, job.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 		ID: identity.New(), TenantID: defaultTenant, Username: "site-owner-" + identity.New(),
 		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
 	}
-	if err := repository.CreateUser(owner); err != nil {
+	if err := repository.CreateUser(context.Background(), owner); err != nil {
 		t.Fatal(err)
 	}
 	// Names are unique per tenant, so the suite has to mint a fresh one to stay
@@ -158,26 +158,26 @@ func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 		ID: identity.New(), TenantID: defaultTenant, Name: "scoped site " + identity.New(),
 		Domain: "example-" + identity.New() + ".com", OwnerID: owner.ID, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := repository.CreateSite(site); err != nil {
+	if err := repository.CreateSite(context.Background(), site); err != nil {
 		t.Fatal(err)
 	}
-	listed, _, err := repository.ListSites(defaultTenant, ListOptions{})
+	listed, _, err := repository.ListSites(context.Background(), defaultTenant, ListOptions{})
 	if err != nil || len(listed) == 0 {
 		t.Fatalf("list sites: count=%d err=%v", len(listed), err)
 	}
-	if _, err := repository.GetSite(defaultTenant, site.ID); err != nil {
+	if _, err := repository.GetSite(context.Background(), defaultTenant, site.ID); err != nil {
 		t.Fatalf("get site: %v", err)
 	}
 
 	otherTenant := domain.Tenant{ID: identity.New(), Slug: "integration-" + identity.New(), Name: "Other", CreatedAt: now}
-	if err := repository.CreateTenant(otherTenant); err != nil {
+	if err := repository.CreateTenant(context.Background(), otherTenant); err != nil {
 		t.Fatal(err)
 	}
 	foreignOwner := domain.User{
 		ID: identity.New(), TenantID: otherTenant.ID, Username: "foreign-owner-" + identity.New(),
 		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
 	}
-	if err := repository.CreateUser(foreignOwner); err != nil {
+	if err := repository.CreateUser(context.Background(), foreignOwner); err != nil {
 		t.Fatal(err)
 	}
 
@@ -187,7 +187,7 @@ func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 		ID: identity.New(), TenantID: defaultTenant, Name: "cross-owner site " + identity.New(),
 		Domain: "example-" + identity.New() + ".com", OwnerID: foreignOwner.ID, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := repository.CreateSite(crossOwner); err == nil {
+	if err := repository.CreateSite(context.Background(), crossOwner); err == nil {
 		t.Fatal("cross-tenant site owner was accepted")
 	}
 
@@ -195,7 +195,7 @@ func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 		ID: identity.New(), TenantID: otherTenant.ID, Name: "foreign site " + identity.New(),
 		Domain: "example-" + identity.New() + ".com", OwnerID: foreignOwner.ID, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := repository.CreateSite(foreignSite); err != nil {
+	if err := repository.CreateSite(context.Background(), foreignSite); err != nil {
 		t.Fatal(err)
 	}
 
@@ -206,7 +206,7 @@ func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 		URL: "https://example-" + identity.New() + ".com", Type: domain.AssetOfficial, OwnerID: owner.ID,
 		Enabled: true, VerificationStatus: domain.VerificationVerified, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := repository.CreateAsset(crossAsset); err == nil {
+	if err := repository.CreateAsset(context.Background(), crossAsset); err == nil {
 		t.Fatal("cross-tenant site reference on asset was accepted")
 	}
 }
@@ -242,25 +242,25 @@ func TestPostgresKeysetPaginationWalksEveryRowOnce(t *testing.T) {
 
 	now := time.Now().UTC()
 	tenant := domain.Tenant{ID: identity.New(), Slug: "pagination-" + identity.New(), Name: "Pagination", CreatedAt: now}
-	if err := repository.CreateTenant(tenant); err != nil {
+	if err := repository.CreateTenant(context.Background(), tenant); err != nil {
 		t.Fatal(err)
 	}
 	owner := domain.User{
 		ID: identity.New(), TenantID: tenant.ID, Username: "pagination-owner-" + identity.New(),
 		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
 	}
-	if err := repository.CreateUser(owner); err != nil {
+	if err := repository.CreateUser(context.Background(), owner); err != nil {
 		t.Fatal(err)
 	}
 	foreign := domain.Tenant{ID: identity.New(), Slug: "pagination-foreign-" + identity.New(), Name: "Foreign", CreatedAt: now}
-	if err := repository.CreateTenant(foreign); err != nil {
+	if err := repository.CreateTenant(context.Background(), foreign); err != nil {
 		t.Fatal(err)
 	}
 	foreignOwner := domain.User{
 		ID: identity.New(), TenantID: foreign.ID, Username: "pagination-foreign-owner-" + identity.New(),
 		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
 	}
-	if err := repository.CreateUser(foreignOwner); err != nil {
+	if err := repository.CreateUser(context.Background(), foreignOwner); err != nil {
 		t.Fatal(err)
 	}
 
@@ -276,7 +276,7 @@ func TestPostgresKeysetPaginationWalksEveryRowOnce(t *testing.T) {
 			VerificationStatus: domain.VerificationVerified,
 			CreatedAt:          base.Add(time.Duration(index) * time.Second), UpdatedAt: now,
 		}
-		if err := repository.CreateAsset(asset); err != nil {
+		if err := repository.CreateAsset(context.Background(), asset); err != nil {
 			t.Fatal(err)
 		}
 		expected = append([]string{asset.ID}, expected...)
@@ -288,7 +288,7 @@ func TestPostgresKeysetPaginationWalksEveryRowOnce(t *testing.T) {
 		VerificationStatus: domain.VerificationVerified,
 		CreatedAt:          base.Add(time.Hour), UpdatedAt: now,
 	}
-	if err := repository.CreateAsset(foreignAsset); err != nil {
+	if err := repository.CreateAsset(context.Background(), foreignAsset); err != nil {
 		t.Fatal(err)
 	}
 
@@ -300,7 +300,7 @@ func TestPostgresKeysetPaginationWalksEveryRowOnce(t *testing.T) {
 		if page > total+1 {
 			t.Fatal("keyset pagination did not terminate")
 		}
-		items, next, err := repository.ListAssets(tenant.ID, ListOptions{Limit: pageSize, Cursor: cursor})
+		items, next, err := repository.ListAssets(context.Background(), tenant.ID, ListOptions{Limit: pageSize, Cursor: cursor})
 		if err != nil {
 			t.Fatalf("assets page %d: %v", page, err)
 		}
@@ -333,7 +333,7 @@ func TestPostgresKeysetPaginationWalksEveryRowOnce(t *testing.T) {
 	}
 
 	// ListTenants shares the helper but has no tenant predicate at all.
-	tenants, _, err := repository.ListTenants(ListOptions{Limit: 2})
+	tenants, _, err := repository.ListTenants(context.Background(), ListOptions{Limit: 2})
 	if err != nil {
 		t.Fatalf("list tenants: %v", err)
 	}
@@ -380,10 +380,10 @@ func TestAlertChannelUpdateKeepsCiphertextReadable(t *testing.T) {
 		Type: "WEBHOOK", URL: "https://hooks.example.com/integration",
 		Secret: "integration-secret", Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := repository.CreateAlertChannel(channel); err != nil {
+	if err := repository.CreateAlertChannel(context.Background(), channel); err != nil {
 		t.Fatal(err)
 	}
-	before, err := repository.ListAlertChannelsWithSecrets(tenantID)
+	before, err := repository.ListAlertChannelsWithSecrets(context.Background(), tenantID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,11 +405,11 @@ func TestAlertChannelUpdateKeepsCiphertextReadable(t *testing.T) {
 	renamed := stored
 	renamed.Name = "integration channel renamed"
 	renamed.UpdatedAt = time.Now().UTC()
-	if err := repository.UpdateAlertChannel(renamed); err != nil {
+	if err := repository.UpdateAlertChannel(context.Background(), renamed); err != nil {
 		t.Fatal(err)
 	}
 
-	after, err := repository.ListAlertChannelsWithSecrets(tenantID)
+	after, err := repository.ListAlertChannelsWithSecrets(context.Background(), tenantID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,17 +435,17 @@ func TestAlertChannelUpdateKeepsCiphertextReadable(t *testing.T) {
 	other := "00000000-0000-4000-8000-000000000002"
 	crossTenant := renamed
 	crossTenant.TenantID = other
-	if err := repository.UpdateAlertChannel(crossTenant); err != ErrNotFound {
+	if err := repository.UpdateAlertChannel(context.Background(), crossTenant); err != ErrNotFound {
 		t.Fatalf("cross-tenant update returned %v, want ErrNotFound", err)
 	}
-	if err := repository.DeleteAlertChannel(other, channel.ID); err != ErrNotFound {
+	if err := repository.DeleteAlertChannel(context.Background(), other, channel.ID); err != ErrNotFound {
 		t.Fatalf("cross-tenant delete returned %v, want ErrNotFound", err)
 	}
 
-	if err := repository.DeleteAlertChannel(tenantID, channel.ID); err != nil {
+	if err := repository.DeleteAlertChannel(context.Background(), tenantID, channel.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repository.GetAlertChannel(tenantID, channel.ID); err != ErrNotFound {
+	if _, err := repository.GetAlertChannel(context.Background(), tenantID, channel.ID); err != ErrNotFound {
 		t.Fatalf("the channel survived the delete: %v", err)
 	}
 }

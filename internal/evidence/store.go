@@ -10,7 +10,9 @@ import (
 
 type Store interface {
 	Put(tenantID, assetID, jobID, kind, mediaType string, content []byte) (domain.Evidence, error)
-	Open(objectKey string) (io.ReadCloser, error)
+	// Open streams one object. The ctx governs the transfer for as long as
+	// the caller reads the returned stream, so it must outlive the read.
+	Open(ctx context.Context, objectKey string) (io.ReadCloser, error)
 	Delete(objectKey string) error
 }
 

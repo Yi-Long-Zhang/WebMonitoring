@@ -42,14 +42,14 @@ func newSchedulerFixture(t *testing.T) (*Scheduler, store.Repository, *recording
 	now := time.Now().UTC()
 	suffix := identity.New()
 	tenant := domain.Tenant{ID: identity.New(), Slug: "sched-" + suffix, Name: "sched", CreatedAt: now}
-	if err := repository.CreateTenant(tenant); err != nil {
+	if err := repository.CreateTenant(context.Background(), tenant); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
 	owner := domain.User{
 		ID: identity.New(), TenantID: tenant.ID, Username: "owner-" + suffix,
 		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
 	}
-	if err := repository.CreateUser(owner); err != nil {
+	if err := repository.CreateUser(context.Background(), owner); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	asset := domain.Asset{
@@ -58,10 +58,10 @@ func newSchedulerFixture(t *testing.T) (*Scheduler, store.Repository, *recording
 		OwnerID: owner.ID, Enabled: true, VerificationStatus: domain.VerificationVerified,
 		VerificationMethod: domain.VerificationFile, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := repository.CreateAsset(asset); err != nil {
+	if err := repository.CreateAsset(context.Background(), asset); err != nil {
 		t.Fatalf("create asset: %v", err)
 	}
-	if err := repository.UpsertPolicy(domain.MonitorPolicy{
+	if err := repository.UpsertPolicy(context.Background(), domain.MonitorPolicy{
 		ID: identity.New(), TenantID: tenant.ID, AssetID: asset.ID, Version: 1,
 		HTTPIntervalSeconds: 300, BrowserIntervalSeconds: 0, TimeoutSeconds: 30,
 		MaxResponseBytes: 1024, CreatedAt: now, UpdatedAt: now,
@@ -97,12 +97,12 @@ func TestConcurrentReplicasQueueOneJobPerAsset(t *testing.T) {
 			defer finished.Done()
 			started.Done()
 			started.Wait()
-			scheduler.queueIfDue(tenantID, assetID, "HTTP", 300, nil, now)
+			scheduler.queueIfDue(context.Background(), tenantID, assetID, "HTTP", 300, nil, now)
 		}()
 	}
 	finished.Wait()
 
-	jobs, _, err := repository.ListJobs(tenantID, store.ListOptions{})
+	jobs, _, err := repository.ListJobs(context.Background(), tenantID, store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,11 +124,11 @@ func TestConcurrentReplicasQueueOneJobPerAsset(t *testing.T) {
 // a second tick before the interval elapses must not queue again.
 func TestRepeatedScheduleDoesNotQueueWhileJobIsActive(t *testing.T) {
 	scheduler, repository, queue, tenantID, _ := newSchedulerFixture(t)
-	scheduler.schedule(tenantID)
-	scheduler.schedule(tenantID)
-	scheduler.schedule(tenantID)
+	scheduler.schedule(context.Background(), tenantID)
+	scheduler.schedule(context.Background(), tenantID)
+	scheduler.schedule(context.Background(), tenantID)
 
-	jobs, _, err := repository.ListJobs(tenantID, store.ListOptions{})
+	jobs, _, err := repository.ListJobs(context.Background(), tenantID, store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -35,7 +35,7 @@ func seedExpired(t *testing.T, repository store.Repository, evidenceStore eviden
 	}
 	past := time.Now().UTC().Add(-time.Hour)
 	item.RetainUntil = &past
-	if err := repository.CreateEvidence(item); err != nil {
+	if err := repository.CreateEvidence(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
 	return item
@@ -52,10 +52,10 @@ func TestDryRunRemovesNothing(t *testing.T) {
 	if !result.DryRun || result.ExpiredEvidence != 1 || result.DeletedEvidence != 0 {
 		t.Fatalf("unexpected dry run result: %+v", result)
 	}
-	if _, err := repository.GetEvidence(testTenant, item.ID); err != nil {
+	if _, err := repository.GetEvidence(context.Background(), testTenant, item.ID); err != nil {
 		t.Fatalf("dry run removed evidence metadata: %v", err)
 	}
-	reader, err := evidenceStore.Open(item.ObjectKey)
+	reader, err := evidenceStore.Open(context.Background(), item.ObjectKey)
 	if err != nil {
 		t.Fatalf("dry run removed the evidence object: %v", err)
 	}
@@ -75,10 +75,10 @@ func TestExecuteDeletesExpiredEvidence(t *testing.T) {
 	if result.DeletedEvidence != 1 || result.FailedEvidence != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	if _, err := repository.GetEvidence(testTenant, item.ID); err != store.ErrNotFound {
+	if _, err := repository.GetEvidence(context.Background(), testTenant, item.ID); err != store.ErrNotFound {
 		t.Fatalf("metadata survived the pass: %v", err)
 	}
-	if _, err := evidenceStore.Open(item.ObjectKey); err == nil {
+	if _, err := evidenceStore.Open(context.Background(), item.ObjectKey); err == nil {
 		t.Fatal("evidence object survived the pass")
 	}
 }
@@ -98,7 +98,7 @@ func TestReferencedEvidenceIsProtected(t *testing.T) {
 		ID: "baseline", TenantID: testTenant, AssetID: "asset", Version: 1,
 		Status: domain.BaselineApproved, CreatedBy: "tester", CreatedAt: now,
 	}
-	if err := repository.CreateBaseline(baseline); err != nil {
+	if err := repository.CreateBaseline(context.Background(), baseline); err != nil {
 		t.Fatal(err)
 	}
 	incident := domain.Incident{
@@ -107,7 +107,7 @@ func TestReferencedEvidenceIsProtected(t *testing.T) {
 		Severity: domain.SeverityHigh, Status: domain.IncidentOpen, Title: "changed",
 		EvidenceIDs: []string{item.ID}, CreatedAt: now, FirstSeenAt: now, LastSeenAt: now,
 	}
-	if _, _, err := repository.UpsertIncident(incident); err != nil {
+	if _, _, err := repository.UpsertIncident(context.Background(), incident); err != nil {
 		t.Fatal(err)
 	}
 
@@ -118,7 +118,7 @@ func TestReferencedEvidenceIsProtected(t *testing.T) {
 	if result.ProtectedEvidence != 1 || result.DeletedEvidence != 0 {
 		t.Fatalf("referenced evidence was not protected: %+v", result)
 	}
-	if _, err := repository.GetEvidence(testTenant, item.ID); err != nil {
+	if _, err := repository.GetEvidence(context.Background(), testTenant, item.ID); err != nil {
 		t.Fatalf("protected evidence was removed: %v", err)
 	}
 }
@@ -128,7 +128,7 @@ func TestReferencedEvidenceIsProtected(t *testing.T) {
 func TestRunAllTenantsSkipsDisabledTenants(t *testing.T) {
 	repository, evidenceStore, runner := newTestRunner(t)
 	disabledTenant := "00000000-0000-4000-8000-0000000000bb"
-	if err := repository.CreateTenant(domain.Tenant{
+	if err := repository.CreateTenant(context.Background(), domain.Tenant{
 		ID: disabledTenant, Slug: "parked", Name: "Parked", Disabled: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestRunAllTenantsSkipsDisabledTenants(t *testing.T) {
 	}
 	past := time.Now().UTC().Add(-time.Hour)
 	parked.RetainUntil = &past
-	if err := repository.CreateEvidence(parked); err != nil {
+	if err := repository.CreateEvidence(context.Background(), parked); err != nil {
 		t.Fatal(err)
 	}
 
@@ -149,10 +149,10 @@ func TestRunAllTenantsSkipsDisabledTenants(t *testing.T) {
 	if _, ok := results[disabledTenant]; ok {
 		t.Fatal("disabled tenant was swept")
 	}
-	if _, err := repository.GetEvidence(testTenant, active.ID); err != store.ErrNotFound {
+	if _, err := repository.GetEvidence(context.Background(), testTenant, active.ID); err != store.ErrNotFound {
 		t.Fatalf("active tenant evidence survived: %v", err)
 	}
-	if _, err := repository.GetEvidence(disabledTenant, parked.ID); err != nil {
+	if _, err := repository.GetEvidence(context.Background(), disabledTenant, parked.ID); err != nil {
 		t.Fatalf("disabled tenant evidence was removed: %v", err)
 	}
 }

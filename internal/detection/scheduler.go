@@ -23,43 +23,43 @@ func NewScheduler(repository store.Repository, service *Service, logger *slog.Lo
 func (s *Scheduler) Run(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-	s.scheduleAll()
+	s.scheduleAll(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.scheduleAll()
+			s.scheduleAll(ctx)
 		}
 	}
 }
 
-func (s *Scheduler) scheduleAll() {
-	tenants, _, err := s.repository.ListTenants(store.ListOptions{})
+func (s *Scheduler) scheduleAll(ctx context.Context) {
+	tenants, _, err := s.repository.ListTenants(ctx, store.ListOptions{})
 	if err != nil {
 		s.logger.Error("list tenants for scheduling", "error", err)
 		return
 	}
 	for _, tenant := range tenants {
-		s.schedule(tenant.ID)
+		s.schedule(ctx, tenant.ID)
 	}
 }
 
-func (s *Scheduler) schedule(tenantID string) {
+func (s *Scheduler) schedule(ctx context.Context, tenantID string) {
 	now := time.Now().UTC()
 	// The lease comes from the repository rather than the package constant, so
 	// the reap cutoff and the ClaimJob reclaim cutoff cannot drift apart.
-	if reaped, err := s.repository.ReapTimedOut(tenantID, now.Add(-s.repository.JobLease())); err != nil {
+	if reaped, err := s.repository.ReapTimedOut(ctx, tenantID, now.Add(-s.repository.JobLease())); err != nil {
 		s.logger.Error("reap timed out detection jobs", "error", err)
 	} else if reaped > 0 {
 		s.logger.Warn("reaped stale RUNNING detection jobs", "tenant_id", tenantID, "count", reaped)
 	}
-	jobs, _, err := s.repository.ListJobs(tenantID, store.ListOptions{})
+	jobs, _, err := s.repository.ListJobs(ctx, tenantID, store.ListOptions{})
 	if err != nil {
 		s.logger.Error("list scheduled jobs", "error", err)
 		return
 	}
-	assets, _, err := s.repository.ListAssets(tenantID, store.ListOptions{})
+	assets, _, err := s.repository.ListAssets(ctx, tenantID, store.ListOptions{})
 	if err != nil {
 		s.logger.Error("list scheduled assets", "error", err)
 		return
@@ -68,12 +68,12 @@ func (s *Scheduler) schedule(tenantID string) {
 		if !asset.Enabled || asset.VerificationStatus != domain.VerificationVerified {
 			continue
 		}
-		policy, err := s.repository.GetPolicy(tenantID, asset.ID)
+		policy, err := s.repository.GetPolicy(ctx, tenantID, asset.ID)
 		if err != nil || inMaintenanceWindow(policy, now) {
 			continue
 		}
-		s.queueIfDue(tenantID, asset.ID, "HTTP", policy.HTTPIntervalSeconds, jobs, now)
-		s.queueIfDue(tenantID, asset.ID, "BROWSER", policy.BrowserIntervalSeconds, jobs, now)
+		s.queueIfDue(ctx, tenantID, asset.ID, "HTTP", policy.HTTPIntervalSeconds, jobs, now)
+		s.queueIfDue(ctx, tenantID, asset.ID, "BROWSER", policy.BrowserIntervalSeconds, jobs, now)
 	}
 }
 
@@ -84,11 +84,11 @@ func (s *Scheduler) schedule(tenantID string) {
 // can queue the same asset in between; the partial unique index from migration
 // 000012 rejects the loser. Logging that at warn on every 30s tick would bury
 // real scheduling failures, so it is a silent no-op.
-func (s *Scheduler) queueIfDue(tenantID, assetID, mode string, intervalSeconds int, jobs []domain.DetectionJob, now time.Time) {
+func (s *Scheduler) queueIfDue(ctx context.Context, tenantID, assetID, mode string, intervalSeconds int, jobs []domain.DetectionJob, now time.Time) {
 	if !due(assetID, mode, intervalSeconds, jobs, now) {
 		return
 	}
-	if _, err := s.service.Queue(tenantID, assetID, mode); err != nil &&
+	if _, err := s.service.Queue(ctx, tenantID, assetID, mode); err != nil &&
 		!errors.Is(err, store.ErrJobAlreadyActive) {
 		s.logger.Warn("schedule detection check", "asset_id", assetID, "mode", mode, "error", err)
 	}

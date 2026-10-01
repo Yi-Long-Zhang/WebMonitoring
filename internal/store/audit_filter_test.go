@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -82,7 +83,7 @@ func seedAuditFixture(t *testing.T, repository Repository) auditFixture {
 			Result: row.result, TraceID: "trace-" + row.label,
 			CreatedAt: fixture.base.Add(row.offset),
 		}
-		if err := repository.AppendAudit(event); err != nil {
+		if err := repository.AppendAudit(context.Background(), event); err != nil {
 			t.Fatalf("append audit %s: %v", row.label, err)
 		}
 		fixture.allIDs[id] = true
@@ -106,7 +107,7 @@ func seedAuditFixture(t *testing.T, repository Repository) auditFixture {
 	// The other tenant holds rows that match the first tenant's filter values,
 	// so a filter that drops the tenant predicate cannot pass unnoticed.
 	fixture.foreign = identity.New()
-	if err := repository.AppendAudit(domain.AuditEvent{
+	if err := repository.AppendAudit(context.Background(), domain.AuditEvent{
 		ID: fixture.foreign, TenantID: fixture.otherID, ActorID: fixture.otherActor,
 		Action: "asset.create", ResourceType: "asset", ResourceID: "asset-1",
 		Result: "SUCCESS", TraceID: "trace-foreign", CreatedAt: fixture.base,
@@ -133,10 +134,10 @@ func seedAuditTenant(t *testing.T, repository Repository, slug, username string)
 	t.Helper()
 	now := time.Now().UTC()
 	tenant := domain.Tenant{ID: identity.New(), Slug: slug, Name: slug, CreatedAt: now}
-	if err := repository.CreateTenant(tenant); err != nil {
+	if err := repository.CreateTenant(context.Background(), tenant); err != nil {
 		t.Fatalf("create tenant %s: %v", slug, err)
 	}
-	if err := repository.CreateUser(domain.User{
+	if err := repository.CreateUser(context.Background(), domain.User{
 		ID: identity.New(), TenantID: tenant.ID, Username: username,
 		PasswordHash: "hash", Role: domain.RoleAdmin, CreatedAt: now,
 	}); err != nil {
@@ -147,7 +148,7 @@ func seedAuditTenant(t *testing.T, repository Repository, slug, username string)
 
 func auditUserID(t *testing.T, repository Repository, tenantID string) string {
 	t.Helper()
-	users, err := repository.ListUsers(tenantID)
+	users, err := repository.ListUsers(context.Background(), tenantID)
 	if err != nil {
 		t.Fatalf("list users: %v", err)
 	}
@@ -208,7 +209,7 @@ func TestAuditFilterAgreesAcrossStores(t *testing.T) {
 				},
 			}
 			for _, testCase := range cases {
-				events, _, err := repository.ListAudits(fixture.tenantID, testCase.filter, ListOptions{})
+				events, _, err := repository.ListAudits(context.Background(), fixture.tenantID, testCase.filter, ListOptions{})
 				if err != nil {
 					t.Fatalf("%s: %v", testCase.label, err)
 				}
@@ -230,7 +231,7 @@ func TestAuditFilterKeepsTenantBoundary(t *testing.T) {
 				{Action: "asset.create", ResourceID: "asset-1"},
 				{ActorID: fixture.otherActor},
 			} {
-				events, _, err := repository.ListAudits(fixture.tenantID, filter, ListOptions{})
+				events, _, err := repository.ListAudits(context.Background(), fixture.tenantID, filter, ListOptions{})
 				if err != nil {
 					t.Fatalf("%v: %v", filter, err)
 				}
@@ -259,7 +260,7 @@ func TestAuditFilterSurvivesCursorWalk(t *testing.T) {
 			seen := map[string]bool{}
 			cursor := ""
 			for pages := 0; pages < 20; pages++ {
-				events, next, err := repository.ListAudits(fixture.tenantID, filter, ListOptions{Limit: 2, Cursor: cursor})
+				events, next, err := repository.ListAudits(context.Background(), fixture.tenantID, filter, ListOptions{Limit: 2, Cursor: cursor})
 				if err != nil {
 					t.Fatalf("page %d: %v", pages, err)
 				}
@@ -289,7 +290,7 @@ func TestAuditFilterTimeRangeIsInclusive(t *testing.T) {
 			fixture := seedAuditFixture(t, repository)
 
 			// a2 and a3 sit at -1m and -2m; both ends included.
-			events, _, err := repository.ListAudits(fixture.tenantID, AuditFilter{
+			events, _, err := repository.ListAudits(context.Background(), fixture.tenantID, AuditFilter{
 				From: fixture.base.Add(-2 * time.Minute),
 				To:   fixture.base.Add(-1 * time.Minute),
 			}, ListOptions{})
@@ -299,7 +300,7 @@ func TestAuditFilterTimeRangeIsInclusive(t *testing.T) {
 			assertSameIDSet(t, "inclusive range", auditIDs(events), fixture.ids("create2", "update1"))
 
 			// A one-sided bound is unbounded on the other side.
-			events, _, err = repository.ListAudits(fixture.tenantID, AuditFilter{
+			events, _, err = repository.ListAudits(context.Background(), fixture.tenantID, AuditFilter{
 				From: fixture.base.Add(-time.Minute),
 			}, ListOptions{})
 			if err != nil {
@@ -319,7 +320,7 @@ func TestAuditFilterNeverMatchesAutomatedWrites(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fixture := seedAuditFixture(t, repository)
 
-			filtered, _, err := repository.ListAudits(fixture.tenantID, AuditFilter{ActorID: fixture.actor}, ListOptions{})
+			filtered, _, err := repository.ListAudits(context.Background(), fixture.tenantID, AuditFilter{ActorID: fixture.actor}, ListOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -329,7 +330,7 @@ func TestAuditFilterNeverMatchesAutomatedWrites(t *testing.T) {
 				}
 			}
 
-			unfiltered, _, err := repository.ListAudits(fixture.tenantID, AuditFilter{}, ListOptions{})
+			unfiltered, _, err := repository.ListAudits(context.Background(), fixture.tenantID, AuditFilter{}, ListOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}

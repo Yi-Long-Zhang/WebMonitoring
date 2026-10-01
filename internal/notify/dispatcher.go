@@ -103,11 +103,11 @@ func (d *Dispatcher) recordRefusal(channelType, reason string) {
 }
 
 func (d *Dispatcher) ProcessAlert(ctx context.Context, job domain.AlertJob) error {
-	incident, err := d.repository.GetIncident(job.TenantID, job.IncidentID)
+	incident, err := d.repository.GetIncident(ctx, job.TenantID, job.IncidentID)
 	if err != nil {
 		return fmt.Errorf("load alert incident: %w", err)
 	}
-	asset, err := d.repository.GetAsset(job.TenantID, job.AssetID)
+	asset, err := d.repository.GetAsset(ctx, job.TenantID, job.AssetID)
 	if err != nil {
 		return fmt.Errorf("load alert asset: %w", err)
 	}
@@ -119,7 +119,7 @@ func (d *Dispatcher) ProcessAlert(ctx context.Context, job domain.AlertJob) erro
 }
 
 func (d *Dispatcher) MarkDeadLetter(ctx context.Context, job domain.AlertJob) error {
-	deliveries, _, err := d.repository.ListAlertDeliveries(job.TenantID, job.IncidentID, store.ListOptions{})
+	deliveries, _, err := d.repository.ListAlertDeliveries(ctx, job.TenantID, job.IncidentID, store.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("load alert deliveries: %w", err)
 	}
@@ -133,7 +133,7 @@ func (d *Dispatcher) MarkDeadLetter(ctx context.Context, job domain.AlertJob) er
 		delivery.LastError = "alert message exceeded the maximum delivery count"
 		delivery.NextAttemptAt = nil
 		delivery.UpdatedAt = now
-		if err := d.repository.UpdateAlertDelivery(delivery); err != nil {
+		if err := d.repository.UpdateAlertDelivery(ctx, delivery); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -174,7 +174,7 @@ func NewDispatcher(repository store.Repository, guard *security.URLGuard) *Dispa
 // ones look like duplicates of the first and drop them without a trace.
 func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident, asset domain.Asset, reason string) []error {
 	failures := make([]error, 0)
-	channels, err := d.repository.ListAlertChannelsWithSecrets(incident.TenantID)
+	channels, err := d.repository.ListAlertChannelsWithSecrets(ctx, incident.TenantID)
 	if err != nil {
 		return []error{fmt.Errorf("load alert channels: %w", err)}
 	}
@@ -198,9 +198,9 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 			ChannelID: channel.ID, DedupKey: dedupKey,
 			Status: "PENDING", CreatedAt: now, UpdatedAt: now,
 		}
-		if err := d.repository.CreateAlertDelivery(delivery); err != nil {
+		if err := d.repository.CreateAlertDelivery(ctx, delivery); err != nil {
 			if errors.Is(err, store.ErrConflict) {
-				existing, findErr := d.findDelivery(incident.TenantID, incident.ID, dedupKey)
+				existing, findErr := d.findDelivery(ctx, incident.TenantID, incident.ID, dedupKey)
 				if findErr != nil {
 					failures = append(failures, fmt.Errorf("channel %s delivery lookup: %w", channel.ID, findErr))
 					continue
@@ -245,7 +245,7 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 			if err := d.send(ctx, channel, incident, asset, reason); err == nil {
 				delivery.Status = "DELIVERED"
 				delivery.LastError = ""
-				if updateErr := d.repository.UpdateAlertDelivery(delivery); updateErr != nil {
+				if updateErr := d.repository.UpdateAlertDelivery(ctx, delivery); updateErr != nil {
 					failures = append(failures, fmt.Errorf("channel %s delivery update: %w", channel.ID, updateErr))
 				}
 				// A success is what closes the breaker, so it is recorded before
@@ -260,7 +260,7 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 				delivery.LastError = safeDeliveryError(err)
 				delivery.NextAttemptAt = ptr(time.Now().UTC().Add(time.Duration(1<<attempt) * d.baseBackoff))
 				d.record(channel.Type, "RETRY")
-				if updateErr := d.repository.UpdateAlertDelivery(delivery); updateErr != nil {
+				if updateErr := d.repository.UpdateAlertDelivery(ctx, delivery); updateErr != nil {
 					lastErr = errors.Join(lastErr, updateErr)
 					break
 				}
@@ -271,7 +271,7 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 			delivery.LastError = safeDeliveryError(lastErr)
 			delivery.UpdatedAt = time.Now().UTC()
 			delivery.NextAttemptAt = nil
-			if updateErr := d.repository.UpdateAlertDelivery(delivery); updateErr != nil {
+			if updateErr := d.repository.UpdateAlertDelivery(ctx, delivery); updateErr != nil {
 				failures = append(failures, fmt.Errorf("channel %s delivery update: %w", channel.ID, updateErr))
 			}
 			// One failure per delivery, after the whole ladder has been spent,
@@ -326,8 +326,8 @@ func (d *Dispatcher) record(channelType, status string) {
 // findDelivery looks up a channel's delivery by its dedup key rather than by
 // channel alone: one incident now has several deliveries per channel, one per
 // reason, and matching on the channel would find the wrong one.
-func (d *Dispatcher) findDelivery(tenantID, incidentID, dedupKey string) (domain.AlertDelivery, error) {
-	deliveries, _, err := d.repository.ListAlertDeliveries(tenantID, incidentID, store.ListOptions{})
+func (d *Dispatcher) findDelivery(ctx context.Context, tenantID, incidentID, dedupKey string) (domain.AlertDelivery, error) {
+	deliveries, _, err := d.repository.ListAlertDeliveries(ctx, tenantID, incidentID, store.ListOptions{})
 	if err != nil {
 		return domain.AlertDelivery{}, err
 	}

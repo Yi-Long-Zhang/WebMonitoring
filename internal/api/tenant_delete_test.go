@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -22,7 +23,7 @@ func tenantDeleteServer(t *testing.T) (*store.MemoryRepository, *Server, domain.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.CreateTenant(domain.Tenant{ID: tenantDeleteTarget, Slug: "doomed", Name: "Doomed"}); err != nil {
+	if err := repository.CreateTenant(context.Background(), domain.Tenant{ID: tenantDeleteTarget, Slug: "doomed", Name: "Doomed"}); err != nil {
 		t.Fatal(err)
 	}
 	server := retentionServer(repository, evidenceStore)
@@ -42,7 +43,7 @@ func TestDeleteTenantRequiresConfirmationAndFailsWhenNotEmpty(t *testing.T) {
 	}
 
 	// Seed a user so the tenant is no longer empty.
-	if err := repository.CreateUser(domain.User{
+	if err := repository.CreateUser(context.Background(), domain.User{
 		ID: "aaaaaaaa-0000-4000-8000-000000000001", TenantID: tenantDeleteTarget,
 		Username: "resident", PasswordHash: "x", Role: domain.RoleAdmin,
 	}); err != nil {
@@ -56,14 +57,14 @@ func TestDeleteTenantRequiresConfirmationAndFailsWhenNotEmpty(t *testing.T) {
 	if !bytes.Contains(notEmpty.Body.Bytes(), []byte(`"users":1`)) {
 		t.Fatalf("expected resource counts in body=%s", notEmpty.Body.String())
 	}
-	if _, err := repository.GetTenant(tenantDeleteTarget); err != nil {
+	if _, err := repository.GetTenant(context.Background(), tenantDeleteTarget); err != nil {
 		t.Fatalf("refused delete removed the tenant: %v", err)
 	}
 }
 
 func TestDeleteTenantCascadeRemovesTenantScopedData(t *testing.T) {
 	repository, server, root := tenantDeleteServer(t)
-	if err := repository.CreateUser(domain.User{
+	if err := repository.CreateUser(context.Background(), domain.User{
 		ID: "aaaaaaaa-0000-4000-8000-000000000001", TenantID: tenantDeleteTarget,
 		Username: "resident", PasswordHash: "x", Role: domain.RoleAdmin,
 	}); err != nil {
@@ -87,10 +88,10 @@ func TestDeleteTenantCascadeRemovesTenantScopedData(t *testing.T) {
 	if payload.TenantID != tenantDeleteTarget || payload.DeletedResources["users"] != 1 {
 		t.Fatalf("unexpected result: %+v", payload)
 	}
-	if _, err := repository.GetTenant(tenantDeleteTarget); err != store.ErrNotFound {
+	if _, err := repository.GetTenant(context.Background(), tenantDeleteTarget); err != store.ErrNotFound {
 		t.Fatalf("tenant still present: %v", err)
 	}
-	if _, err := repository.GetUser(tenantDeleteTarget, "aaaaaaaa-0000-4000-8000-000000000001"); err != store.ErrNotFound {
+	if _, err := repository.GetUser(context.Background(), tenantDeleteTarget, "aaaaaaaa-0000-4000-8000-000000000001"); err != store.ErrNotFound {
 		t.Fatalf("tenant user still present: %v", err)
 	}
 }
@@ -107,7 +108,7 @@ func TestDeleteTenantRefusesSelfAndDefault(t *testing.T) {
 
 func TestDisabledTenantCannotLogIn(t *testing.T) {
 	repository, server, root := tenantDeleteServer(t)
-	if err := repository.CreateUser(domain.User{
+	if err := repository.CreateUser(context.Background(), domain.User{
 		ID: "aaaaaaaa-0000-4000-8000-000000000002", TenantID: tenantDeleteTarget,
 		Username: "resident", PasswordHash: "x", Role: domain.RoleAdmin,
 	}); err != nil {

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -25,7 +26,7 @@ func TestListAssetsKeysetPagination(t *testing.T) {
 			CreatedAt: base.Add(time.Duration(i) * time.Second),
 			UpdatedAt: base.Add(time.Duration(i) * time.Second),
 		}
-		if err := repository.CreateAsset(asset); err != nil {
+		if err := repository.CreateAsset(context.Background(), asset); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -33,7 +34,7 @@ func TestListAssetsKeysetPagination(t *testing.T) {
 	var seen []string
 	cursor := ""
 	for page := 0; ; page++ {
-		items, next, err := repository.ListAssets("tenant", ListOptions{Limit: 50, Cursor: cursor})
+		items, next, err := repository.ListAssets(context.Background(), "tenant", ListOptions{Limit: 50, Cursor: cursor})
 		if err != nil {
 			t.Fatal(err)
 		}

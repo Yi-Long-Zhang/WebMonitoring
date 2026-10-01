@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -70,7 +71,7 @@ func TestCrossTenantResourceIsNotVisible(t *testing.T) {
 		ID: "other-asset", TenantID: "other-tenant", Name: "other", URL: "https://example.org",
 		OwnerID: admin.ID, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
-	if err := repository.CreateAsset(other); err != nil {
+	if err := repository.CreateAsset(context.Background(), other); err != nil {
 		t.Fatal(err)
 	}
 	evidenceStore, err := evidence.NewLocalStore(t.TempDir())
@@ -92,7 +93,7 @@ func TestReportRejectsMissingEvidence(t *testing.T) {
 	repository := store.NewMemoryRepository()
 	admin := retentionUser(t, repository, "admin", domain.RoleAdmin)
 	now := time.Now().UTC()
-	if _, _, err := repository.UpsertIncident(domain.Incident{
+	if _, _, err := repository.UpsertIncident(context.Background(), domain.Incident{
 		ID: "incident", TenantID: defaultTenant, AssetID: "asset", BaselineID: "baseline",
 		BaselineVersion: 1, Fingerprint: "fingerprint", Severity: domain.SeverityHigh,
 		Status: domain.IncidentOpen, Title: "missing evidence", EvidenceIDs: []string{"missing"},
@@ -177,7 +178,7 @@ func TestSuperAdminCreatesTenantAndSeedsAdmin(t *testing.T) {
 	if tenant.Slug != "acme" {
 		t.Fatalf("unexpected tenant: %#v", tenant)
 	}
-	if _, err := repository.FindUserByUsername(tenant.ID, "acme-admin"); err != nil {
+	if _, err := repository.FindUserByUsername(context.Background(), tenant.ID, "acme-admin"); err != nil {
 		t.Fatalf("seeded admin missing: %v", err)
 	}
 
@@ -196,7 +197,7 @@ func TestCrossTenantSiteNotVisible(t *testing.T) {
 	admin := retentionUser(t, repository, "admin", domain.RoleAdmin)
 	now := time.Now().UTC()
 	other := domain.Site{ID: "other-site", TenantID: "other-tenant", Name: "Other", Domain: "example.org", OwnerID: admin.ID, CreatedAt: now, UpdatedAt: now}
-	if err := repository.CreateSite(other); err != nil {
+	if err := repository.CreateSite(context.Background(), other); err != nil {
 		t.Fatal(err)
 	}
 	evidenceStore, err := evidence.NewLocalStore(t.TempDir())
@@ -219,7 +220,7 @@ func TestAssetCannotReferenceForeignSite(t *testing.T) {
 	admin := retentionUser(t, repository, "admin", domain.RoleAdmin)
 	now := time.Now().UTC()
 	foreign := domain.Site{ID: "foreign-site", TenantID: "other-tenant", Name: "Foreign", Domain: "example.org", OwnerID: admin.ID, CreatedAt: now, UpdatedAt: now}
-	if err := repository.CreateSite(foreign); err != nil {
+	if err := repository.CreateSite(context.Background(), foreign); err != nil {
 		t.Fatal(err)
 	}
 	evidenceStore, err := evidence.NewLocalStore(t.TempDir())

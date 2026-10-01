@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -23,7 +24,7 @@ type lookupFailureRepository struct {
 	store.Repository
 }
 
-func (r lookupFailureRepository) GetAsset(tenantID, id string) (domain.Asset, error) {
+func (r lookupFailureRepository) GetAsset(_ context.Context, tenantID, id string) (domain.Asset, error) {
 	return domain.Asset{}, errors.New(internalFailure)
 }
 
@@ -34,11 +35,11 @@ type verifyingWriteFailureRepository struct {
 	store.Repository
 }
 
-func (r verifyingWriteFailureRepository) UpdateAsset(asset domain.Asset) error {
+func (r verifyingWriteFailureRepository) UpdateAsset(ctx context.Context, asset domain.Asset) error {
 	if asset.VerificationStatus == domain.VerificationVerified {
 		return errors.New(internalFailure)
 	}
-	return r.Repository.UpdateAsset(asset)
+	return r.Repository.UpdateAsset(ctx, asset)
 }
 
 // policyFailureRepository serves the asset lookup but fails the policy lookup, so
@@ -47,7 +48,7 @@ type policyFailureRepository struct {
 	store.Repository
 }
 
-func (r policyFailureRepository) GetPolicy(tenantID, assetID string) (domain.MonitorPolicy, error) {
+func (r policyFailureRepository) GetPolicy(_ context.Context, tenantID, assetID string) (domain.MonitorPolicy, error) {
 	return domain.MonitorPolicy{}, errors.New(internalFailure)
 }
 
@@ -105,7 +106,7 @@ func TestQueueJobMapsErrorsWithoutLeakingInternals(t *testing.T) {
 			Enabled: true, VerificationStatus: domain.VerificationVerified,
 			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 		}
-		if err := repository.CreateAsset(target); err != nil {
+		if err := repository.CreateAsset(context.Background(), target); err != nil {
 			t.Fatal(err)
 		}
 		if suspend := doJSON(t, server, http.MethodPost, "/api/v1/assets/"+target.ID+"/suspend", cookie, csrf, ""); suspend.Code != http.StatusOK {
@@ -134,7 +135,7 @@ func TestQueueJobMapsErrorsWithoutLeakingInternals(t *testing.T) {
 			Enabled: true, VerificationStatus: domain.VerificationVerified,
 			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 		}
-		if err := repository.CreateAsset(target); err != nil {
+		if err := repository.CreateAsset(context.Background(), target); err != nil {
 			t.Fatal(err)
 		}
 		response := doJSON(t, server, http.MethodPost, "/api/v1/detection-jobs", cookie, csrf,
@@ -165,7 +166,7 @@ func TestVerifyAssetReportsWriteFailure(t *testing.T) {
 		URL: "https://persist.example", Type: domain.AssetOfficial, OwnerID: admin.ID,
 		VerificationStatus: domain.VerificationPending, VerificationMethod: domain.VerificationDNS,
 	}
-	if err := base.CreateAsset(asset); err != nil {
+	if err := base.CreateAsset(context.Background(), asset); err != nil {
 		t.Fatal(err)
 	}
 	issue := doJSON(t, server, http.MethodPost, "/api/v1/assets/"+asset.ID+"/verification", cookie, csrf, `{"action":"ISSUE"}`)
@@ -186,7 +187,7 @@ func TestVerifyAssetReportsWriteFailure(t *testing.T) {
 		t.Fatalf("response leaked repository detail: %s", body)
 	}
 
-	stored, err := base.GetAsset(defaultTenant, asset.ID)
+	stored, err := base.GetAsset(context.Background(), defaultTenant, asset.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -30,13 +30,13 @@ func TestTransitionRaisesANotification(t *testing.T) {
 	cookie, csrf := loginForTest(t, server, admin.Username)
 
 	now := time.Now().UTC()
-	if err := repository.CreateAsset(domain.Asset{
+	if err := repository.CreateAsset(context.Background(), domain.Asset{
 		ID: "asset", TenantID: defaultTenant, Name: "site", URL: "https://site.example",
 		Type: "OFFICIAL", CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := repository.UpsertIncident(domain.Incident{
+	if _, _, err := repository.UpsertIncident(context.Background(), domain.Incident{
 		ID: "incident", TenantID: defaultTenant, AssetID: "asset",
 		Severity: domain.SeverityHigh, Status: domain.IncidentOpen,
 		Title: "changed", Fingerprint: "fp", OccurrenceCount: 1,
@@ -72,13 +72,13 @@ func TestCommentRaisesANotification(t *testing.T) {
 	cookie, csrf := loginForTest(t, server, admin.Username)
 
 	now := time.Now().UTC()
-	if err := repository.CreateAsset(domain.Asset{
+	if err := repository.CreateAsset(context.Background(), domain.Asset{
 		ID: "asset", TenantID: defaultTenant, Name: "site", URL: "https://site.example",
 		Type: "OFFICIAL", CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := repository.UpsertIncident(domain.Incident{
+	if _, _, err := repository.UpsertIncident(context.Background(), domain.Incident{
 		ID: "incident", TenantID: defaultTenant, AssetID: "asset",
 		Severity: domain.SeverityHigh, Status: domain.IncidentOpen,
 		Title: "changed", Fingerprint: "fp", OccurrenceCount: 1,
@@ -110,7 +110,7 @@ func TestChannelTestRequiresAnInlineNotifier(t *testing.T) {
 	repository, server, admin := verificationServer(t, fakeResolver{txt: map[string][]string{}})
 	cookie, csrf := loginForTest(t, server, admin.Username)
 
-	if err := repository.CreateAlertChannel(domain.AlertChannel{
+	if err := repository.CreateAlertChannel(context.Background(), domain.AlertChannel{
 		ID: "channel", TenantID: defaultTenant, Name: "ops", Type: "WEBHOOK",
 		URL: "https://hooks.example/ops", Enabled: true, CreatedAt: time.Now().UTC(),
 	}); err != nil {

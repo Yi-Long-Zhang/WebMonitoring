@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -123,12 +124,12 @@ func TestRateLimitIsPerTenant(t *testing.T) {
 	// the login has to name the tenant slug -- username alone resolves against
 	// the default tenant.
 	otherSlug := "other-" + identity.New()
-	if err := repository.CreateTenant(domain.Tenant{
+	if err := repository.CreateTenant(context.Background(), domain.Tenant{
 		ID: identity.New(), Slug: otherSlug, Name: "Other", CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	otherTenant, err := repository.GetTenantBySlug(otherSlug)
+	otherTenant, err := repository.GetTenantBySlug(context.Background(), otherSlug)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +137,7 @@ func TestRateLimitIsPerTenant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.CreateUser(domain.User{
+	if err := repository.CreateUser(context.Background(), domain.User{
 		ID: identity.New(), TenantID: otherTenant.ID, Username: "other-admin",
 		PasswordHash: hash, Role: domain.RoleAdmin, CreatedAt: time.Now().UTC(),
 	}); err != nil {

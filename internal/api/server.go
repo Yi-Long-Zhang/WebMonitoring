@@ -281,7 +281,7 @@ func (s *Server) login(writer http.ResponseWriter, request *http.Request) {
 	}
 	tenantID := defaultTenant
 	if slug := strings.TrimSpace(input.Tenant); slug != "" {
-		tenant, err := s.repository.GetTenantBySlug(slug)
+		tenant, err := s.repository.GetTenantBySlug(request.Context(), slug)
 		if err != nil {
 			// Unified 401: do not reveal whether the tenant or the password was wrong.
 			writeError(writer, request, http.StatusUnauthorized, "INVALID_CREDENTIALS", "用户名或密码错误", nil)
@@ -342,17 +342,17 @@ func (s *Server) logout(writer http.ResponseWriter, request *http.Request) {
 
 func (s *Server) dashboard(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	assets, _, err := s.repository.ListAssets(session.User.TenantID, store.ListOptions{})
+	assets, _, err := s.repository.ListAssets(request.Context(), session.User.TenantID, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list dashboard assets", err)
 		return
 	}
-	incidents, _, err := s.repository.ListIncidents(session.User.TenantID, store.ListOptions{})
+	incidents, _, err := s.repository.ListIncidents(request.Context(), session.User.TenantID, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list dashboard incidents", err)
 		return
 	}
-	jobs, _, err := s.repository.ListJobs(session.User.TenantID, store.ListOptions{})
+	jobs, _, err := s.repository.ListJobs(request.Context(), session.User.TenantID, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list dashboard jobs", err)
 		return
@@ -391,7 +391,7 @@ func (s *Server) listAssets(writer http.ResponseWriter, request *http.Request) {
 		// cannot cross the keyset page boundary.
 		opts = store.ListOptions{}
 	}
-	items, nextCursor, err := s.repository.ListAssets(principal(request).User.TenantID, opts)
+	items, nextCursor, err := s.repository.ListAssets(request.Context(), principal(request).User.TenantID, opts)
 	if err != nil {
 		s.repositoryFailure(writer, request, "list assets", err)
 		return
@@ -409,7 +409,7 @@ func (s *Server) listAssets(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) getAsset(writer http.ResponseWriter, request *http.Request) {
-	item, err := s.repository.GetAsset(principal(request).User.TenantID, request.PathValue("id"))
+	item, err := s.repository.GetAsset(request.Context(), principal(request).User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -444,7 +444,7 @@ func (s *Server) createAsset(writer http.ResponseWriter, request *http.Request) 
 		writeError(writer, request, status, code, message, nil)
 		return
 	}
-	if err := s.repository.CreateAsset(asset); err != nil {
+	if err := s.repository.CreateAsset(request.Context(), asset); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(writer, request, http.StatusConflict, "ASSET_EXISTS", "该 URL 已经登记", nil)
 			return
@@ -452,7 +452,7 @@ func (s *Server) createAsset(writer http.ResponseWriter, request *http.Request) 
 		s.repositoryFailure(writer, request, "create asset", err)
 		return
 	}
-	if err := s.repository.UpsertPolicy(defaultPolicy(asset)); err != nil {
+	if err := s.repository.UpsertPolicy(request.Context(), defaultPolicy(asset)); err != nil {
 		writeError(writer, request, http.StatusInternalServerError, "POLICY_CREATE_FAILED", "无法创建默认监测策略", nil)
 		return
 	}
@@ -499,11 +499,11 @@ func (s *Server) buildAsset(
 	}
 	if asset.OwnerID == "" {
 		asset.OwnerID = owner.ID
-	} else if _, err := s.repository.GetUser(owner.TenantID, asset.OwnerID); err != nil {
+	} else if _, err := s.repository.GetUser(ctx, owner.TenantID, asset.OwnerID); err != nil {
 		return domain.Asset{}, "INVALID_OWNER", "负责人不属于当前租户", err
 	}
 	if asset.SiteID != "" {
-		if _, err := s.repository.GetSite(owner.TenantID, asset.SiteID); err != nil {
+		if _, err := s.repository.GetSite(ctx, owner.TenantID, asset.SiteID); err != nil {
 			return domain.Asset{}, "INVALID_SITE", "站点不属于当前租户", err
 		}
 	}
@@ -562,7 +562,7 @@ func (s *Server) importAssets(writer http.ResponseWriter, request *http.Request)
 			results = append(results, rowResult{Index: index, Name: asset.Name, URL: asset.URL, Status: "VALIDATED"})
 			continue
 		}
-		if err := s.repository.CreateAsset(asset); err != nil {
+		if err := s.repository.CreateAsset(request.Context(), asset); err != nil {
 			status, code, message := "REJECTED", "IMPORT_FAILED", "无法写入资产"
 			if errors.Is(err, store.ErrConflict) {
 				code, message = "ASSET_EXISTS", "该 URL 已经登记"
@@ -570,7 +570,7 @@ func (s *Server) importAssets(writer http.ResponseWriter, request *http.Request)
 			results = append(results, rowResult{Index: index, Name: asset.Name, URL: asset.URL, Status: status, Code: code, Message: message})
 			continue
 		}
-		if err := s.repository.UpsertPolicy(defaultPolicy(asset)); err != nil {
+		if err := s.repository.UpsertPolicy(request.Context(), defaultPolicy(asset)); err != nil {
 			results = append(results, rowResult{Index: index, Name: asset.Name, URL: asset.URL, Status: "REJECTED", Code: "POLICY_CREATE_FAILED", Message: "无法创建默认监测策略"})
 			continue
 		}
@@ -598,7 +598,7 @@ func (s *Server) exportAssets(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	// Export is an unbounded, explicit operation, so it bypasses the keyset page.
-	items, _, err := s.repository.ListAssets(session.User.TenantID, store.ListOptions{})
+	items, _, err := s.repository.ListAssets(request.Context(), session.User.TenantID, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "export assets", err)
 		return
@@ -635,7 +635,7 @@ func (s *Server) deleteTenant(writer http.ResponseWriter, request *http.Request)
 	if !decodeJSON(writer, request, &input) {
 		return
 	}
-	tenant, err := s.repository.GetTenant(request.PathValue("id"))
+	tenant, err := s.repository.GetTenant(request.Context(), request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -656,7 +656,7 @@ func (s *Server) deleteTenant(writer http.ResponseWriter, request *http.Request)
 		writeError(writer, request, http.StatusBadRequest, "CONFIRM_MISMATCH", "确认信息与租户标识不一致", map[string]any{"expected": "slug"})
 		return
 	}
-	counts, err := s.repository.CountTenantResources(tenant.ID)
+	counts, err := s.repository.CountTenantResources(request.Context(), tenant.ID)
 	if err != nil {
 		s.repositoryFailure(writer, request, "count tenant resources", err)
 		return
@@ -680,7 +680,7 @@ func (s *Server) deleteTenant(writer http.ResponseWriter, request *http.Request)
 	deleteEvidenceObjects := s.evidence != nil
 	var skippedObjects int
 	if deleteEvidenceObjects {
-		items, _, listErr := s.repository.ListEvidence(tenant.ID, "", store.ListOptions{})
+		items, _, listErr := s.repository.ListEvidence(request.Context(), tenant.ID, "", store.ListOptions{})
 		if listErr != nil {
 			s.repositoryFailure(writer, request, "list tenant evidence", listErr)
 			return
@@ -692,7 +692,7 @@ func (s *Server) deleteTenant(writer http.ResponseWriter, request *http.Request)
 			}
 		}
 	}
-	if err := s.repository.DeleteTenant(tenant.ID); err != nil {
+	if err := s.repository.DeleteTenant(request.Context(), tenant.ID); err != nil {
 		s.repositoryFailure(writer, request, "delete tenant", err)
 		return
 	}
@@ -703,7 +703,7 @@ func (s *Server) deleteTenant(writer http.ResponseWriter, request *http.Request)
 
 func (s *Server) updateAsset(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	asset, err := s.repository.GetAsset(session.User.TenantID, request.PathValue("id"))
+	asset, err := s.repository.GetAsset(request.Context(), session.User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -721,7 +721,7 @@ func (s *Server) updateAsset(writer http.ResponseWriter, request *http.Request) 
 		asset.Name = strings.TrimSpace(*input.Name)
 	}
 	if input.OwnerID != nil && *input.OwnerID != "" {
-		if _, err := s.repository.GetUser(session.User.TenantID, *input.OwnerID); err != nil {
+		if _, err := s.repository.GetUser(request.Context(), session.User.TenantID, *input.OwnerID); err != nil {
 			writeError(writer, request, http.StatusBadRequest, "INVALID_OWNER", "负责人不属于当前租户", nil)
 			return
 		}
@@ -731,7 +731,7 @@ func (s *Server) updateAsset(writer http.ResponseWriter, request *http.Request) 
 		if *input.SiteID == "" {
 			asset.SiteID = ""
 		} else {
-			if _, err := s.repository.GetSite(session.User.TenantID, *input.SiteID); err != nil {
+			if _, err := s.repository.GetSite(request.Context(), session.User.TenantID, *input.SiteID); err != nil {
 				writeError(writer, request, http.StatusBadRequest, "INVALID_SITE", "站点不属于当前租户", nil)
 				return
 			}
@@ -746,7 +746,7 @@ func (s *Server) updateAsset(writer http.ResponseWriter, request *http.Request) 
 		asset.Enabled = *input.Enabled
 	}
 	asset.UpdatedAt = time.Now().UTC()
-	if err := s.repository.UpdateAsset(asset); err != nil {
+	if err := s.repository.UpdateAsset(request.Context(), asset); err != nil {
 		writeError(writer, request, http.StatusInternalServerError, "ASSET_UPDATE_FAILED", "无法更新资产", nil)
 		return
 	}
@@ -756,7 +756,7 @@ func (s *Server) updateAsset(writer http.ResponseWriter, request *http.Request) 
 
 func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	asset, err := s.repository.GetAsset(session.User.TenantID, request.PathValue("id"))
+	asset, err := s.repository.GetAsset(request.Context(), session.User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -777,7 +777,7 @@ func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) 
 		asset.VerificationExpiresAt = &expires
 		asset.VerificationStatus = domain.VerificationPending
 		asset.UpdatedAt = now
-		if err := s.repository.UpdateAsset(asset); err != nil {
+		if err := s.repository.UpdateAsset(request.Context(), asset); err != nil {
 			writeError(writer, request, http.StatusInternalServerError, "ASSET_UPDATE_FAILED", "无法保存验证状态", nil)
 			return
 		}
@@ -793,7 +793,7 @@ func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) 
 		asset.VerificationStatus = domain.VerificationRejected
 		asset.Enabled = false
 		asset.UpdatedAt = time.Now().UTC()
-		if updateErr := s.repository.UpdateAsset(asset); updateErr != nil {
+		if updateErr := s.repository.UpdateAsset(request.Context(), asset); updateErr != nil {
 			s.logger.Error("persist expired verification state", "asset_id", asset.ID, "error", updateErr)
 		}
 		s.appendAudit(request, session.User, "asset.verification.verify", "asset", asset.ID, "FAILED", map[string]any{"reason": "expired"})
@@ -804,7 +804,7 @@ func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) 
 		asset.VerificationStatus = domain.VerificationRejected
 		asset.Enabled = false
 		asset.UpdatedAt = time.Now().UTC()
-		if updateErr := s.repository.UpdateAsset(asset); updateErr != nil {
+		if updateErr := s.repository.UpdateAsset(request.Context(), asset); updateErr != nil {
 			s.logger.Error("persist failed verification state", "asset_id", asset.ID, "error", updateErr)
 		}
 		s.appendAudit(request, session.User, "asset.verification.verify", "asset", asset.ID, "FAILED", nil)
@@ -817,7 +817,7 @@ func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) 
 	asset.VerificationTokenHash = ""
 	asset.VerificationExpiresAt = nil
 	asset.UpdatedAt = time.Now().UTC()
-	if err := s.repository.UpdateAsset(asset); err != nil {
+	if err := s.repository.UpdateAsset(request.Context(), asset); err != nil {
 		// The token was found, but the verified state did not persist. Reporting
 		// success here would leave the client believing an asset is verified that
 		// reverts to its previous state on restart.
@@ -835,7 +835,7 @@ func (s *Server) verifyAsset(writer http.ResponseWriter, request *http.Request) 
 // assets, so suspension immediately halts detection.
 func (s *Server) suspendAsset(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	asset, err := s.repository.GetAsset(session.User.TenantID, request.PathValue("id"))
+	asset, err := s.repository.GetAsset(request.Context(), session.User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -847,7 +847,7 @@ func (s *Server) suspendAsset(writer http.ResponseWriter, request *http.Request)
 	asset.VerificationStatus = domain.VerificationSuspended
 	asset.Enabled = false
 	asset.UpdatedAt = time.Now().UTC()
-	if err := s.repository.UpdateAsset(asset); err != nil {
+	if err := s.repository.UpdateAsset(request.Context(), asset); err != nil {
 		writeError(writer, request, http.StatusInternalServerError, "ASSET_UPDATE_FAILED", "无法暂停资产", nil)
 		return
 	}
@@ -860,7 +860,7 @@ func (s *Server) suspendAsset(writer http.ResponseWriter, request *http.Request)
 // asset to be VERIFIED.
 func (s *Server) resumeAsset(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	asset, err := s.repository.GetAsset(session.User.TenantID, request.PathValue("id"))
+	asset, err := s.repository.GetAsset(request.Context(), session.User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -872,7 +872,7 @@ func (s *Server) resumeAsset(writer http.ResponseWriter, request *http.Request) 
 	asset.VerificationStatus = domain.VerificationVerified
 	asset.Enabled = false
 	asset.UpdatedAt = time.Now().UTC()
-	if err := s.repository.UpdateAsset(asset); err != nil {
+	if err := s.repository.UpdateAsset(request.Context(), asset); err != nil {
 		writeError(writer, request, http.StatusInternalServerError, "ASSET_UPDATE_FAILED", "无法恢复资产", nil)
 		return
 	}
@@ -881,7 +881,7 @@ func (s *Server) resumeAsset(writer http.ResponseWriter, request *http.Request) 
 }
 
 func (s *Server) listSites(writer http.ResponseWriter, request *http.Request) {
-	items, nextCursor, err := s.repository.ListSites(principal(request).User.TenantID, listOptions(request))
+	items, nextCursor, err := s.repository.ListSites(request.Context(), principal(request).User.TenantID, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list sites", err)
 		return
@@ -890,7 +890,7 @@ func (s *Server) listSites(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) getSite(writer http.ResponseWriter, request *http.Request) {
-	item, err := s.repository.GetSite(principal(request).User.TenantID, request.PathValue("id"))
+	item, err := s.repository.GetSite(request.Context(), principal(request).User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -915,7 +915,7 @@ func (s *Server) createSite(writer http.ResponseWriter, request *http.Request) {
 	ownerID := input.OwnerID
 	if ownerID == "" {
 		ownerID = session.User.ID
-	} else if _, err := s.repository.GetUser(session.User.TenantID, ownerID); err != nil {
+	} else if _, err := s.repository.GetUser(request.Context(), session.User.TenantID, ownerID); err != nil {
 		writeError(writer, request, http.StatusBadRequest, "INVALID_OWNER", "负责人不属于当前租户", nil)
 		return
 	}
@@ -925,7 +925,7 @@ func (s *Server) createSite(writer http.ResponseWriter, request *http.Request) {
 		Name: strings.TrimSpace(input.Name), Domain: strings.TrimSpace(input.Domain),
 		OwnerID: ownerID, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.repository.CreateSite(site); err != nil {
+	if err := s.repository.CreateSite(request.Context(), site); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(writer, request, http.StatusConflict, "SITE_EXISTS", "站点名称已存在", nil)
 			return
@@ -939,7 +939,7 @@ func (s *Server) createSite(writer http.ResponseWriter, request *http.Request) {
 
 func (s *Server) updateSite(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	site, err := s.repository.GetSite(session.User.TenantID, request.PathValue("id"))
+	site, err := s.repository.GetSite(request.Context(), session.User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -959,14 +959,14 @@ func (s *Server) updateSite(writer http.ResponseWriter, request *http.Request) {
 		site.Domain = strings.TrimSpace(*input.Domain)
 	}
 	if input.OwnerID != nil && *input.OwnerID != "" {
-		if _, err := s.repository.GetUser(session.User.TenantID, *input.OwnerID); err != nil {
+		if _, err := s.repository.GetUser(request.Context(), session.User.TenantID, *input.OwnerID); err != nil {
 			writeError(writer, request, http.StatusBadRequest, "INVALID_OWNER", "负责人不属于当前租户", nil)
 			return
 		}
 		site.OwnerID = *input.OwnerID
 	}
 	site.UpdatedAt = time.Now().UTC()
-	if err := s.repository.UpdateSite(site); err != nil {
+	if err := s.repository.UpdateSite(request.Context(), site); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(writer, request, http.StatusConflict, "SITE_EXISTS", "站点名称已存在", nil)
 			return
@@ -986,12 +986,12 @@ func (s *Server) updateSite(writer http.ResponseWriter, request *http.Request) {
 // before retrying.
 func (s *Server) deleteSite(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	site, err := s.repository.GetSite(session.User.TenantID, request.PathValue("id"))
+	site, err := s.repository.GetSite(request.Context(), session.User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
 	}
-	count, err := s.repository.CountAssetsBySite(session.User.TenantID, site.ID)
+	count, err := s.repository.CountAssetsBySite(request.Context(), session.User.TenantID, site.ID)
 	if err != nil {
 		s.repositoryFailure(writer, request, "count site assets", err)
 		return
@@ -1004,7 +1004,7 @@ func (s *Server) deleteSite(writer http.ResponseWriter, request *http.Request) {
 	// Audit before the delete for the same reason tenant deletion does: the
 	// record has to outlive the row it describes.
 	s.appendAudit(request, session.User, "site.delete", "site", site.ID, "SUCCESS", map[string]any{"name": site.Name})
-	if err := s.repository.DeleteSite(session.User.TenantID, site.ID); err != nil {
+	if err := s.repository.DeleteSite(request.Context(), session.User.TenantID, site.ID); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			// An asset was filed between the count and the delete.
 			writeError(writer, request, http.StatusConflict, "SITE_NOT_EMPTY",
@@ -1018,7 +1018,7 @@ func (s *Server) deleteSite(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) listTenants(writer http.ResponseWriter, request *http.Request) {
-	items, nextCursor, err := s.repository.ListTenants(listOptions(request))
+	items, nextCursor, err := s.repository.ListTenants(request.Context(), listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list tenants", err)
 		return
@@ -1027,7 +1027,7 @@ func (s *Server) listTenants(writer http.ResponseWriter, request *http.Request) 
 }
 
 func (s *Server) getTenant(writer http.ResponseWriter, request *http.Request) {
-	item, err := s.repository.GetTenant(request.PathValue("id"))
+	item, err := s.repository.GetTenant(request.Context(), request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -1059,7 +1059,7 @@ func (s *Server) createTenant(writer http.ResponseWriter, request *http.Request)
 	tenant := domain.Tenant{
 		ID: identity.New(), Slug: slug, Name: strings.TrimSpace(input.Name), CreatedAt: now,
 	}
-	if err := s.repository.CreateTenant(tenant); err != nil {
+	if err := s.repository.CreateTenant(request.Context(), tenant); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(writer, request, http.StatusConflict, "TENANT_EXISTS", "租户标识已存在", nil)
 			return
@@ -1077,7 +1077,7 @@ func (s *Server) createTenant(writer http.ResponseWriter, request *http.Request)
 		ID: identity.New(), TenantID: tenant.ID, Username: strings.TrimSpace(input.AdminUsername),
 		PasswordHash: hash, Role: domain.RoleAdmin, CreatedAt: now,
 	}
-	if err := s.repository.CreateUser(admin); err != nil {
+	if err := s.repository.CreateUser(request.Context(), admin); err != nil {
 		s.logger.Error("seed tenant admin", "tenant", tenant.ID, "error", err)
 		writeError(writer, request, http.StatusInternalServerError, "TENANT_ADMIN_FAILED", "无法初始化租户管理员", nil)
 		return
@@ -1088,7 +1088,7 @@ func (s *Server) createTenant(writer http.ResponseWriter, request *http.Request)
 
 func (s *Server) updateTenant(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	tenant, err := s.repository.GetTenant(request.PathValue("id"))
+	tenant, err := s.repository.GetTenant(request.Context(), request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -1121,7 +1121,7 @@ func (s *Server) updateTenant(writer http.ResponseWriter, request *http.Request)
 		}
 		tenant.Disabled = *input.Disabled
 	}
-	if err := s.repository.UpdateTenant(tenant); err != nil {
+	if err := s.repository.UpdateTenant(request.Context(), tenant); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(writer, request, http.StatusConflict, "TENANT_EXISTS", "租户标识已存在", nil)
 			return
@@ -1134,7 +1134,7 @@ func (s *Server) updateTenant(writer http.ResponseWriter, request *http.Request)
 }
 
 func (s *Server) listUsers(writer http.ResponseWriter, request *http.Request) {
-	items, err := s.repository.ListUsers(principal(request).User.TenantID)
+	items, err := s.repository.ListUsers(request.Context(), principal(request).User.TenantID)
 	if err != nil {
 		s.repositoryFailure(writer, request, "list users", err)
 		return
@@ -1174,7 +1174,7 @@ func (s *Server) createUser(writer http.ResponseWriter, request *http.Request) {
 		ID: identity.New(), TenantID: session.User.TenantID, Username: username,
 		PasswordHash: hash, Role: input.Role, CreatedAt: now,
 	}
-	if err := s.repository.CreateUser(user); err != nil {
+	if err := s.repository.CreateUser(request.Context(), user); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(writer, request, http.StatusConflict, "USER_EXISTS", "用户名已存在", nil)
 			return
@@ -1188,7 +1188,7 @@ func (s *Server) createUser(writer http.ResponseWriter, request *http.Request) {
 
 func (s *Server) updateUser(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	user, err := s.repository.GetUser(session.User.TenantID, request.PathValue("id"))
+	user, err := s.repository.GetUser(request.Context(), session.User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -1227,12 +1227,12 @@ func (s *Server) updateUser(writer http.ResponseWriter, request *http.Request) {
 	}
 	// A tenant must always retain at least one enabled admin.
 	if wasEnabledAdmin && (user.Disabled || user.Role != domain.RoleAdmin) {
-		if remaining, countErr := s.countOtherEnabledAdmins(session.User.TenantID, user.ID); countErr == nil && remaining == 0 {
+		if remaining, countErr := s.countOtherEnabledAdmins(request.Context(), session.User.TenantID, user.ID); countErr == nil && remaining == 0 {
 			writeError(writer, request, http.StatusConflict, "LAST_ADMIN", "租户内至少需保留一名启用的管理员", nil)
 			return
 		}
 	}
-	if err := s.repository.UpdateUser(user); err != nil {
+	if err := s.repository.UpdateUser(request.Context(), user); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(writer, request, http.StatusConflict, "USER_EXISTS", "用户名已存在", nil)
 			return
@@ -1246,7 +1246,7 @@ func (s *Server) updateUser(writer http.ResponseWriter, request *http.Request) {
 
 func (s *Server) resetUserPassword(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	user, err := s.repository.GetUser(session.User.TenantID, request.PathValue("id"))
+	user, err := s.repository.GetUser(request.Context(), session.User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -1276,7 +1276,7 @@ func (s *Server) resetUserPassword(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	user.PasswordHash = hash
-	if err := s.repository.UpdateUser(user); err != nil {
+	if err := s.repository.UpdateUser(request.Context(), user); err != nil {
 		s.repositoryFailure(writer, request, "reset user password", err)
 		return
 	}
@@ -1308,7 +1308,7 @@ func (s *Server) changeOwnPassword(writer http.ResponseWriter, request *http.Req
 	}
 	user := session.User
 	user.PasswordHash = hash
-	if err := s.repository.UpdateUser(user); err != nil {
+	if err := s.repository.UpdateUser(request.Context(), user); err != nil {
 		s.repositoryFailure(writer, request, "change password", err)
 		return
 	}
@@ -1316,8 +1316,8 @@ func (s *Server) changeOwnPassword(writer http.ResponseWriter, request *http.Req
 	writeJSON(writer, http.StatusNoContent, nil)
 }
 
-func (s *Server) countOtherEnabledAdmins(tenantID, excludeID string) (int, error) {
-	users, err := s.repository.ListUsers(tenantID)
+func (s *Server) countOtherEnabledAdmins(ctx context.Context, tenantID, excludeID string) (int, error) {
+	users, err := s.repository.ListUsers(ctx, tenantID)
 	if err != nil {
 		return 0, err
 	}
@@ -1335,7 +1335,7 @@ func validUserRole(role domain.Role) bool {
 }
 
 func (s *Server) listPolicies(writer http.ResponseWriter, request *http.Request) {
-	items, nextCursor, err := s.repository.ListPolicies(principal(request).User.TenantID, listOptions(request))
+	items, nextCursor, err := s.repository.ListPolicies(request.Context(), principal(request).User.TenantID, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list policies", err)
 		return
@@ -1350,11 +1350,11 @@ func (s *Server) listPolicies(writer http.ResponseWriter, request *http.Request)
 func (s *Server) updatePolicy(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
 	assetID := request.PathValue("assetId")
-	if _, err := s.repository.GetAsset(session.User.TenantID, assetID); err != nil {
+	if _, err := s.repository.GetAsset(request.Context(), session.User.TenantID, assetID); err != nil {
 		s.notFound(writer, request)
 		return
 	}
-	current, err := s.repository.GetPolicy(session.User.TenantID, assetID)
+	current, err := s.repository.GetPolicy(request.Context(), session.User.TenantID, assetID)
 	if err != nil {
 		writeError(writer, request, http.StatusNotFound, "POLICY_NOT_FOUND", "未找到监测策略", nil)
 		return
@@ -1413,7 +1413,7 @@ func (s *Server) updatePolicy(writer http.ResponseWriter, request *http.Request)
 		s.appendAudit(request, session.User, action, "policy", current.ID, "SUCCESS", map[string]any{"version": current.Version})
 	}
 	current.UpdatedAt = now
-	if err := s.repository.UpsertPolicy(current); err != nil {
+	if err := s.repository.UpsertPolicy(request.Context(), current); err != nil {
 		s.repositoryFailure(writer, request, "update policy", err)
 		return
 	}
@@ -1502,7 +1502,7 @@ func redactPolicy(policy domain.MonitorPolicy) domain.MonitorPolicy {
 }
 
 func (s *Server) listBaselines(writer http.ResponseWriter, request *http.Request) {
-	items, nextCursor, err := s.repository.ListBaselines(principal(request).User.TenantID, request.URL.Query().Get("assetId"), listOptions(request))
+	items, nextCursor, err := s.repository.ListBaselines(request.Context(), principal(request).User.TenantID, request.URL.Query().Get("assetId"), listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list baselines", err)
 		return
@@ -1517,7 +1517,7 @@ func (s *Server) listBaselines(writer http.ResponseWriter, request *http.Request
 // and changeBaselineStatus: a cross-tenant id must not be distinguishable from
 // a missing one.
 func (s *Server) getBaseline(writer http.ResponseWriter, request *http.Request) {
-	item, err := s.repository.GetBaseline(principal(request).User.TenantID, request.PathValue("id"))
+	item, err := s.repository.GetBaseline(request.Context(), principal(request).User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -1539,7 +1539,7 @@ func (s *Server) retireBaseline(writer http.ResponseWriter, request *http.Reques
 
 func (s *Server) changeBaselineStatus(writer http.ResponseWriter, request *http.Request, status domain.BaselineStatus) {
 	session := principal(request)
-	baseline, err := s.repository.GetBaseline(session.User.TenantID, request.PathValue("id"))
+	baseline, err := s.repository.GetBaseline(request.Context(), session.User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -1559,7 +1559,7 @@ func (s *Server) changeBaselineStatus(writer http.ResponseWriter, request *http.
 		baseline.ApprovedBy = session.User.ID
 		baseline.ApprovedAt = &now
 	}
-	if err := s.repository.UpdateBaseline(baseline); err != nil {
+	if err := s.repository.UpdateBaseline(request.Context(), baseline); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.notFound(writer, request)
 			return
@@ -1572,7 +1572,7 @@ func (s *Server) changeBaselineStatus(writer http.ResponseWriter, request *http.
 }
 
 func (s *Server) listJobs(writer http.ResponseWriter, request *http.Request) {
-	items, nextCursor, err := s.repository.ListJobs(principal(request).User.TenantID, listOptions(request))
+	items, nextCursor, err := s.repository.ListJobs(request.Context(), principal(request).User.TenantID, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list jobs", err)
 		return
@@ -1589,7 +1589,7 @@ func (s *Server) createJob(writer http.ResponseWriter, request *http.Request) {
 	if !decodeJSON(writer, request, &input) {
 		return
 	}
-	job, err := s.detection.Queue(session.User.TenantID, input.AssetID, input.Mode)
+	job, err := s.detection.Queue(request.Context(), session.User.TenantID, input.AssetID, input.Mode)
 	if err != nil {
 		// Queue rejections are actionable by the caller; only genuinely internal
 		// failures fall through to a generic 500, and none of them may echo the
@@ -1621,11 +1621,11 @@ func (s *Server) createJob(writer http.ResponseWriter, request *http.Request) {
 func (s *Server) cancelJob(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
 	id := request.PathValue("id")
-	if _, err := s.repository.GetJob(session.User.TenantID, id); err != nil {
+	if _, err := s.repository.GetJob(request.Context(), session.User.TenantID, id); err != nil {
 		s.notFound(writer, request)
 		return
 	}
-	changed, err := s.repository.CancelJob(session.User.TenantID, id)
+	changed, err := s.repository.CancelJob(request.Context(), session.User.TenantID, id)
 	if err != nil {
 		s.repositoryFailure(writer, request, "cancel detection job", err)
 		return
@@ -1634,7 +1634,7 @@ func (s *Server) cancelJob(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, request, http.StatusConflict, "INVALID_JOB_STATE", "仅排队或运行中的任务可取消", nil)
 		return
 	}
-	job, err := s.repository.GetJob(session.User.TenantID, id)
+	job, err := s.repository.GetJob(request.Context(), session.User.TenantID, id)
 	if err != nil {
 		s.repositoryFailure(writer, request, "reload cancelled detection job", err)
 		return
@@ -1644,7 +1644,7 @@ func (s *Server) cancelJob(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) listIncidents(writer http.ResponseWriter, request *http.Request) {
-	incidents, nextCursor, err := s.repository.ListIncidents(principal(request).User.TenantID, listOptions(request))
+	incidents, nextCursor, err := s.repository.ListIncidents(request.Context(), principal(request).User.TenantID, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list incidents", err)
 		return
@@ -1673,7 +1673,7 @@ func (s *Server) updateIncidentMetrics(incidents []domain.Incident) {
 }
 
 func (s *Server) getIncident(writer http.ResponseWriter, request *http.Request) {
-	item, err := s.repository.GetIncident(principal(request).User.TenantID, request.PathValue("id"))
+	item, err := s.repository.GetIncident(request.Context(), principal(request).User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -1690,7 +1690,7 @@ func (s *Server) getIncident(writer http.ResponseWriter, request *http.Request) 
 func (s *Server) addIncidentComment(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
 	id := request.PathValue("id")
-	incident, err := s.repository.GetIncident(session.User.TenantID, id)
+	incident, err := s.repository.GetIncident(request.Context(), session.User.TenantID, id)
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -1712,7 +1712,7 @@ func (s *Server) addIncidentComment(writer http.ResponseWriter, request *http.Re
 		Type: domain.IncidentEventCommented, ActorID: session.User.ID,
 		Details: map[string]any{"note": note}, CreatedAt: time.Now().UTC(),
 	}
-	if err := s.repository.AppendIncidentEvent(event); err != nil {
+	if err := s.repository.AppendIncidentEvent(request.Context(), event); err != nil {
 		s.repositoryFailure(writer, request, "add incident comment", err)
 		return
 	}
@@ -1734,11 +1734,11 @@ func (s *Server) addIncidentComment(writer http.ResponseWriter, request *http.Re
 func (s *Server) listIncidentTimeline(writer http.ResponseWriter, request *http.Request) {
 	tenantID := principal(request).User.TenantID
 	id := request.PathValue("id")
-	if _, err := s.repository.GetIncident(tenantID, id); err != nil {
+	if _, err := s.repository.GetIncident(request.Context(), tenantID, id); err != nil {
 		s.notFound(writer, request)
 		return
 	}
-	events, nextCursor, err := s.repository.ListIncidentEvents(tenantID, id, listOptions(request))
+	events, nextCursor, err := s.repository.ListIncidentEvents(request.Context(), tenantID, id, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list incident timeline", err)
 		return
@@ -1748,7 +1748,7 @@ func (s *Server) listIncidentTimeline(writer http.ResponseWriter, request *http.
 
 func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	incident, err := s.repository.GetIncident(session.User.TenantID, request.PathValue("id"))
+	incident, err := s.repository.GetIncident(request.Context(), session.User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -1776,7 +1776,7 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 	}
 	incident.Status = input.Status
 	if input.OwnerID != "" {
-		if _, err := s.repository.GetUser(session.User.TenantID, input.OwnerID); err != nil {
+		if _, err := s.repository.GetUser(request.Context(), session.User.TenantID, input.OwnerID); err != nil {
 			writeError(writer, request, http.StatusBadRequest, "INVALID_OWNER", "负责人不属于当前租户", nil)
 			return
 		}
@@ -1798,7 +1798,7 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 	if input.Status == domain.IncidentInvestigating {
 		incident.ResolvedAt = nil
 	}
-	if err := s.repository.UpdateIncident(incident); err != nil {
+	if err := s.repository.UpdateIncident(request.Context(), incident); err != nil {
 		writeError(writer, request, http.StatusInternalServerError, "INCIDENT_UPDATE_FAILED", "无法更新事件", nil)
 		return
 	}
@@ -1806,7 +1806,7 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 	// fail the request: the status has already changed, so a 500 would tell the
 	// caller the transition did not happen when it did. Losing one entry is the
 	// lesser harm, and the audit record below still shows the action.
-	if err := s.repository.AppendIncidentEvent(
+	if err := s.repository.AppendIncidentEvent(request.Context(),
 		detection.IncidentTransitionEvent(before, incident, session.User, time.Now().UTC()),
 	); err != nil {
 		s.logger.Error("persist incident timeline entry failed", "incident_id", incident.ID, "error", err)
@@ -1822,7 +1822,7 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 }
 
 func (s *Server) listEvidence(writer http.ResponseWriter, request *http.Request) {
-	items, nextCursor, err := s.repository.ListEvidence(principal(request).User.TenantID, request.URL.Query().Get("assetId"), listOptions(request))
+	items, nextCursor, err := s.repository.ListEvidence(request.Context(), principal(request).User.TenantID, request.URL.Query().Get("assetId"), listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list evidence", err)
 		return
@@ -1833,13 +1833,13 @@ func (s *Server) listEvidence(writer http.ResponseWriter, request *http.Request)
 func (s *Server) downloadEvidence(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
 	evidenceID := request.PathValue("id")
-	item, err := s.repository.GetEvidence(session.User.TenantID, evidenceID)
+	item, err := s.repository.GetEvidence(request.Context(), session.User.TenantID, evidenceID)
 	if err != nil {
 		s.appendAudit(request, session.User, "evidence.download", "evidence", evidenceID, "FAILED", map[string]any{"reason": "not_found"})
 		s.notFound(writer, request)
 		return
 	}
-	content, err := evidence.ReadVerified(s.evidence, item)
+	content, err := evidence.ReadVerified(request.Context(), s.evidence, item)
 	if err != nil {
 		s.appendAudit(request, session.User, "evidence.download", "evidence", item.ID, "FAILED", map[string]any{"reason": "integrity_check_failed"})
 		writeError(writer, request, http.StatusNotFound, "EVIDENCE_MISSING", "证据文件不存在", nil)
@@ -1858,7 +1858,7 @@ func (s *Server) downloadEvidence(writer http.ResponseWriter, request *http.Requ
 // control-plane URL that still passes the ReadVerified integrity check.
 func (s *Server) signedEvidenceURL(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	item, err := s.repository.GetEvidence(session.User.TenantID, request.PathValue("id"))
+	item, err := s.repository.GetEvidence(request.Context(), session.User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -1912,12 +1912,12 @@ func (s *Server) downloadSignedEvidence(writer http.ResponseWriter, request *htt
 		s.notFound(writer, request)
 		return
 	}
-	item, err := s.repository.GetEvidence(tenantID, evidenceID)
+	item, err := s.repository.GetEvidence(request.Context(), tenantID, evidenceID)
 	if err != nil {
 		s.notFound(writer, request)
 		return
 	}
-	content, err := evidence.ReadVerified(s.evidence, item)
+	content, err := evidence.ReadVerified(request.Context(), s.evidence, item)
 	if err != nil {
 		writeError(writer, request, http.StatusNotFound, "EVIDENCE_MISSING", "证据文件不存在", nil)
 		return
@@ -1943,7 +1943,7 @@ type alertChannelView struct {
 }
 
 func (s *Server) listAlertChannels(writer http.ResponseWriter, request *http.Request) {
-	items, err := s.repository.ListAlertChannels(principal(request).User.TenantID)
+	items, err := s.repository.ListAlertChannels(request.Context(), principal(request).User.TenantID)
 	if err != nil {
 		s.repositoryFailure(writer, request, "list alert channels", err)
 		return
@@ -1965,12 +1965,12 @@ func (s *Server) listAlertDeliveries(writer http.ResponseWriter, request *http.R
 	session := principal(request)
 	incidentID := request.URL.Query().Get("incidentId")
 	if incidentID != "" {
-		if _, err := s.repository.GetIncident(session.User.TenantID, incidentID); err != nil {
+		if _, err := s.repository.GetIncident(request.Context(), session.User.TenantID, incidentID); err != nil {
 			s.notFound(writer, request)
 			return
 		}
 	}
-	items, nextCursor, err := s.repository.ListAlertDeliveries(session.User.TenantID, incidentID, listOptions(request))
+	items, nextCursor, err := s.repository.ListAlertDeliveries(request.Context(), session.User.TenantID, incidentID, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list alert deliveries", err)
 		return
@@ -1987,7 +1987,7 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 	}
 	assetID := request.URL.Query().Get("assetId")
 	if assetID != "" {
-		if _, err := s.repository.GetAsset(session.User.TenantID, assetID); err != nil {
+		if _, err := s.repository.GetAsset(request.Context(), session.User.TenantID, assetID); err != nil {
 			s.notFound(writer, request)
 			return
 		}
@@ -1997,7 +1997,7 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 		writeError(writer, request, http.StatusBadRequest, "INVALID_SEVERITY", "风险等级无效", nil)
 		return
 	}
-	assets, _, err := s.repository.ListAssets(session.User.TenantID, store.ListOptions{})
+	assets, _, err := s.repository.ListAssets(request.Context(), session.User.TenantID, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list report assets", err)
 		return
@@ -2016,7 +2016,7 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 			verifiedAssets++
 		}
 	}
-	jobs, _, err := s.repository.ListJobs(session.User.TenantID, store.ListOptions{})
+	jobs, _, err := s.repository.ListJobs(request.Context(), session.User.TenantID, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list report jobs", err)
 		return
@@ -2034,7 +2034,7 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 			failedJobs++
 		}
 	}
-	incidents, _, err := s.repository.ListIncidents(session.User.TenantID, store.ListOptions{})
+	incidents, _, err := s.repository.ListIncidents(request.Context(), session.User.TenantID, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list report incidents", err)
 		return
@@ -2075,7 +2075,7 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 			}
 		}
 	}
-	deliveries, _, err := s.repository.ListAlertDeliveries(session.User.TenantID, "", store.ListOptions{})
+	deliveries, _, err := s.repository.ListAlertDeliveries(request.Context(), session.User.TenantID, "", store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list report deliveries", err)
 		return
@@ -2262,7 +2262,7 @@ func (s *Server) createAlertChannel(writer http.ResponseWriter, request *http.Re
 		Type: input.Type, URL: input.URL, Recipients: input.Recipients, Secret: input.Secret, Enabled: input.Enabled,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.repository.CreateAlertChannel(channel); err != nil {
+	if err := s.repository.CreateAlertChannel(request.Context(), channel); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(writer, request, http.StatusConflict, "CHANNEL_EXISTS", "同名告警渠道已存在", nil)
 			return
@@ -2280,7 +2280,7 @@ func (s *Server) createAlertChannel(writer http.ResponseWriter, request *http.Re
 // recreated row would never decrypt again.
 func (s *Server) updateAlertChannel(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	existing, err := s.repository.GetAlertChannel(session.User.TenantID, request.PathValue("id"))
+	existing, err := s.repository.GetAlertChannel(request.Context(), session.User.TenantID, request.PathValue("id"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -2309,7 +2309,7 @@ func (s *Server) updateAlertChannel(writer http.ResponseWriter, request *http.Re
 	channel.Secret = secret
 	channel.Enabled = input.Enabled
 	channel.UpdatedAt = time.Now().UTC()
-	if err := s.repository.UpdateAlertChannel(channel); err != nil {
+	if err := s.repository.UpdateAlertChannel(request.Context(), channel); err != nil {
 		s.notFound(writer, request)
 		return
 	}
@@ -2324,7 +2324,7 @@ func (s *Server) updateAlertChannel(writer http.ResponseWriter, request *http.Re
 func (s *Server) deleteAlertChannel(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
 	id := request.PathValue("id")
-	if err := s.repository.DeleteAlertChannel(session.User.TenantID, id); err != nil {
+	if err := s.repository.DeleteAlertChannel(request.Context(), session.User.TenantID, id); err != nil {
 		s.notFound(writer, request)
 		return
 	}
@@ -2395,7 +2395,7 @@ func (s *Server) listAudits(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, request, http.StatusBadRequest, "INVALID_FILTER", err.Error(), nil)
 		return
 	}
-	items, nextCursor, err := s.repository.ListAudits(principal(request).User.TenantID, filter, listOptions(request))
+	items, nextCursor, err := s.repository.ListAudits(request.Context(), principal(request).User.TenantID, filter, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list audit events", err)
 		return
@@ -2503,7 +2503,7 @@ func (s *Server) runRetentionMaintenance(writer http.ResponseWriter, request *ht
 
 func (s *Server) downloadReport(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	incident, err := s.repository.GetIncident(session.User.TenantID, request.PathValue("incidentId"))
+	incident, err := s.repository.GetIncident(request.Context(), session.User.TenantID, request.PathValue("incidentId"))
 	if err != nil {
 		s.notFound(writer, request)
 		return
@@ -2523,14 +2523,14 @@ func (s *Server) downloadReport(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	for _, evidenceID := range incident.EvidenceIDs {
-		item, getErr := s.repository.GetEvidence(session.User.TenantID, evidenceID)
+		item, getErr := s.repository.GetEvidence(request.Context(), session.User.TenantID, evidenceID)
 		if getErr != nil {
 			_ = archive.Close()
 			s.appendAudit(request, session.User, "report.export", "incident", incident.ID, "FAILED", map[string]any{"reason": "evidence_metadata_missing", "evidenceId": evidenceID})
 			writeError(writer, request, http.StatusFailedDependency, "REPORT_INCOMPLETE", "报告所需证据元数据缺失", map[string]any{"evidenceId": evidenceID})
 			return
 		}
-		content, openErr := evidence.ReadVerified(s.evidence, item)
+		content, openErr := evidence.ReadVerified(request.Context(), s.evidence, item)
 		if openErr != nil {
 			_ = archive.Close()
 			s.appendAudit(request, session.User, "report.export", "incident", incident.ID, "FAILED", map[string]any{"reason": "evidence_integrity_failed", "evidenceId": evidenceID})
@@ -2944,7 +2944,7 @@ func (s *Server) appendAudit(
 	action, resourceType, resourceID, result string,
 	details map[string]any,
 ) {
-	if err := s.repository.AppendAudit(domain.AuditEvent{
+	if err := s.repository.AppendAudit(request.Context(), domain.AuditEvent{
 		ID: identity.New(), TenantID: user.TenantID, ActorID: user.ID, Action: action,
 		ResourceType: resourceType, ResourceID: resourceID, Result: result,
 		TraceID: traceID(request), Details: details, CreatedAt: time.Now().UTC(),

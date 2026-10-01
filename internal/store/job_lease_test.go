@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -36,22 +37,22 @@ func TestJobLeaseGovernsTheReapBoundary(t *testing.T) {
 				{ID: youngID, TenantID: tenantID, AssetID: assetID, Mode: "HTTP", Status: domain.JobRunning, CreatedAt: now, StartedAt: &young, MaxAttempts: 3},
 				{ID: oldID, TenantID: tenantID, AssetID: assetID, Mode: "BROWSER", Status: domain.JobRunning, CreatedAt: now, StartedAt: &old, MaxAttempts: 3},
 			} {
-				if err := repository.CreateJob(job); err != nil {
+				if err := repository.CreateJob(context.Background(), job); err != nil {
 					t.Fatal(err)
 				}
 			}
 
-			reaped, err := repository.ReapTimedOut(tenantID, now.Add(-repository.JobLease()))
+			reaped, err := repository.ReapTimedOut(context.Background(), tenantID, now.Add(-repository.JobLease()))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if reaped != 1 {
 				t.Fatalf("reaped=%d, want only the job older than the lease", reaped)
 			}
-			if job, _ := repository.GetJob(tenantID, youngID); job.Status != domain.JobRunning {
+			if job, _ := repository.GetJob(context.Background(), tenantID, youngID); job.Status != domain.JobRunning {
 				t.Fatalf("a job 10s into a 60s lease was reaped: status=%s", job.Status)
 			}
-			if job, _ := repository.GetJob(tenantID, oldID); job.Status != domain.JobTimedOut {
+			if job, _ := repository.GetJob(context.Background(), tenantID, oldID); job.Status != domain.JobTimedOut {
 				t.Fatalf("a job 120s into a 60s lease was not reaped: status=%s", job.Status)
 			}
 		})
@@ -70,14 +71,14 @@ func TestClaimJobReclaimsOnlyPastTheLease(t *testing.T) {
 			now := time.Now().UTC()
 			recent := now.Add(-10 * time.Second)
 			jobID := identity.New()
-			if err := repository.CreateJob(domain.DetectionJob{
+			if err := repository.CreateJob(context.Background(), domain.DetectionJob{
 				ID: jobID, TenantID: tenantID, AssetID: assetID, Mode: "HTTP",
 				Status: domain.JobRunning, CreatedAt: now, StartedAt: &recent, MaxAttempts: 3,
 			}); err != nil {
 				t.Fatal(err)
 			}
 
-			claimed, err := repository.ClaimJob(tenantID, jobID, now)
+			claimed, err := repository.ClaimJob(context.Background(), tenantID, jobID, now)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -33,14 +34,14 @@ func seedJobFixture(t *testing.T, repository Repository) (string, string) {
 	suffix := identity.New()
 	now := time.Now().UTC()
 	tenant := domain.Tenant{ID: identity.New(), Slug: "active-job-" + suffix, Name: "active job", CreatedAt: now}
-	if err := repository.CreateTenant(tenant); err != nil {
+	if err := repository.CreateTenant(context.Background(), tenant); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
 	owner := domain.User{
 		ID: identity.New(), TenantID: tenant.ID, Username: "owner-" + suffix,
 		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
 	}
-	if err := repository.CreateUser(owner); err != nil {
+	if err := repository.CreateUser(context.Background(), owner); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	asset := domain.Asset{
@@ -49,10 +50,10 @@ func seedJobFixture(t *testing.T, repository Repository) (string, string) {
 		OwnerID: owner.ID, Enabled: true, VerificationStatus: domain.VerificationVerified,
 		VerificationMethod: domain.VerificationFile, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := repository.CreateAsset(asset); err != nil {
+	if err := repository.CreateAsset(context.Background(), asset); err != nil {
 		t.Fatalf("create asset: %v", err)
 	}
-	if err := repository.UpsertPolicy(domain.MonitorPolicy{
+	if err := repository.UpsertPolicy(context.Background(), domain.MonitorPolicy{
 		ID: identity.New(), TenantID: tenant.ID, AssetID: asset.ID, Version: 1,
 		HTTPIntervalSeconds: 300, BrowserIntervalSeconds: 1800, TimeoutSeconds: 30,
 		MaxResponseBytes: 1024, CreatedAt: now, UpdatedAt: now,
@@ -80,28 +81,28 @@ func TestCreateJobRejectsSecondActiveJob(t *testing.T) {
 			tenantID, assetID := seedJobFixture(t, repository)
 
 			first := newJob(tenantID, assetID, "HTTP", domain.JobQueued)
-			if err := repository.CreateJob(first); err != nil {
+			if err := repository.CreateJob(context.Background(), first); err != nil {
 				t.Fatalf("first active job: %v", err)
 			}
 			for _, status := range []domain.JobStatus{domain.JobQueued, domain.JobRunning} {
-				if err := repository.CreateJob(newJob(tenantID, assetID, "HTTP", status)); !errors.Is(err, ErrJobAlreadyActive) {
+				if err := repository.CreateJob(context.Background(), newJob(tenantID, assetID, "HTTP", status)); !errors.Is(err, ErrJobAlreadyActive) {
 					t.Fatalf("second %s job err=%v, want ErrJobAlreadyActive", status, err)
 				}
 			}
 
 			// A different mode is a different slot: the HTTP and BROWSER
 			// schedules are tracked independently by due().
-			if err := repository.CreateJob(newJob(tenantID, assetID, "BROWSER", domain.JobQueued)); err != nil {
+			if err := repository.CreateJob(context.Background(), newJob(tenantID, assetID, "BROWSER", domain.JobQueued)); err != nil {
 				t.Fatalf("other mode should not conflict: %v", err)
 			}
 
 			// Releasing the slot must allow the next check. This is the path the
 			// scheduler takes once a job reaches a terminal state.
-			changed, err := repository.CancelJob(tenantID, first.ID)
+			changed, err := repository.CancelJob(context.Background(), tenantID, first.ID)
 			if err != nil || !changed {
 				t.Fatalf("cancel first job: changed=%v err=%v", changed, err)
 			}
-			if err := repository.CreateJob(newJob(tenantID, assetID, "HTTP", domain.JobQueued)); err != nil {
+			if err := repository.CreateJob(context.Background(), newJob(tenantID, assetID, "HTTP", domain.JobQueued)); err != nil {
 				t.Fatalf("job after cancellation should be accepted: %v", err)
 			}
 		})
@@ -114,14 +115,14 @@ func TestCreateJobIsolatesActiveJobsPerTenant(t *testing.T) {
 	for name, repository := range testRepositories(t) {
 		t.Run(name, func(t *testing.T) {
 			tenantID, assetID := seedJobFixture(t, repository)
-			if err := repository.CreateJob(newJob(tenantID, assetID, "HTTP", domain.JobQueued)); err != nil {
+			if err := repository.CreateJob(context.Background(), newJob(tenantID, assetID, "HTTP", domain.JobQueued)); err != nil {
 				t.Fatalf("create job: %v", err)
 			}
 			other, otherAsset := seedJobFixture(t, repository)
 			if other == tenantID {
 				t.Fatal("fixture reused a tenant id")
 			}
-			if err := repository.CreateJob(newJob(other, otherAsset, "HTTP", domain.JobQueued)); err != nil {
+			if err := repository.CreateJob(context.Background(), newJob(other, otherAsset, "HTTP", domain.JobQueued)); err != nil {
 				t.Fatalf("same mode on another tenant should not conflict: %v", err)
 			}
 		})
@@ -145,7 +146,7 @@ func TestConcurrentCreateJobKeepsOneActiveJob(t *testing.T) {
 					defer finished.Done()
 					started.Done()
 					started.Wait()
-					results[index] = repository.CreateJob(newJob(tenantID, assetID, "HTTP", domain.JobQueued))
+					results[index] = repository.CreateJob(context.Background(), newJob(tenantID, assetID, "HTTP", domain.JobQueued))
 				}()
 			}
 			finished.Wait()
@@ -164,7 +165,7 @@ func TestConcurrentCreateJobKeepsOneActiveJob(t *testing.T) {
 			if accepted != 1 {
 				t.Fatalf("accepted=%d rejected=%d, want exactly one accepted", accepted, rejected)
 			}
-			jobs, _, err := repository.ListJobs(tenantID, ListOptions{})
+			jobs, _, err := repository.ListJobs(context.Background(), tenantID, ListOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}

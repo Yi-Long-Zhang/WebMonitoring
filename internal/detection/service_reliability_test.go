@@ -19,7 +19,7 @@ type checkingQueue struct {
 }
 
 func (q *checkingQueue) Enqueue(_ context.Context, job domain.DetectionJob) error {
-	persisted, err := q.repository.GetJob(job.TenantID, job.ID)
+	persisted, err := q.repository.GetJob(context.Background(), job.TenantID, job.ID)
 	if err != nil {
 		return err
 	}
@@ -36,7 +36,7 @@ func TestRetryIsPersistedBeforeQueueAcknowledgement(t *testing.T) {
 		ID: "job", TenantID: "tenant", AssetID: "asset", Mode: "HTTP",
 		Status: domain.JobRunning, RetryCount: 0, MaxAttempts: 3, CreatedAt: time.Now().UTC(),
 	}
-	if err := repository.CreateJob(job); err != nil {
+	if err := repository.CreateJob(context.Background(), job); err != nil {
 		t.Fatal(err)
 	}
 	queue := &checkingQueue{repository: repository}
@@ -61,7 +61,7 @@ func TestCheckTimeoutMarksJobTimedOut(t *testing.T) {
 		ID: "job", TenantID: "tenant", AssetID: "asset", Mode: "HTTP",
 		Status: domain.JobRunning, RetryCount: 0, MaxAttempts: 3, CreatedAt: time.Now().UTC(),
 	}
-	if err := repository.CreateJob(job); err != nil {
+	if err := repository.CreateJob(context.Background(), job); err != nil {
 		t.Fatal(err)
 	}
 	service := NewService(
@@ -71,7 +71,7 @@ func TestCheckTimeoutMarksJobTimedOut(t *testing.T) {
 	if err := service.failJob(t.Context(), job, "CHECK_TIMEOUT", context.DeadlineExceeded); err != nil {
 		t.Fatal(err)
 	}
-	persisted, err := repository.GetJob("tenant", "job")
+	persisted, err := repository.GetJob(context.Background(), "tenant", "job")
 	if err != nil {
 		t.Fatal(err)
 	}

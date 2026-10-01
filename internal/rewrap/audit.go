@@ -16,7 +16,7 @@ const Action = "security.rewrap"
 
 // AuditWriter is the slice of the repository the audit record needs.
 type AuditWriter interface {
-	AppendAudit(domain.AuditEvent) error
+	AppendAudit(ctx context.Context, event domain.AuditEvent) error
 }
 
 // RecordAudit appends one audit event describing the pass.
@@ -46,7 +46,7 @@ func RecordAudit(
 	case len(stats.Failures) > 0:
 		result = "PARTIAL"
 	}
-	return target.AppendAudit(domain.AuditEvent{
+	return target.AppendAudit(ctx, domain.AuditEvent{
 		ID:           identity.New(),
 		TenantID:     domain.DefaultTenantID,
 		Action:       Action,

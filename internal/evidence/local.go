@@ -74,7 +74,7 @@ func (s *LocalStore) Put(tenantID, assetID, jobID, kind, mediaType string, conte
 	}, nil
 }
 
-func (s *LocalStore) Open(objectKey string) (io.ReadCloser, error) {
+func (s *LocalStore) Open(_ context.Context, objectKey string) (io.ReadCloser, error) {
 	cleaned := filepath.Clean(objectKey)
 	target := filepath.Join(s.root, cleaned)
 	relative, err := filepath.Rel(s.root, target)

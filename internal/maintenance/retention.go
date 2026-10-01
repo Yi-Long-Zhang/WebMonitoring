@@ -63,7 +63,7 @@ func (r *Runner) SetLease(lease store.ReplicaLease) {
 // reports what would be removed and changes nothing.
 func (r *Runner) RunTenant(ctx context.Context, tenantID string, execute bool) (Result, error) {
 	now := time.Now().UTC()
-	expired, err := r.repository.ListExpiredEvidence(tenantID, now)
+	expired, err := r.repository.ListExpiredEvidence(ctx, tenantID, now)
 	if err != nil {
 		return Result{}, err
 	}
@@ -79,7 +79,7 @@ func (r *Runner) RunTenant(ctx context.Context, tenantID string, execute bool) (
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		referenced, refErr := r.repository.IsEvidenceReferenced(tenantID, item.ID)
+		referenced, refErr := r.repository.IsEvidenceReferenced(ctx, tenantID, item.ID)
 		if refErr != nil {
 			result.FailedEvidence++
 			result.FailureReasons = append(result.FailureReasons, "evidence reference check failed")
@@ -95,7 +95,7 @@ func (r *Runner) RunTenant(ctx context.Context, tenantID string, execute bool) (
 			r.logger.Warn("retention could not delete evidence object", "tenant_id", tenantID, "evidence_id", item.ID, "error", deleteErr)
 			continue
 		}
-		if deleteErr := r.repository.DeleteEvidence(tenantID, item.ID); deleteErr != nil {
+		if deleteErr := r.repository.DeleteEvidence(ctx, tenantID, item.ID); deleteErr != nil {
 			result.FailedEvidence++
 			result.FailureReasons = append(result.FailureReasons, "evidence metadata deletion failed")
 			r.logger.Warn("retention could not delete evidence metadata", "tenant_id", tenantID, "evidence_id", item.ID, "error", deleteErr)
@@ -103,7 +103,7 @@ func (r *Runner) RunTenant(ctx context.Context, tenantID string, execute bool) (
 		}
 		result.DeletedEvidence++
 	}
-	deletedAudits, auditErr := r.repository.DeleteAuditsBefore(tenantID, now.Add(-r.auditRetention))
+	deletedAudits, auditErr := r.repository.DeleteAuditsBefore(ctx, tenantID, now.Add(-r.auditRetention))
 	if auditErr != nil {
 		result.FailureReasons = append(result.FailureReasons, "audit deletion failed")
 		r.logger.Warn("retention could not delete audit events", "tenant_id", tenantID, "error", auditErr)
@@ -135,7 +135,7 @@ func (r *Runner) RunAllTenants(ctx context.Context, execute bool) map[string]Res
 	}
 	defer release()
 
-	tenants, _, err := r.repository.ListTenants(store.ListOptions{})
+	tenants, _, err := r.repository.ListTenants(ctx, store.ListOptions{})
 	if err != nil {
 		r.logger.Error("list tenants for retention", "error", err)
 		return nil
@@ -162,7 +162,7 @@ func (r *Runner) RunAllTenants(ctx context.Context, execute bool) map[string]Res
 				"failed_evidence", result.FailedEvidence,
 				"deleted_audit_events", result.DeletedAuditEvents,
 			)
-			r.appendScheduledAudit(tenant.ID, result)
+			r.appendScheduledAudit(ctx, tenant.ID, result)
 		}
 	}
 	return results
@@ -183,12 +183,12 @@ func (r *Runner) acquireLease(ctx context.Context) (func(), bool, error) {
 // are recorded, so an idle sweep does not fill the audit log.
 //
 // ActorID stays empty on purpose: no human authorized this specific run.
-func (r *Runner) appendScheduledAudit(tenantID string, result Result) {
+func (r *Runner) appendScheduledAudit(ctx context.Context, tenantID string, result Result) {
 	auditResult := "SUCCESS"
 	if result.FailedEvidence > 0 {
 		auditResult = "PARTIAL"
 	}
-	if err := r.repository.AppendAudit(domain.AuditEvent{
+	if err := r.repository.AppendAudit(ctx, domain.AuditEvent{
 		ID: identity.New(), TenantID: tenantID, Action: "maintenance.retention.scheduled",
 		ResourceType: "retention", ResourceID: tenantID, Result: auditResult,
 		Details: map[string]any{

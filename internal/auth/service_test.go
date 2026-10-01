@@ -20,7 +20,7 @@ func authTestUser(t *testing.T, repo store.Repository, username string, role dom
 		ID: "user-" + username, TenantID: domain.DefaultTenantID, Username: username,
 		PasswordHash: hash, Role: role, CreatedAt: time.Now().UTC(),
 	}
-	if err := repo.CreateUser(user); err != nil {
+	if err := repo.CreateUser(context.Background(), user); err != nil {
 		t.Fatal(err)
 	}
 	return user

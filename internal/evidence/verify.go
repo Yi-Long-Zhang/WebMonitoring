@@ -1,6 +1,7 @@
 package evidence
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -15,7 +16,7 @@ const maxVerifiedEvidenceBytes = 10 * 1024 * 1024
 
 // ReadVerified reads an evidence object into bounded memory and verifies the
 // immutable metadata before it is returned to an API or report exporter.
-func ReadVerified(store Store, item domain.Evidence) ([]byte, error) {
+func ReadVerified(ctx context.Context, store Store, item domain.Evidence) ([]byte, error) {
 	if item.Size < 0 || item.Size > maxVerifiedEvidenceBytes {
 		return nil, fmt.Errorf("evidence size is outside the allowed verification limit")
 	}
@@ -26,7 +27,7 @@ func ReadVerified(store Store, item domain.Evidence) ([]byte, error) {
 	if err != nil {
 		return nil, errors.New("evidence has an invalid SHA-256 metadata value")
 	}
-	object, err := store.Open(item.ObjectKey)
+	object, err := store.Open(ctx, item.ObjectKey)
 	if err != nil {
 		return nil, err
 	}

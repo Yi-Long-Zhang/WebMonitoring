@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,7 @@ func baselinePreviewServer(t *testing.T, baseline domain.BaselineVersion) (*stor
 	t.Helper()
 	repository := store.NewMemoryRepository()
 	admin := retentionUser(t, repository, "admin", domain.RoleAdmin)
-	if err := repository.CreateBaseline(baseline); err != nil {
+	if err := repository.CreateBaseline(context.Background(), baseline); err != nil {
 		t.Fatal(err)
 	}
 	evidenceStore, err := evidence.NewLocalStore(t.TempDir())

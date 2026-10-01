@@ -57,7 +57,7 @@ func (m *MemoryRepository) Ready(context.Context) error {
 	return nil
 }
 
-func (m *MemoryRepository) ListTenants(opts ListOptions) ([]domain.Tenant, string, error) {
+func (m *MemoryRepository) ListTenants(ctx context.Context, opts ListOptions) ([]domain.Tenant, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Tenant, 0, len(m.tenants))
@@ -74,7 +74,7 @@ func (m *MemoryRepository) ListTenants(opts ListOptions) ([]domain.Tenant, strin
 	return items, next, nil
 }
 
-func (m *MemoryRepository) GetTenant(tenantID string) (domain.Tenant, error) {
+func (m *MemoryRepository) GetTenant(ctx context.Context, tenantID string) (domain.Tenant, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	tenant, ok := m.tenants[tenantID]
@@ -84,7 +84,7 @@ func (m *MemoryRepository) GetTenant(tenantID string) (domain.Tenant, error) {
 	return tenant, nil
 }
 
-func (m *MemoryRepository) GetTenantBySlug(slug string) (domain.Tenant, error) {
+func (m *MemoryRepository) GetTenantBySlug(ctx context.Context, slug string) (domain.Tenant, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, tenant := range m.tenants {
@@ -95,7 +95,7 @@ func (m *MemoryRepository) GetTenantBySlug(slug string) (domain.Tenant, error) {
 	return domain.Tenant{}, ErrNotFound
 }
 
-func (m *MemoryRepository) CreateTenant(tenant domain.Tenant) error {
+func (m *MemoryRepository) CreateTenant(ctx context.Context, tenant domain.Tenant) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, existing := range m.tenants {
@@ -107,7 +107,7 @@ func (m *MemoryRepository) CreateTenant(tenant domain.Tenant) error {
 	return nil
 }
 
-func (m *MemoryRepository) UpdateTenant(tenant domain.Tenant) error {
+func (m *MemoryRepository) UpdateTenant(ctx context.Context, tenant domain.Tenant) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tenants[tenant.ID]; !ok {
@@ -128,7 +128,7 @@ func tenantKey(tenantID, id string) string {
 
 // CountTenantResources returns per-kind row counts for one tenant. The JSON
 // keys match the Postgres implementation.
-func (m *MemoryRepository) CountTenantResources(tenantID string) (map[string]int, error) {
+func (m *MemoryRepository) CountTenantResources(ctx context.Context, tenantID string) (map[string]int, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := map[string]int{"assets": 0, "sites": 0, "users": 0, "evidence": 0,
@@ -190,7 +190,7 @@ func (m *MemoryRepository) CountTenantResources(tenantID string) (map[string]int
 // DeleteTenant removes a tenant and every tenant-scoped row in one critical
 // section. Callers must have verified the tenant is empty (or explicitly
 // requested a cascade) before calling.
-func (m *MemoryRepository) DeleteTenant(tenantID string) error {
+func (m *MemoryRepository) DeleteTenant(ctx context.Context, tenantID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tenants[tenantID]; !ok {
@@ -264,7 +264,7 @@ func (m *MemoryRepository) DeleteTenant(tenantID string) error {
 	return nil
 }
 
-func (m *MemoryRepository) CreateUser(user domain.User) error {
+func (m *MemoryRepository) CreateUser(ctx context.Context, user domain.User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, existing := range m.users {
@@ -276,7 +276,7 @@ func (m *MemoryRepository) CreateUser(user domain.User) error {
 	return nil
 }
 
-func (m *MemoryRepository) FindUserByUsername(tenantID, username string) (domain.User, error) {
+func (m *MemoryRepository) FindUserByUsername(ctx context.Context, tenantID, username string) (domain.User, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, user := range m.users {
@@ -287,7 +287,7 @@ func (m *MemoryRepository) FindUserByUsername(tenantID, username string) (domain
 	return domain.User{}, ErrNotFound
 }
 
-func (m *MemoryRepository) GetUser(tenantID, id string) (domain.User, error) {
+func (m *MemoryRepository) GetUser(ctx context.Context, tenantID, id string) (domain.User, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	user, ok := m.users[tenantKey(tenantID, id)]
@@ -297,7 +297,7 @@ func (m *MemoryRepository) GetUser(tenantID, id string) (domain.User, error) {
 	return user, nil
 }
 
-func (m *MemoryRepository) ListUsers(tenantID string) ([]domain.User, error) {
+func (m *MemoryRepository) ListUsers(ctx context.Context, tenantID string) ([]domain.User, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.User, 0)
@@ -310,7 +310,7 @@ func (m *MemoryRepository) ListUsers(tenantID string) ([]domain.User, error) {
 	return result, nil
 }
 
-func (m *MemoryRepository) UpdateUser(user domain.User) error {
+func (m *MemoryRepository) UpdateUser(ctx context.Context, user domain.User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(user.TenantID, user.ID)
@@ -326,7 +326,7 @@ func (m *MemoryRepository) UpdateUser(user domain.User) error {
 	return nil
 }
 
-func (m *MemoryRepository) CreateAsset(asset domain.Asset) error {
+func (m *MemoryRepository) CreateAsset(ctx context.Context, asset domain.Asset) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, existing := range m.assets {
@@ -338,7 +338,7 @@ func (m *MemoryRepository) CreateAsset(asset domain.Asset) error {
 	return nil
 }
 
-func (m *MemoryRepository) UpdateAsset(asset domain.Asset) error {
+func (m *MemoryRepository) UpdateAsset(ctx context.Context, asset domain.Asset) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(asset.TenantID, asset.ID)
@@ -349,7 +349,7 @@ func (m *MemoryRepository) UpdateAsset(asset domain.Asset) error {
 	return nil
 }
 
-func (m *MemoryRepository) GetAsset(tenantID, id string) (domain.Asset, error) {
+func (m *MemoryRepository) GetAsset(ctx context.Context, tenantID, id string) (domain.Asset, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	asset, ok := m.assets[tenantKey(tenantID, id)]
@@ -359,7 +359,7 @@ func (m *MemoryRepository) GetAsset(tenantID, id string) (domain.Asset, error) {
 	return asset, nil
 }
 
-func (m *MemoryRepository) ListAssets(tenantID string, opts ListOptions) ([]domain.Asset, string, error) {
+func (m *MemoryRepository) ListAssets(ctx context.Context, tenantID string, opts ListOptions) ([]domain.Asset, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Asset, 0)
@@ -378,7 +378,7 @@ func (m *MemoryRepository) ListAssets(tenantID string, opts ListOptions) ([]doma
 	return items, next, nil
 }
 
-func (m *MemoryRepository) CreateSite(site domain.Site) error {
+func (m *MemoryRepository) CreateSite(ctx context.Context, site domain.Site) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, existing := range m.sites {
@@ -390,7 +390,7 @@ func (m *MemoryRepository) CreateSite(site domain.Site) error {
 	return nil
 }
 
-func (m *MemoryRepository) UpdateSite(site domain.Site) error {
+func (m *MemoryRepository) UpdateSite(ctx context.Context, site domain.Site) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(site.TenantID, site.ID)
@@ -406,7 +406,7 @@ func (m *MemoryRepository) UpdateSite(site domain.Site) error {
 	return nil
 }
 
-func (m *MemoryRepository) GetSite(tenantID, id string) (domain.Site, error) {
+func (m *MemoryRepository) GetSite(ctx context.Context, tenantID, id string) (domain.Site, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	site, ok := m.sites[tenantKey(tenantID, id)]
@@ -416,7 +416,7 @@ func (m *MemoryRepository) GetSite(tenantID, id string) (domain.Site, error) {
 	return site, nil
 }
 
-func (m *MemoryRepository) ListSites(tenantID string, opts ListOptions) ([]domain.Site, string, error) {
+func (m *MemoryRepository) ListSites(ctx context.Context, tenantID string, opts ListOptions) ([]domain.Site, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Site, 0)
@@ -436,7 +436,7 @@ func (m *MemoryRepository) ListSites(tenantID string, opts ListOptions) ([]domai
 }
 
 // CountAssetsBySite mirrors the PostgreSQL implementation.
-func (m *MemoryRepository) CountAssetsBySite(tenantID, siteID string) (int, error) {
+func (m *MemoryRepository) CountAssetsBySite(ctx context.Context, tenantID, siteID string) (int, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	count := 0
@@ -451,7 +451,7 @@ func (m *MemoryRepository) CountAssetsBySite(tenantID, siteID string) (int, erro
 // DeleteSite refuses to remove a site an asset still points at, matching the
 // PostgreSQL foreign key instead of diverging from it. Assets hold site_id as
 // an optional grouping, so an unfile would be silent data loss.
-func (m *MemoryRepository) DeleteSite(tenantID, id string) error {
+func (m *MemoryRepository) DeleteSite(ctx context.Context, tenantID, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(tenantID, id)
@@ -467,14 +467,14 @@ func (m *MemoryRepository) DeleteSite(tenantID, id string) error {
 	return nil
 }
 
-func (m *MemoryRepository) UpsertPolicy(policy domain.MonitorPolicy) error {
+func (m *MemoryRepository) UpsertPolicy(ctx context.Context, policy domain.MonitorPolicy) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.policies[tenantKey(policy.TenantID, policy.AssetID)] = policy
 	return nil
 }
 
-func (m *MemoryRepository) GetPolicy(tenantID, assetID string) (domain.MonitorPolicy, error) {
+func (m *MemoryRepository) GetPolicy(ctx context.Context, tenantID, assetID string) (domain.MonitorPolicy, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	policy, ok := m.policies[tenantKey(tenantID, assetID)]
@@ -484,7 +484,7 @@ func (m *MemoryRepository) GetPolicy(tenantID, assetID string) (domain.MonitorPo
 	return clonePolicy(policy), nil
 }
 
-func (m *MemoryRepository) ListPolicies(tenantID string, opts ListOptions) ([]domain.MonitorPolicy, string, error) {
+func (m *MemoryRepository) ListPolicies(ctx context.Context, tenantID string, opts ListOptions) ([]domain.MonitorPolicy, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.MonitorPolicy, 0)
@@ -503,7 +503,7 @@ func (m *MemoryRepository) ListPolicies(tenantID string, opts ListOptions) ([]do
 	return items, next, nil
 }
 
-func (m *MemoryRepository) CreateBaseline(baseline domain.BaselineVersion) error {
+func (m *MemoryRepository) CreateBaseline(ctx context.Context, baseline domain.BaselineVersion) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(baseline.TenantID, baseline.ID)
@@ -514,7 +514,7 @@ func (m *MemoryRepository) CreateBaseline(baseline domain.BaselineVersion) error
 	return nil
 }
 
-func (m *MemoryRepository) UpdateBaseline(baseline domain.BaselineVersion) error {
+func (m *MemoryRepository) UpdateBaseline(ctx context.Context, baseline domain.BaselineVersion) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(baseline.TenantID, baseline.ID)
@@ -534,7 +534,7 @@ func (m *MemoryRepository) UpdateBaseline(baseline domain.BaselineVersion) error
 	return nil
 }
 
-func (m *MemoryRepository) GetBaseline(tenantID, id string) (domain.BaselineVersion, error) {
+func (m *MemoryRepository) GetBaseline(ctx context.Context, tenantID, id string) (domain.BaselineVersion, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	baseline, ok := m.baselines[tenantKey(tenantID, id)]
@@ -544,7 +544,7 @@ func (m *MemoryRepository) GetBaseline(tenantID, id string) (domain.BaselineVers
 	return cloneBaseline(baseline), nil
 }
 
-func (m *MemoryRepository) GetApprovedBaseline(tenantID, assetID string) (domain.BaselineVersion, error) {
+func (m *MemoryRepository) GetApprovedBaseline(ctx context.Context, tenantID, assetID string) (domain.BaselineVersion, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var selected domain.BaselineVersion
@@ -563,7 +563,7 @@ func (m *MemoryRepository) GetApprovedBaseline(tenantID, assetID string) (domain
 	return cloneBaseline(selected), nil
 }
 
-func (m *MemoryRepository) ListBaselines(tenantID, assetID string, opts ListOptions) ([]domain.BaselineVersion, string, error) {
+func (m *MemoryRepository) ListBaselines(ctx context.Context, tenantID, assetID string, opts ListOptions) ([]domain.BaselineVersion, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.BaselineVersion, 0)
@@ -582,7 +582,7 @@ func (m *MemoryRepository) ListBaselines(tenantID, assetID string, opts ListOpti
 	return items, next, nil
 }
 
-func (m *MemoryRepository) CreateJob(job domain.DetectionJob) error {
+func (m *MemoryRepository) CreateJob(ctx context.Context, job domain.DetectionJob) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(job.TenantID, job.ID)
@@ -603,7 +603,7 @@ func (m *MemoryRepository) CreateJob(job domain.DetectionJob) error {
 	return nil
 }
 
-func (m *MemoryRepository) ClaimJob(tenantID, id string, startedAt time.Time) (bool, error) {
+func (m *MemoryRepository) ClaimJob(ctx context.Context, tenantID, id string, startedAt time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(tenantID, id)
@@ -622,7 +622,7 @@ func (m *MemoryRepository) ClaimJob(tenantID, id string, startedAt time.Time) (b
 	return true, nil
 }
 
-func (m *MemoryRepository) UpdateJob(job domain.DetectionJob) error {
+func (m *MemoryRepository) UpdateJob(ctx context.Context, job domain.DetectionJob) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(job.TenantID, job.ID)
@@ -633,7 +633,7 @@ func (m *MemoryRepository) UpdateJob(job domain.DetectionJob) error {
 	return nil
 }
 
-func (m *MemoryRepository) GetJob(tenantID, id string) (domain.DetectionJob, error) {
+func (m *MemoryRepository) GetJob(ctx context.Context, tenantID, id string) (domain.DetectionJob, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	job, ok := m.jobs[tenantKey(tenantID, id)]
@@ -643,7 +643,7 @@ func (m *MemoryRepository) GetJob(tenantID, id string) (domain.DetectionJob, err
 	return job, nil
 }
 
-func (m *MemoryRepository) ListJobs(tenantID string, opts ListOptions) ([]domain.DetectionJob, string, error) {
+func (m *MemoryRepository) ListJobs(ctx context.Context, tenantID string, opts ListOptions) ([]domain.DetectionJob, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.DetectionJob, 0)
@@ -662,7 +662,7 @@ func (m *MemoryRepository) ListJobs(tenantID string, opts ListOptions) ([]domain
 	return items, next, nil
 }
 
-func (m *MemoryRepository) CancelJob(tenantID, id string) (bool, error) {
+func (m *MemoryRepository) CancelJob(ctx context.Context, tenantID, id string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(tenantID, id)
@@ -680,7 +680,7 @@ func (m *MemoryRepository) CancelJob(tenantID, id string) (bool, error) {
 	return true, nil
 }
 
-func (m *MemoryRepository) ReapTimedOut(tenantID string, before time.Time) (int, error) {
+func (m *MemoryRepository) ReapTimedOut(ctx context.Context, tenantID string, before time.Time) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	reaped := 0
@@ -701,7 +701,7 @@ func (m *MemoryRepository) ReapTimedOut(tenantID string, before time.Time) (int,
 	return reaped, nil
 }
 
-func (m *MemoryRepository) CreateEvidence(evidence domain.Evidence) error {
+func (m *MemoryRepository) CreateEvidence(ctx context.Context, evidence domain.Evidence) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(evidence.TenantID, evidence.ID)
@@ -712,7 +712,7 @@ func (m *MemoryRepository) CreateEvidence(evidence domain.Evidence) error {
 	return nil
 }
 
-func (m *MemoryRepository) GetEvidence(tenantID, id string) (domain.Evidence, error) {
+func (m *MemoryRepository) GetEvidence(ctx context.Context, tenantID, id string) (domain.Evidence, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	evidence, ok := m.evidence[tenantKey(tenantID, id)]
@@ -722,7 +722,7 @@ func (m *MemoryRepository) GetEvidence(tenantID, id string) (domain.Evidence, er
 	return evidence, nil
 }
 
-func (m *MemoryRepository) ListEvidence(tenantID, assetID string, opts ListOptions) ([]domain.Evidence, string, error) {
+func (m *MemoryRepository) ListEvidence(ctx context.Context, tenantID, assetID string, opts ListOptions) ([]domain.Evidence, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Evidence, 0)
@@ -741,7 +741,7 @@ func (m *MemoryRepository) ListEvidence(tenantID, assetID string, opts ListOptio
 	return items, next, nil
 }
 
-func (m *MemoryRepository) ListExpiredEvidence(tenantID string, before time.Time) ([]domain.Evidence, error) {
+func (m *MemoryRepository) ListExpiredEvidence(ctx context.Context, tenantID string, before time.Time) ([]domain.Evidence, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Evidence, 0)
@@ -754,7 +754,7 @@ func (m *MemoryRepository) ListExpiredEvidence(tenantID string, before time.Time
 	return result, nil
 }
 
-func (m *MemoryRepository) IsEvidenceReferenced(tenantID, id string) (bool, error) {
+func (m *MemoryRepository) IsEvidenceReferenced(ctx context.Context, tenantID, id string) (bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, incident := range m.incidents {
@@ -765,7 +765,7 @@ func (m *MemoryRepository) IsEvidenceReferenced(tenantID, id string) (bool, erro
 	return false, nil
 }
 
-func (m *MemoryRepository) DeleteEvidence(tenantID, id string) error {
+func (m *MemoryRepository) DeleteEvidence(ctx context.Context, tenantID, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(tenantID, id)
@@ -782,7 +782,7 @@ func (m *MemoryRepository) DeleteEvidence(tenantID, id string) error {
 	return nil
 }
 
-func (m *MemoryRepository) UpsertIncident(incident domain.Incident) (domain.Incident, IncidentUpsertOutcome, error) {
+func (m *MemoryRepository) UpsertIncident(ctx context.Context, incident domain.Incident) (domain.Incident, IncidentUpsertOutcome, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for key, current := range m.incidents {
@@ -852,7 +852,7 @@ func occurrenceEvent(merged, round domain.Incident, eventType domain.IncidentEve
 // The PostgreSQL implementation gets the same answer from INSERT ... SELECT and
 // a zero row count; the foreign key would report 23503, which the API surfaces
 // as a 500 and which memory could not reproduce.
-func (m *MemoryRepository) AppendIncidentEvent(event domain.IncidentEvent) error {
+func (m *MemoryRepository) AppendIncidentEvent(ctx context.Context, event domain.IncidentEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.incidents[tenantKey(event.TenantID, event.IncidentID)]; !ok {
@@ -862,7 +862,7 @@ func (m *MemoryRepository) AppendIncidentEvent(event domain.IncidentEvent) error
 	return nil
 }
 
-func (m *MemoryRepository) ListIncidentEvents(tenantID, incidentID string, opts ListOptions) ([]domain.IncidentEvent, string, error) {
+func (m *MemoryRepository) ListIncidentEvents(ctx context.Context, tenantID, incidentID string, opts ListOptions) ([]domain.IncidentEvent, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.IncidentEvent, 0)
@@ -881,7 +881,7 @@ func (m *MemoryRepository) ListIncidentEvents(tenantID, incidentID string, opts 
 	return items, next, nil
 }
 
-func (m *MemoryRepository) UpdateIncident(incident domain.Incident) error {
+func (m *MemoryRepository) UpdateIncident(ctx context.Context, incident domain.Incident) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(incident.TenantID, incident.ID)
@@ -892,7 +892,7 @@ func (m *MemoryRepository) UpdateIncident(incident domain.Incident) error {
 	return nil
 }
 
-func (m *MemoryRepository) GetIncident(tenantID, id string) (domain.Incident, error) {
+func (m *MemoryRepository) GetIncident(ctx context.Context, tenantID, id string) (domain.Incident, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	incident, ok := m.incidents[tenantKey(tenantID, id)]
@@ -902,7 +902,7 @@ func (m *MemoryRepository) GetIncident(tenantID, id string) (domain.Incident, er
 	return cloneIncident(incident), nil
 }
 
-func (m *MemoryRepository) ListIncidents(tenantID string, opts ListOptions) ([]domain.Incident, string, error) {
+func (m *MemoryRepository) ListIncidents(ctx context.Context, tenantID string, opts ListOptions) ([]domain.Incident, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Incident, 0)
@@ -921,7 +921,7 @@ func (m *MemoryRepository) ListIncidents(tenantID string, opts ListOptions) ([]d
 	return items, next, nil
 }
 
-func (m *MemoryRepository) CreateAlertChannel(channel domain.AlertChannel) error {
+func (m *MemoryRepository) CreateAlertChannel(ctx context.Context, channel domain.AlertChannel) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(channel.TenantID, channel.ID)
@@ -932,7 +932,7 @@ func (m *MemoryRepository) CreateAlertChannel(channel domain.AlertChannel) error
 	return nil
 }
 
-func (m *MemoryRepository) GetAlertChannel(tenantID, id string) (domain.AlertChannel, error) {
+func (m *MemoryRepository) GetAlertChannel(ctx context.Context, tenantID, id string) (domain.AlertChannel, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	channel, ok := m.channels[tenantKey(tenantID, id)]
@@ -942,7 +942,7 @@ func (m *MemoryRepository) GetAlertChannel(tenantID, id string) (domain.AlertCha
 	return channel, nil
 }
 
-func (m *MemoryRepository) UpdateAlertChannel(channel domain.AlertChannel) error {
+func (m *MemoryRepository) UpdateAlertChannel(ctx context.Context, channel domain.AlertChannel) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(channel.TenantID, channel.ID)
@@ -957,12 +957,12 @@ func (m *MemoryRepository) UpdateAlertChannel(channel domain.AlertChannel) error
 // repository stores plaintext, so this has nothing to re-seal; it exists so the
 // key-rotation pass can run against the in-memory backend and so both
 // implementations of Repository agree on the shape of the write.
-func (m *MemoryRepository) RewrapAlertChannel(channel domain.AlertChannel) error {
-	return m.UpdateAlertChannel(channel)
+func (m *MemoryRepository) RewrapAlertChannel(ctx context.Context, channel domain.AlertChannel) error {
+	return m.UpdateAlertChannel(ctx, channel)
 }
 
 // RewrapPolicy replaces one policy in place, for the same reason.
-func (m *MemoryRepository) RewrapPolicy(policy domain.MonitorPolicy) error {
+func (m *MemoryRepository) RewrapPolicy(ctx context.Context, policy domain.MonitorPolicy) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(policy.TenantID, policy.AssetID)
@@ -973,7 +973,7 @@ func (m *MemoryRepository) RewrapPolicy(policy domain.MonitorPolicy) error {
 	return nil
 }
 
-func (m *MemoryRepository) DeleteAlertChannel(tenantID, id string) error {
+func (m *MemoryRepository) DeleteAlertChannel(ctx context.Context, tenantID, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(tenantID, id)
@@ -984,8 +984,8 @@ func (m *MemoryRepository) DeleteAlertChannel(tenantID, id string) error {
 	return nil
 }
 
-func (m *MemoryRepository) ListAlertChannels(tenantID string) ([]domain.AlertChannel, error) {
-	result, err := m.ListAlertChannelsWithSecrets(tenantID)
+func (m *MemoryRepository) ListAlertChannels(ctx context.Context, tenantID string) ([]domain.AlertChannel, error) {
+	result, err := m.ListAlertChannelsWithSecrets(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -995,7 +995,7 @@ func (m *MemoryRepository) ListAlertChannels(tenantID string) ([]domain.AlertCha
 	return result, nil
 }
 
-func (m *MemoryRepository) ListAlertChannelsWithSecrets(tenantID string) ([]domain.AlertChannel, error) {
+func (m *MemoryRepository) ListAlertChannelsWithSecrets(ctx context.Context, tenantID string) ([]domain.AlertChannel, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.AlertChannel, 0)
@@ -1008,7 +1008,7 @@ func (m *MemoryRepository) ListAlertChannelsWithSecrets(tenantID string) ([]doma
 	return result, nil
 }
 
-func (m *MemoryRepository) CreateAlertDelivery(delivery domain.AlertDelivery) error {
+func (m *MemoryRepository) CreateAlertDelivery(ctx context.Context, delivery domain.AlertDelivery) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, existing := range m.deliveries {
@@ -1020,7 +1020,7 @@ func (m *MemoryRepository) CreateAlertDelivery(delivery domain.AlertDelivery) er
 	return nil
 }
 
-func (m *MemoryRepository) UpdateAlertDelivery(delivery domain.AlertDelivery) error {
+func (m *MemoryRepository) UpdateAlertDelivery(ctx context.Context, delivery domain.AlertDelivery) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := tenantKey(delivery.TenantID, delivery.ID)
@@ -1031,7 +1031,7 @@ func (m *MemoryRepository) UpdateAlertDelivery(delivery domain.AlertDelivery) er
 	return nil
 }
 
-func (m *MemoryRepository) ListAlertDeliveries(tenantID, incidentID string, opts ListOptions) ([]domain.AlertDelivery, string, error) {
+func (m *MemoryRepository) ListAlertDeliveries(ctx context.Context, tenantID, incidentID string, opts ListOptions) ([]domain.AlertDelivery, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.AlertDelivery, 0)
@@ -1050,7 +1050,7 @@ func (m *MemoryRepository) ListAlertDeliveries(tenantID, incidentID string, opts
 	return items, next, nil
 }
 
-func (m *MemoryRepository) AppendAudit(event domain.AuditEvent) error {
+func (m *MemoryRepository) AppendAudit(ctx context.Context, event domain.AuditEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.audits = append(m.audits, event)
@@ -1075,7 +1075,7 @@ func (m *MemoryRepository) SetJobLease(lease time.Duration) {
 	m.jobLease = lease
 }
 
-func (m *MemoryRepository) ListAudits(tenantID string, filter AuditFilter, opts ListOptions) ([]domain.AuditEvent, string, error) {
+func (m *MemoryRepository) ListAudits(ctx context.Context, tenantID string, filter AuditFilter, opts ListOptions) ([]domain.AuditEvent, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.AuditEvent, 0)
@@ -1097,7 +1097,7 @@ func (m *MemoryRepository) ListAudits(tenantID string, filter AuditFilter, opts 
 	return items, next, nil
 }
 
-func (m *MemoryRepository) DeleteAuditsBefore(tenantID string, before time.Time) (int, error) {
+func (m *MemoryRepository) DeleteAuditsBefore(ctx context.Context, tenantID string, before time.Time) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	kept := make([]domain.AuditEvent, 0, len(m.audits))

@@ -93,7 +93,7 @@ func TestPostgresReplicaLeaseSurvivesUntilRelease(t *testing.T) {
 	// Exercise the pool the holder took its connection from: if the lease were
 	// released when the connection went back, this would hand it out.
 	for range 4 {
-		if _, _, err := first.ListTenants(ListOptions{Limit: 1}); err != nil {
+		if _, _, err := first.ListTenants(context.Background(), ListOptions{Limit: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -34,7 +35,7 @@ func TestRetentionMaintenanceRequiresAdminAndSupportsDryRun(t *testing.T) {
 	}
 	past := time.Now().UTC().Add(-time.Hour)
 	expired.RetainUntil = &past
-	if err := repository.CreateEvidence(expired); err != nil {
+	if err := repository.CreateEvidence(context.Background(), expired); err != nil {
 		t.Fatal(err)
 	}
 	server := retentionServer(repository, evidenceStore)
@@ -50,7 +51,7 @@ func TestRetentionMaintenanceRequiresAdminAndSupportsDryRun(t *testing.T) {
 	if dryRun.Code != http.StatusOK || !bytes.Contains(dryRun.Body.Bytes(), []byte(`"expiredEvidence":1`)) {
 		t.Fatalf("dry run status=%d body=%s", dryRun.Code, dryRun.Body.String())
 	}
-	if _, err := repository.GetEvidence(defaultTenant, expired.ID); err != nil {
+	if _, err := repository.GetEvidence(context.Background(), defaultTenant, expired.ID); err != nil {
 		t.Fatalf("dry run deleted evidence: %v", err)
 	}
 
@@ -58,7 +59,7 @@ func TestRetentionMaintenanceRequiresAdminAndSupportsDryRun(t *testing.T) {
 	if execute.Code != http.StatusOK || !bytes.Contains(execute.Body.Bytes(), []byte(`"deletedEvidence":1`)) {
 		t.Fatalf("execute status=%d body=%s", execute.Code, execute.Body.String())
 	}
-	if _, err := repository.GetEvidence(defaultTenant, expired.ID); err != store.ErrNotFound {
+	if _, err := repository.GetEvidence(context.Background(), defaultTenant, expired.ID); err != store.ErrNotFound {
 		t.Fatalf("executed retention left metadata: %v", err)
 	}
 }
@@ -73,7 +74,7 @@ func retentionUser(t *testing.T, repository *store.MemoryRepository, username st
 		ID: identity.New(), TenantID: defaultTenant, Username: username,
 		PasswordHash: hash, Role: role, CreatedAt: time.Now().UTC(),
 	}
-	if err := repository.CreateUser(user); err != nil {
+	if err := repository.CreateUser(context.Background(), user); err != nil {
 		t.Fatal(err)
 	}
 	return user

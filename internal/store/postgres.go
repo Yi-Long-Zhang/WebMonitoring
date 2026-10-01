@@ -66,10 +66,10 @@ func (p *PostgresRepository) Ready(ctx context.Context) error {
 	return p.pool.Ping(ctx)
 }
 
-func (p *PostgresRepository) ListTenants(opts ListOptions) ([]domain.Tenant, string, error) {
+func (p *PostgresRepository) ListTenants(ctx context.Context, opts ListOptions) ([]domain.Tenant, string, error) {
 	query := tenantSelect + ` WHERE TRUE`
 	query, args := paginateQuery(query, nil, opts, "created_at")
-	rows, err := p.pool.Query(context.Background(), query, args...)
+	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
 	}
@@ -89,16 +89,16 @@ func (p *PostgresRepository) ListTenants(opts ListOptions) ([]domain.Tenant, str
 	return items, next, nil
 }
 
-func (p *PostgresRepository) GetTenant(tenantID string) (domain.Tenant, error) {
-	return scanTenant(p.pool.QueryRow(context.Background(), tenantSelect+` WHERE id=$1`, tenantID))
+func (p *PostgresRepository) GetTenant(ctx context.Context, tenantID string) (domain.Tenant, error) {
+	return scanTenant(p.pool.QueryRow(ctx, tenantSelect+` WHERE id=$1`, tenantID))
 }
 
-func (p *PostgresRepository) GetTenantBySlug(slug string) (domain.Tenant, error) {
-	return scanTenant(p.pool.QueryRow(context.Background(), tenantSelect+` WHERE lower(slug)=lower($1)`, slug))
+func (p *PostgresRepository) GetTenantBySlug(ctx context.Context, slug string) (domain.Tenant, error) {
+	return scanTenant(p.pool.QueryRow(ctx, tenantSelect+` WHERE lower(slug)=lower($1)`, slug))
 }
 
-func (p *PostgresRepository) CreateTenant(tenant domain.Tenant) error {
-	_, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) CreateTenant(ctx context.Context, tenant domain.Tenant) error {
+	_, err := p.pool.Exec(ctx, `
 		INSERT INTO tenants (id, slug, name, disabled, created_at)
 		VALUES ($1, $2, $3, $4, $5)`,
 		tenant.ID, tenant.Slug, tenant.Name, tenant.Disabled, tenant.CreatedAt,
@@ -106,8 +106,8 @@ func (p *PostgresRepository) CreateTenant(tenant domain.Tenant) error {
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) UpdateTenant(tenant domain.Tenant) error {
-	tag, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) UpdateTenant(ctx context.Context, tenant domain.Tenant) error {
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE tenants SET slug=$2, name=$3, disabled=$4 WHERE id=$1`,
 		tenant.ID, tenant.Slug, tenant.Name, tenant.Disabled,
 	)
@@ -120,7 +120,7 @@ func (p *PostgresRepository) UpdateTenant(tenant domain.Tenant) error {
 // CountTenantResources returns per-kind row counts for one tenant. It is used
 // to fail a destructive tenant delete closed unless the caller explicitly
 // requests a cascade.
-func (p *PostgresRepository) CountTenantResources(tenantID string) (map[string]int, error) {
+func (p *PostgresRepository) CountTenantResources(ctx context.Context, tenantID string) (map[string]int, error) {
 	kinds := []struct {
 		name  string
 		query string
@@ -139,7 +139,7 @@ func (p *PostgresRepository) CountTenantResources(tenantID string) (map[string]i
 	result := make(map[string]int, len(kinds))
 	for _, kind := range kinds {
 		var count int
-		if err := p.pool.QueryRow(context.Background(), kind.query, tenantID).Scan(&count); err != nil {
+		if err := p.pool.QueryRow(ctx, kind.query, tenantID).Scan(&count); err != nil {
 			return nil, normalizePostgresError(err)
 		}
 		result[kind.name] = count
@@ -147,8 +147,8 @@ func (p *PostgresRepository) CountTenantResources(tenantID string) (map[string]i
 	return result, nil
 }
 
-func (p *PostgresRepository) DeleteTenant(tenantID string) error {
-	tx, err := p.pool.Begin(context.Background())
+func (p *PostgresRepository) DeleteTenant(ctx context.Context, tenantID string) error {
+	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return normalizePostgresError(err)
 	}
@@ -170,11 +170,11 @@ func (p *PostgresRepository) DeleteTenant(tenantID string) error {
 		`DELETE FROM tenants WHERE id=$1`,
 	}
 	for _, statement := range statements {
-		if _, err := tx.Exec(context.Background(), statement, tenantID); err != nil {
+		if _, err := tx.Exec(ctx, statement, tenantID); err != nil {
 			return normalizePostgresError(err)
 		}
 	}
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return normalizePostgresError(err)
 	}
 	return nil
@@ -188,8 +188,8 @@ func scanTenant(row rowScanner) (domain.Tenant, error) {
 	return tenant, normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) CreateUser(user domain.User) error {
-	_, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) CreateUser(ctx context.Context, user domain.User) error {
+	_, err := p.pool.Exec(ctx, `
 		INSERT INTO users (id, tenant_id, username, password_hash, role, disabled, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		user.ID, user.TenantID, user.Username, user.PasswordHash, user.Role, user.Disabled, user.CreatedAt,
@@ -208,16 +208,16 @@ func scanUser(row rowScanner) (domain.User, error) {
 	return user, normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) FindUserByUsername(tenantID, username string) (domain.User, error) {
-	return scanUser(p.pool.QueryRow(context.Background(), userSelect+` WHERE tenant_id=$1 AND lower(username)=lower($2)`, tenantID, username))
+func (p *PostgresRepository) FindUserByUsername(ctx context.Context, tenantID, username string) (domain.User, error) {
+	return scanUser(p.pool.QueryRow(ctx, userSelect+` WHERE tenant_id=$1 AND lower(username)=lower($2)`, tenantID, username))
 }
 
-func (p *PostgresRepository) GetUser(tenantID, id string) (domain.User, error) {
-	return scanUser(p.pool.QueryRow(context.Background(), userSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
+func (p *PostgresRepository) GetUser(ctx context.Context, tenantID, id string) (domain.User, error) {
+	return scanUser(p.pool.QueryRow(ctx, userSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
 }
 
-func (p *PostgresRepository) ListUsers(tenantID string) ([]domain.User, error) {
-	rows, err := p.pool.Query(context.Background(), userSelect+` WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+func (p *PostgresRepository) ListUsers(ctx context.Context, tenantID string) ([]domain.User, error) {
+	rows, err := p.pool.Query(ctx, userSelect+` WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
 	if err != nil {
 		return nil, normalizePostgresError(err)
 	}
@@ -236,8 +236,8 @@ func (p *PostgresRepository) ListUsers(tenantID string) ([]domain.User, error) {
 	return result, nil
 }
 
-func (p *PostgresRepository) UpdateUser(user domain.User) error {
-	tag, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) UpdateUser(ctx context.Context, user domain.User) error {
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE users SET username=$3, password_hash=$4, role=$5, disabled=$6
 		WHERE tenant_id=$1 AND id=$2`,
 		user.TenantID, user.ID, user.Username, user.PasswordHash, user.Role, user.Disabled,
@@ -248,8 +248,8 @@ func (p *PostgresRepository) UpdateUser(user domain.User) error {
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) CreateAsset(asset domain.Asset) error {
-	_, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) CreateAsset(ctx context.Context, asset domain.Asset) error {
+	_, err := p.pool.Exec(ctx, `
 		INSERT INTO assets (
 			id, tenant_id, site_id, name, url, asset_type, owner_id, enabled,
 			verification_status, verification_method, verification_token, verification_token_hash, verification_issued_at, verification_expires_at, created_at, updated_at
@@ -261,8 +261,8 @@ func (p *PostgresRepository) CreateAsset(asset domain.Asset) error {
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) UpdateAsset(asset domain.Asset) error {
-	tag, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) UpdateAsset(ctx context.Context, asset domain.Asset) error {
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE assets SET name=$3, owner_id=$4, enabled=$5, verification_status=$6,
 			verification_token=NULLIF($7, ''), verification_token_hash=NULLIF($8, ''),
 			verification_issued_at=$9, verification_expires_at=$10, site_id=NULLIF($11, '')::uuid, updated_at=$12
@@ -276,16 +276,16 @@ func (p *PostgresRepository) UpdateAsset(asset domain.Asset) error {
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) GetAsset(tenantID, id string) (domain.Asset, error) {
-	row := p.pool.QueryRow(context.Background(), assetSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id)
+func (p *PostgresRepository) GetAsset(ctx context.Context, tenantID, id string) (domain.Asset, error) {
+	row := p.pool.QueryRow(ctx, assetSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id)
 	return scanAsset(row)
 }
 
-func (p *PostgresRepository) ListAssets(tenantID string, opts ListOptions) ([]domain.Asset, string, error) {
+func (p *PostgresRepository) ListAssets(ctx context.Context, tenantID string, opts ListOptions) ([]domain.Asset, string, error) {
 	args := []any{tenantID}
 	query := assetSelect + ` WHERE tenant_id=$1`
 	query, args = paginateQuery(query, args, opts, "created_at")
-	rows, err := p.pool.Query(context.Background(), query, args...)
+	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
 	}
@@ -324,8 +324,8 @@ func scanAsset(row rowScanner) (domain.Asset, error) {
 	return asset, normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) CreateSite(site domain.Site) error {
-	_, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) CreateSite(ctx context.Context, site domain.Site) error {
+	_, err := p.pool.Exec(ctx, `
 		INSERT INTO sites (id, tenant_id, name, domain, owner_id, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		site.ID, site.TenantID, site.Name, site.Domain, site.OwnerID, site.CreatedAt, site.UpdatedAt,
@@ -333,8 +333,8 @@ func (p *PostgresRepository) CreateSite(site domain.Site) error {
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) UpdateSite(site domain.Site) error {
-	tag, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) UpdateSite(ctx context.Context, site domain.Site) error {
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE sites SET name=$3, domain=$4, owner_id=$5, updated_at=$6
 		WHERE tenant_id=$1 AND id=$2`,
 		site.TenantID, site.ID, site.Name, site.Domain, site.OwnerID, site.UpdatedAt,
@@ -345,15 +345,15 @@ func (p *PostgresRepository) UpdateSite(site domain.Site) error {
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) GetSite(tenantID, id string) (domain.Site, error) {
-	return scanSite(p.pool.QueryRow(context.Background(), siteSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
+func (p *PostgresRepository) GetSite(ctx context.Context, tenantID, id string) (domain.Site, error) {
+	return scanSite(p.pool.QueryRow(ctx, siteSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
 }
 
-func (p *PostgresRepository) ListSites(tenantID string, opts ListOptions) ([]domain.Site, string, error) {
+func (p *PostgresRepository) ListSites(ctx context.Context, tenantID string, opts ListOptions) ([]domain.Site, string, error) {
 	args := []any{tenantID}
 	query := siteSelect + ` WHERE tenant_id=$1`
 	query, args = paginateQuery(query, args, opts, "created_at")
-	rows, err := p.pool.Query(context.Background(), query, args...)
+	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
 	}
@@ -376,9 +376,9 @@ func (p *PostgresRepository) ListSites(tenantID string, opts ListOptions) ([]dom
 // CountAssetsBySite counts the assets filed under a site. Nothing cascades
 // site deletion, so this is what lets the delete fail with a count the caller
 // can act on rather than surfacing a raw foreign-key violation.
-func (p *PostgresRepository) CountAssetsBySite(tenantID, siteID string) (int, error) {
+func (p *PostgresRepository) CountAssetsBySite(ctx context.Context, tenantID, siteID string) (int, error) {
 	var count int
-	err := p.pool.QueryRow(context.Background(),
+	err := p.pool.QueryRow(ctx,
 		`SELECT count(*) FROM assets WHERE tenant_id=$1 AND site_id=$2`, tenantID, siteID).Scan(&count)
 	if err != nil {
 		return 0, normalizePostgresError(err)
@@ -391,16 +391,16 @@ func (p *PostgresRepository) CountAssetsBySite(tenantID, siteID string) (int, er
 // other resource read. The assets foreign key is the backstop: if a row
 // references this site the delete is refused here without inspecting the
 // database error, because a partitioned check would still race an insert.
-func (p *PostgresRepository) DeleteSite(tenantID, id string) error {
+func (p *PostgresRepository) DeleteSite(ctx context.Context, tenantID, id string) error {
 	var referenced int
-	if err := p.pool.QueryRow(context.Background(),
+	if err := p.pool.QueryRow(ctx,
 		`SELECT count(*) FROM assets WHERE tenant_id=$1 AND site_id=$2`, tenantID, id).Scan(&referenced); err != nil {
 		return normalizePostgresError(err)
 	}
 	if referenced > 0 {
 		return ErrConflict
 	}
-	tag, err := p.pool.Exec(context.Background(),
+	tag, err := p.pool.Exec(ctx,
 		`DELETE FROM sites WHERE tenant_id=$1 AND id=$2`, tenantID, id)
 	if err != nil {
 		return normalizePostgresError(err)
@@ -419,12 +419,12 @@ func scanSite(row rowScanner) (domain.Site, error) {
 	return site, normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) UpsertPolicy(policy domain.MonitorPolicy) error {
+func (p *PostgresRepository) UpsertPolicy(ctx context.Context, policy domain.MonitorPolicy) error {
 	config, err := json.Marshal(policy)
 	if err != nil {
 		return err
 	}
-	_, err = p.pool.Exec(context.Background(), `
+	_, err = p.pool.Exec(ctx, `
 		INSERT INTO monitor_policies (id, tenant_id, asset_id, version, config, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)
 		ON CONFLICT (tenant_id, asset_id) DO UPDATE
@@ -438,12 +438,12 @@ func (p *PostgresRepository) UpsertPolicy(policy domain.MonitorPolicy) error {
 // whole config is rewritten because the credentials live inside the jsonb blob,
 // but the caller has already read the row and only replaced the ciphertext
 // fields, so nothing else can differ.
-func (p *PostgresRepository) RewrapPolicy(policy domain.MonitorPolicy) error {
+func (p *PostgresRepository) RewrapPolicy(ctx context.Context, policy domain.MonitorPolicy) error {
 	config, err := json.Marshal(policy)
 	if err != nil {
 		return err
 	}
-	tag, err := p.pool.Exec(context.Background(), `
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE monitor_policies SET config=$3
 		WHERE tenant_id=$1 AND asset_id=$2`,
 		policy.TenantID, policy.AssetID, config,
@@ -457,9 +457,9 @@ func (p *PostgresRepository) RewrapPolicy(policy domain.MonitorPolicy) error {
 	return nil
 }
 
-func (p *PostgresRepository) GetPolicy(tenantID, assetID string) (domain.MonitorPolicy, error) {
+func (p *PostgresRepository) GetPolicy(ctx context.Context, tenantID, assetID string) (domain.MonitorPolicy, error) {
 	var raw []byte
-	err := p.pool.QueryRow(context.Background(), `
+	err := p.pool.QueryRow(ctx, `
 		SELECT config FROM monitor_policies WHERE tenant_id=$1 AND asset_id=$2`, tenantID, assetID,
 	).Scan(&raw)
 	if err != nil {
@@ -472,11 +472,11 @@ func (p *PostgresRepository) GetPolicy(tenantID, assetID string) (domain.Monitor
 	return policy, nil
 }
 
-func (p *PostgresRepository) ListPolicies(tenantID string, opts ListOptions) ([]domain.MonitorPolicy, string, error) {
+func (p *PostgresRepository) ListPolicies(ctx context.Context, tenantID string, opts ListOptions) ([]domain.MonitorPolicy, string, error) {
 	args := []any{tenantID}
 	query := `SELECT config FROM monitor_policies WHERE tenant_id=$1`
 	query, args = paginateQuery(query, args, opts, "updated_at")
-	rows, err := p.pool.Query(context.Background(), query, args...)
+	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
 	}
@@ -500,13 +500,13 @@ func (p *PostgresRepository) ListPolicies(tenantID string, opts ListOptions) ([]
 	return items, next, nil
 }
 
-func (p *PostgresRepository) CreateBaseline(baseline domain.BaselineVersion) error {
+func (p *PostgresRepository) CreateBaseline(ctx context.Context, baseline domain.BaselineVersion) error {
 	snapshot, err := json.Marshal(baseline.Snapshot)
 	if err != nil {
 		return err
 	}
 	evidenceIDs, _ := json.Marshal(baseline.EvidenceIDs)
-	_, err = p.pool.Exec(context.Background(), `
+	_, err = p.pool.Exec(ctx, `
 		INSERT INTO baseline_versions (
 			id,tenant_id,asset_id,version,status,snapshot,evidence_ids,created_by,
 			approved_by,created_at,approved_at
@@ -517,13 +517,12 @@ func (p *PostgresRepository) CreateBaseline(baseline domain.BaselineVersion) err
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) UpdateBaseline(baseline domain.BaselineVersion) error {
-	ctx := context.Background()
+func (p *PostgresRepository) UpdateBaseline(ctx context.Context, baseline domain.BaselineVersion) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback(context.Background()) }()
 	if baseline.Status == domain.BaselineApproved {
 		if _, err := tx.Exec(ctx, `
 			UPDATE baseline_versions SET status='RETIRED'
@@ -546,17 +545,17 @@ func (p *PostgresRepository) UpdateBaseline(baseline domain.BaselineVersion) err
 	return tx.Commit(ctx)
 }
 
-func (p *PostgresRepository) GetBaseline(tenantID, id string) (domain.BaselineVersion, error) {
-	return scanBaseline(p.pool.QueryRow(context.Background(), baselineSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
+func (p *PostgresRepository) GetBaseline(ctx context.Context, tenantID, id string) (domain.BaselineVersion, error) {
+	return scanBaseline(p.pool.QueryRow(ctx, baselineSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
 }
 
-func (p *PostgresRepository) GetApprovedBaseline(tenantID, assetID string) (domain.BaselineVersion, error) {
-	return scanBaseline(p.pool.QueryRow(context.Background(), baselineSelect+`
+func (p *PostgresRepository) GetApprovedBaseline(ctx context.Context, tenantID, assetID string) (domain.BaselineVersion, error) {
+	return scanBaseline(p.pool.QueryRow(ctx, baselineSelect+`
 		WHERE tenant_id=$1 AND asset_id=$2 AND status='APPROVED' ORDER BY version DESC LIMIT 1`,
 		tenantID, assetID))
 }
 
-func (p *PostgresRepository) ListBaselines(tenantID, assetID string, opts ListOptions) ([]domain.BaselineVersion, string, error) {
+func (p *PostgresRepository) ListBaselines(ctx context.Context, tenantID, assetID string, opts ListOptions) ([]domain.BaselineVersion, string, error) {
 	args := []any{tenantID}
 	query := baselineSelect + ` WHERE tenant_id=$1`
 	if assetID != "" {
@@ -564,7 +563,7 @@ func (p *PostgresRepository) ListBaselines(tenantID, assetID string, opts ListOp
 		args = append(args, assetID)
 	}
 	query, args = paginateQuery(query, args, opts, "created_at")
-	rows, err := p.pool.Query(context.Background(), query, args...)
+	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
 	}
@@ -612,8 +611,8 @@ func scanBaseline(row rowScanner) (domain.BaselineVersion, error) {
 // It allows only one QUEUED or RUNNING job per (tenant, asset, mode).
 const activeJobConstraint = "detection_jobs_active_uidx"
 
-func (p *PostgresRepository) CreateJob(job domain.DetectionJob) error {
-	_, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) CreateJob(ctx context.Context, job domain.DetectionJob) error {
+	_, err := p.pool.Exec(ctx, `
 		INSERT INTO detection_jobs (
 			id,tenant_id,asset_id,mode,status,policy_version,baseline_version,error_code,
 			error_message,retry_count,max_attempts,created_at,started_at,finished_at
@@ -645,9 +644,9 @@ func (p *PostgresRepository) SetJobLease(lease time.Duration) {
 	}
 }
 
-func (p *PostgresRepository) ClaimJob(tenantID, id string, startedAt time.Time) (bool, error) {
+func (p *PostgresRepository) ClaimJob(ctx context.Context, tenantID, id string, startedAt time.Time) (bool, error) {
 	leaseCutoff := startedAt.Add(-p.jobLease)
-	tag, err := p.pool.Exec(context.Background(), `
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE detection_jobs SET status='RUNNING', started_at=$3
 		WHERE tenant_id=$1 AND id=$2
 			AND (
@@ -660,8 +659,8 @@ func (p *PostgresRepository) ClaimJob(tenantID, id string, startedAt time.Time) 
 	return tag.RowsAffected() == 1, nil
 }
 
-func (p *PostgresRepository) UpdateJob(job domain.DetectionJob) error {
-	tag, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) UpdateJob(ctx context.Context, job domain.DetectionJob) error {
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE detection_jobs SET status=$3,baseline_version=NULLIF($4,0),error_code=NULLIF($5,''),
 			error_message=NULLIF($6,''),retry_count=$7,max_attempts=$8,started_at=$9,finished_at=$10
 		WHERE tenant_id=$1 AND id=$2`,
@@ -674,15 +673,15 @@ func (p *PostgresRepository) UpdateJob(job domain.DetectionJob) error {
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) GetJob(tenantID, id string) (domain.DetectionJob, error) {
-	return scanJob(p.pool.QueryRow(context.Background(), jobSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
+func (p *PostgresRepository) GetJob(ctx context.Context, tenantID, id string) (domain.DetectionJob, error) {
+	return scanJob(p.pool.QueryRow(ctx, jobSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
 }
 
-func (p *PostgresRepository) ListJobs(tenantID string, opts ListOptions) ([]domain.DetectionJob, string, error) {
+func (p *PostgresRepository) ListJobs(ctx context.Context, tenantID string, opts ListOptions) ([]domain.DetectionJob, string, error) {
 	args := []any{tenantID}
 	query := jobSelect + ` WHERE tenant_id=$1`
 	query, args = paginateQuery(query, args, opts, "created_at")
-	rows, err := p.pool.Query(context.Background(), query, args...)
+	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
 	}
@@ -702,8 +701,8 @@ func (p *PostgresRepository) ListJobs(tenantID string, opts ListOptions) ([]doma
 	return items, next, nil
 }
 
-func (p *PostgresRepository) CancelJob(tenantID, id string) (bool, error) {
-	tag, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) CancelJob(ctx context.Context, tenantID, id string) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE detection_jobs SET status='CANCELLED', finished_at=now()
 		WHERE tenant_id=$1 AND id=$2 AND status IN ('QUEUED','RUNNING')`,
 		tenantID, id)
@@ -713,8 +712,8 @@ func (p *PostgresRepository) CancelJob(tenantID, id string) (bool, error) {
 	return tag.RowsAffected() == 1, nil
 }
 
-func (p *PostgresRepository) ReapTimedOut(tenantID string, before time.Time) (int, error) {
-	tag, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) ReapTimedOut(ctx context.Context, tenantID string, before time.Time) (int, error) {
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE detection_jobs SET status='TIMED_OUT', finished_at=now(), error_code='CHECK_TIMEOUT'
 		WHERE tenant_id=$1 AND status='RUNNING' AND started_at < $2`,
 		tenantID, before)
@@ -739,8 +738,8 @@ func scanJob(row rowScanner) (domain.DetectionJob, error) {
 	return job, normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) CreateEvidence(item domain.Evidence) error {
-	_, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) CreateEvidence(ctx context.Context, item domain.Evidence) error {
+	_, err := p.pool.Exec(ctx, `
 		INSERT INTO evidence (
 			id,tenant_id,asset_id,job_id,kind,media_type,size_bytes,sha256,object_key,created_at,retain_until
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
@@ -750,11 +749,11 @@ func (p *PostgresRepository) CreateEvidence(item domain.Evidence) error {
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) GetEvidence(tenantID, id string) (domain.Evidence, error) {
-	return scanEvidence(p.pool.QueryRow(context.Background(), evidenceSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
+func (p *PostgresRepository) GetEvidence(ctx context.Context, tenantID, id string) (domain.Evidence, error) {
+	return scanEvidence(p.pool.QueryRow(ctx, evidenceSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
 }
 
-func (p *PostgresRepository) ListEvidence(tenantID, assetID string, opts ListOptions) ([]domain.Evidence, string, error) {
+func (p *PostgresRepository) ListEvidence(ctx context.Context, tenantID, assetID string, opts ListOptions) ([]domain.Evidence, string, error) {
 	args := []any{tenantID}
 	query := evidenceSelect + ` WHERE tenant_id=$1`
 	if assetID != "" {
@@ -762,7 +761,7 @@ func (p *PostgresRepository) ListEvidence(tenantID, assetID string, opts ListOpt
 		args = append(args, assetID)
 	}
 	query, args = paginateQuery(query, args, opts, "created_at")
-	rows, err := p.pool.Query(context.Background(), query, args...)
+	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
 	}
@@ -782,8 +781,8 @@ func (p *PostgresRepository) ListEvidence(tenantID, assetID string, opts ListOpt
 	return items, next, nil
 }
 
-func (p *PostgresRepository) ListExpiredEvidence(tenantID string, before time.Time) ([]domain.Evidence, error) {
-	rows, err := p.pool.Query(context.Background(), evidenceSelect+`
+func (p *PostgresRepository) ListExpiredEvidence(ctx context.Context, tenantID string, before time.Time) ([]domain.Evidence, error) {
+	rows, err := p.pool.Query(ctx, evidenceSelect+`
 		WHERE tenant_id=$1 AND retain_until IS NOT NULL AND retain_until <= $2
 		ORDER BY created_at ASC`, tenantID, before)
 	if err != nil {
@@ -804,9 +803,9 @@ func (p *PostgresRepository) ListExpiredEvidence(tenantID string, before time.Ti
 	return result, nil
 }
 
-func (p *PostgresRepository) IsEvidenceReferenced(tenantID, id string) (bool, error) {
+func (p *PostgresRepository) IsEvidenceReferenced(ctx context.Context, tenantID, id string) (bool, error) {
 	var referenced bool
-	err := p.pool.QueryRow(context.Background(), `
+	err := p.pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM incidents i
 			WHERE i.tenant_id=$1
@@ -818,8 +817,8 @@ func (p *PostgresRepository) IsEvidenceReferenced(tenantID, id string) (bool, er
 	return referenced, normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) DeleteEvidence(tenantID, id string) error {
-	tag, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) DeleteEvidence(ctx context.Context, tenantID, id string) error {
+	tag, err := p.pool.Exec(ctx, `
 		DELETE FROM evidence e
 		WHERE e.tenant_id=$1 AND e.id=$2
 		AND NOT EXISTS (
@@ -832,7 +831,7 @@ func (p *PostgresRepository) DeleteEvidence(tenantID, id string) error {
 		)`, tenantID, id)
 	if err == nil && tag.RowsAffected() == 0 {
 		var exists bool
-		if queryErr := p.pool.QueryRow(context.Background(),
+		if queryErr := p.pool.QueryRow(ctx,
 			`SELECT EXISTS(SELECT 1 FROM evidence WHERE tenant_id=$1 AND id=$2)`, tenantID, id).Scan(&exists); queryErr != nil {
 			return normalizePostgresError(queryErr)
 		} else if exists {
@@ -856,7 +855,7 @@ func scanEvidence(row rowScanner) (domain.Evidence, error) {
 	return item, normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.Incident, IncidentUpsertOutcome, error) {
+func (p *PostgresRepository) UpsertIncident(ctx context.Context, incident domain.Incident) (domain.Incident, IncidentUpsertOutcome, error) {
 	signals, _ := json.Marshal(incident.Signals)
 	evidenceIDs, _ := json.Marshal(incident.EvidenceIDs)
 	// The timeline entry is written by the same statement as the counter it
@@ -878,7 +877,7 @@ func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.In
 	// pre-statement snapshot, which is the value we need. All three CTEs share
 	// one snapshot, so `prior` and the INSERT below cannot disagree about what
 	// the row looked like on entry.
-	row := p.pool.QueryRow(context.Background(), `
+	row := p.pool.QueryRow(ctx, `
 		WITH prior AS (
 			SELECT status FROM incidents
 			WHERE tenant_id=$2 AND asset_id=$3 AND baseline_version=$5 AND fingerprint=$6
@@ -951,7 +950,7 @@ func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.In
 	// RETURNING gives the real row, so this no longer needs the full-table scan
 	// the previous implementation used to find which incident the round merged
 	// into.
-	merged, err := p.GetIncident(incident.TenantID, mergedID)
+	merged, err := p.GetIncident(ctx, incident.TenantID, mergedID)
 	if err != nil {
 		// The write already committed; report the caller's view rather than
 		// failing a detection over a read-back that should not fail.
@@ -960,10 +959,10 @@ func (p *PostgresRepository) UpsertIncident(incident domain.Incident) (domain.In
 	return merged, outcome, nil
 }
 
-func (p *PostgresRepository) UpdateIncident(incident domain.Incident) error {
+func (p *PostgresRepository) UpdateIncident(ctx context.Context, incident domain.Incident) error {
 	signals, _ := json.Marshal(incident.Signals)
 	evidenceIDs, _ := json.Marshal(incident.EvidenceIDs)
-	tag, err := p.pool.Exec(context.Background(), `
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE incidents SET severity=$3,status=$4,title=$5,signals=$6,evidence_ids=$7,
 			occurrence_count=$8,owner_id=NULLIF($9,'')::uuid,resolution=NULLIF($10,''),
 			last_seen_at=$11,acknowledged_at=$12,resolved_at=$13
@@ -978,15 +977,15 @@ func (p *PostgresRepository) UpdateIncident(incident domain.Incident) error {
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) GetIncident(tenantID, id string) (domain.Incident, error) {
-	return scanIncident(p.pool.QueryRow(context.Background(), incidentSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
+func (p *PostgresRepository) GetIncident(ctx context.Context, tenantID, id string) (domain.Incident, error) {
+	return scanIncident(p.pool.QueryRow(ctx, incidentSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
 }
 
-func (p *PostgresRepository) ListIncidents(tenantID string, opts ListOptions) ([]domain.Incident, string, error) {
+func (p *PostgresRepository) ListIncidents(ctx context.Context, tenantID string, opts ListOptions) ([]domain.Incident, string, error) {
 	args := []any{tenantID}
 	query := incidentSelect + ` WHERE tenant_id=$1`
 	query, args = paginateQuery(query, args, opts, "last_seen_at")
-	rows, err := p.pool.Query(context.Background(), query, args...)
+	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
 	}
@@ -1033,7 +1032,7 @@ func scanIncident(row rowScanner) (domain.Incident, error) {
 	return incident, nil
 }
 
-func (p *PostgresRepository) AppendIncidentEvent(event domain.IncidentEvent) error {
+func (p *PostgresRepository) AppendIncidentEvent(ctx context.Context, event domain.IncidentEvent) error {
 	signals, _ := json.Marshal(event.Signals)
 	evidenceIDs, _ := json.Marshal(event.EvidenceIDs)
 	details, _ := json.Marshal(event.Details)
@@ -1042,7 +1041,7 @@ func (p *PostgresRepository) AppendIncidentEvent(event domain.IncidentEvent) err
 	// gets ErrNotFound. Relying on the foreign key instead would surface as a
 	// raw 23503, which normalizePostgresError does not map and which the
 	// in-memory store could not reproduce.
-	tag, err := p.pool.Exec(context.Background(), `
+	tag, err := p.pool.Exec(ctx, `
 		INSERT INTO incident_events (
 			id,tenant_id,incident_id,event_type,actor_id,from_status,to_status,severity,title,
 			signals,evidence_ids,job_id,details,created_at
@@ -1064,11 +1063,11 @@ func (p *PostgresRepository) AppendIncidentEvent(event domain.IncidentEvent) err
 	return nil
 }
 
-func (p *PostgresRepository) ListIncidentEvents(tenantID, incidentID string, opts ListOptions) ([]domain.IncidentEvent, string, error) {
+func (p *PostgresRepository) ListIncidentEvents(ctx context.Context, tenantID, incidentID string, opts ListOptions) ([]domain.IncidentEvent, string, error) {
 	args := []any{tenantID, incidentID}
 	query := incidentEventSelect + ` WHERE tenant_id=$1 AND incident_id=$2`
 	query, args = paginateQuery(query, args, opts, "created_at")
-	rows, err := p.pool.Query(context.Background(), query, args...)
+	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
 	}
@@ -1153,7 +1152,7 @@ func channelAssociatedData(tenantID, id, field string) string {
 	return security.ChannelAssociatedData(tenantID, id, field)
 }
 
-func (p *PostgresRepository) CreateAlertChannel(channel domain.AlertChannel) error {
+func (p *PostgresRepository) CreateAlertChannel(ctx context.Context, channel domain.AlertChannel) error {
 	encryptedURL, err := p.secrets.Encrypt(channel.URL, channelAssociatedData(channel.TenantID, channel.ID, "url"))
 	if err != nil {
 		return err
@@ -1162,7 +1161,7 @@ func (p *PostgresRepository) CreateAlertChannel(channel domain.AlertChannel) err
 	if err != nil {
 		return err
 	}
-	_, err = p.pool.Exec(context.Background(), `
+	_, err = p.pool.Exec(ctx, `
 		INSERT INTO alert_channels (
 			id,tenant_id,name,channel_type,url,recipients,secret_ciphertext,enabled,created_at,updated_at
 		) VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,$10)`,
@@ -1172,10 +1171,10 @@ func (p *PostgresRepository) CreateAlertChannel(channel domain.AlertChannel) err
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) GetAlertChannel(tenantID, id string) (domain.AlertChannel, error) {
+func (p *PostgresRepository) GetAlertChannel(ctx context.Context, tenantID, id string) (domain.AlertChannel, error) {
 	var item domain.AlertChannel
 	var encryptedURL, encryptedSecret string
-	err := p.pool.QueryRow(context.Background(), `
+	err := p.pool.QueryRow(ctx, `
 		SELECT id,tenant_id,name,channel_type,url,recipients,COALESCE(secret_ciphertext,''),enabled,created_at,updated_at
 		FROM alert_channels WHERE tenant_id=$1 AND id=$2`, tenantID, id).Scan(
 		&item.ID, &item.TenantID, &item.Name, &item.Type, &encryptedURL, &item.Recipients, &encryptedSecret,
@@ -1199,7 +1198,7 @@ func (p *PostgresRepository) GetAlertChannel(tenantID, id string) (domain.AlertC
 // new ciphertext. It exists for the key-rotation pass, and is separate from
 // UpdateAlertChannel so a rotation cannot reach any other column: url and
 // secret_ciphertext are the only fields a rotation is allowed to change.
-func (p *PostgresRepository) RewrapAlertChannel(channel domain.AlertChannel) error {
+func (p *PostgresRepository) RewrapAlertChannel(ctx context.Context, channel domain.AlertChannel) error {
 	encryptedURL, err := p.secrets.Encrypt(channel.URL, channelAssociatedData(channel.TenantID, channel.ID, "url"))
 	if err != nil {
 		return err
@@ -1211,7 +1210,7 @@ func (p *PostgresRepository) RewrapAlertChannel(channel domain.AlertChannel) err
 	// updated_at is deliberately not touched. The row's content did not change,
 	// only the key that sealed it, and moving the timestamp would make a rotation
 	// look like an edit in the channel list.
-	tag, err := p.pool.Exec(context.Background(), `
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE alert_channels SET url=$3, secret_ciphertext=NULLIF($4,'')
 		WHERE tenant_id=$1 AND id=$2`,
 		channel.TenantID, channel.ID, encryptedURL, encryptedSecret,
@@ -1225,7 +1224,7 @@ func (p *PostgresRepository) RewrapAlertChannel(channel domain.AlertChannel) err
 	return nil
 }
 
-func (p *PostgresRepository) UpdateAlertChannel(channel domain.AlertChannel) error {
+func (p *PostgresRepository) UpdateAlertChannel(ctx context.Context, channel domain.AlertChannel) error {
 	encryptedURL, err := p.secrets.Encrypt(channel.URL, channelAssociatedData(channel.TenantID, channel.ID, "url"))
 	if err != nil {
 		return err
@@ -1237,7 +1236,7 @@ func (p *PostgresRepository) UpdateAlertChannel(channel domain.AlertChannel) err
 	// tenant_id is in the WHERE clause, not just the SET: it is the isolation
 	// boundary, and a write that matched on id alone would let one tenant
 	// rewrite another's channel.
-	tag, err := p.pool.Exec(context.Background(), `
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE alert_channels
 		SET name=$3,channel_type=$4,url=$5,recipients=$6,secret_ciphertext=NULLIF($7,''),enabled=$8,updated_at=$9
 		WHERE tenant_id=$1 AND id=$2`,
@@ -1253,8 +1252,8 @@ func (p *PostgresRepository) UpdateAlertChannel(channel domain.AlertChannel) err
 	return nil
 }
 
-func (p *PostgresRepository) DeleteAlertChannel(tenantID, id string) error {
-	tag, err := p.pool.Exec(context.Background(),
+func (p *PostgresRepository) DeleteAlertChannel(ctx context.Context, tenantID, id string) error {
+	tag, err := p.pool.Exec(ctx,
 		`DELETE FROM alert_channels WHERE tenant_id=$1 AND id=$2`, tenantID, id)
 	if err != nil {
 		return normalizePostgresError(err)
@@ -1265,16 +1264,16 @@ func (p *PostgresRepository) DeleteAlertChannel(tenantID, id string) error {
 	return nil
 }
 
-func (p *PostgresRepository) ListAlertChannels(tenantID string) ([]domain.AlertChannel, error) {
-	return p.listAlertChannels(tenantID, false)
+func (p *PostgresRepository) ListAlertChannels(ctx context.Context, tenantID string) ([]domain.AlertChannel, error) {
+	return p.listAlertChannels(ctx, tenantID, false)
 }
 
-func (p *PostgresRepository) ListAlertChannelsWithSecrets(tenantID string) ([]domain.AlertChannel, error) {
-	return p.listAlertChannels(tenantID, true)
+func (p *PostgresRepository) ListAlertChannelsWithSecrets(ctx context.Context, tenantID string) ([]domain.AlertChannel, error) {
+	return p.listAlertChannels(ctx, tenantID, true)
 }
 
-func (p *PostgresRepository) listAlertChannels(tenantID string, includeSecret bool) ([]domain.AlertChannel, error) {
-	rows, err := p.pool.Query(context.Background(), `
+func (p *PostgresRepository) listAlertChannels(ctx context.Context, tenantID string, includeSecret bool) ([]domain.AlertChannel, error) {
+	rows, err := p.pool.Query(ctx, `
 		SELECT id,tenant_id,name,channel_type,url,recipients,COALESCE(secret_ciphertext,''),enabled,created_at,updated_at
 		FROM alert_channels WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
 	if err != nil {
@@ -1309,8 +1308,8 @@ func (p *PostgresRepository) listAlertChannels(tenantID string, includeSecret bo
 	return result, nil
 }
 
-func (p *PostgresRepository) CreateAlertDelivery(delivery domain.AlertDelivery) error {
-	_, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) CreateAlertDelivery(ctx context.Context, delivery domain.AlertDelivery) error {
+	_, err := p.pool.Exec(ctx, `
 		INSERT INTO alert_deliveries (
 			id,tenant_id,incident_id,channel_id,dedup_key,status,attempts,last_error,next_attempt_at,created_at,updated_at
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11)`,
@@ -1320,8 +1319,8 @@ func (p *PostgresRepository) CreateAlertDelivery(delivery domain.AlertDelivery) 
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) UpdateAlertDelivery(delivery domain.AlertDelivery) error {
-	tag, err := p.pool.Exec(context.Background(), `
+func (p *PostgresRepository) UpdateAlertDelivery(ctx context.Context, delivery domain.AlertDelivery) error {
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE alert_deliveries SET status=$3,attempts=$4,last_error=NULLIF($5,''),next_attempt_at=$6,updated_at=$7
 		WHERE tenant_id=$1 AND id=$2`, delivery.TenantID, delivery.ID, delivery.Status,
 		delivery.Attempts, delivery.LastError, delivery.NextAttemptAt, delivery.UpdatedAt)
@@ -1331,7 +1330,7 @@ func (p *PostgresRepository) UpdateAlertDelivery(delivery domain.AlertDelivery) 
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) ListAlertDeliveries(tenantID, incidentID string, opts ListOptions) ([]domain.AlertDelivery, string, error) {
+func (p *PostgresRepository) ListAlertDeliveries(ctx context.Context, tenantID, incidentID string, opts ListOptions) ([]domain.AlertDelivery, string, error) {
 	args := []any{tenantID}
 	query := `SELECT id,tenant_id,incident_id,channel_id,dedup_key,status,attempts,COALESCE(last_error,''),next_attempt_at,created_at,updated_at FROM alert_deliveries WHERE tenant_id=$1`
 	if incidentID != "" {
@@ -1339,7 +1338,7 @@ func (p *PostgresRepository) ListAlertDeliveries(tenantID, incidentID string, op
 		args = append(args, incidentID)
 	}
 	query, args = paginateQuery(query, args, opts, "created_at")
-	rows, err := p.pool.Query(context.Background(), query, args...)
+	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
 	}
@@ -1359,9 +1358,9 @@ func (p *PostgresRepository) ListAlertDeliveries(tenantID, incidentID string, op
 	items, next := trimPage(result, opts, func(d domain.AlertDelivery) (time.Time, string) { return d.CreatedAt, d.ID })
 	return items, next, nil
 }
-func (p *PostgresRepository) AppendAudit(event domain.AuditEvent) error {
+func (p *PostgresRepository) AppendAudit(ctx context.Context, event domain.AuditEvent) error {
 	details, _ := json.Marshal(event.Details)
-	_, err := p.pool.Exec(context.Background(), `
+	_, err := p.pool.Exec(ctx, `
 		INSERT INTO audit_events (
 			id,tenant_id,actor_id,action,resource_type,resource_id,result,trace_id,details,created_at
 		) VALUES ($1,$2,NULLIF($3,'')::uuid,$4,$5,$6,$7,$8,$9,$10)`,
@@ -1371,7 +1370,7 @@ func (p *PostgresRepository) AppendAudit(event domain.AuditEvent) error {
 	return normalizePostgresError(err)
 }
 
-func (p *PostgresRepository) ListAudits(tenantID string, filter AuditFilter, opts ListOptions) ([]domain.AuditEvent, string, error) {
+func (p *PostgresRepository) ListAudits(ctx context.Context, tenantID string, filter AuditFilter, opts ListOptions) ([]domain.AuditEvent, string, error) {
 	args := []any{tenantID}
 	query := `SELECT id,tenant_id,COALESCE(actor_id::text,''),action,resource_type,resource_id,
 		result,trace_id,COALESCE(details,'{}'::jsonb),created_at
@@ -1416,7 +1415,7 @@ func (p *PostgresRepository) ListAudits(tenantID string, filter AuditFilter, opt
 		query += fmt.Sprintf(" AND created_at <= $%d", len(args))
 	}
 	query, args = paginateQuery(query, args, opts, "created_at")
-	rows, err := p.pool.Query(context.Background(), query, args...)
+	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", normalizePostgresError(err)
 	}
@@ -1443,8 +1442,8 @@ func (p *PostgresRepository) ListAudits(tenantID string, filter AuditFilter, opt
 	return items, next, nil
 }
 
-func (p *PostgresRepository) DeleteAuditsBefore(tenantID string, before time.Time) (int, error) {
-	tag, err := p.pool.Exec(context.Background(),
+func (p *PostgresRepository) DeleteAuditsBefore(ctx context.Context, tenantID string, before time.Time) (int, error) {
+	tag, err := p.pool.Exec(ctx,
 		`DELETE FROM audit_events WHERE tenant_id=$1 AND created_at < $2`, tenantID, before)
 	if err != nil {
 		return 0, normalizePostgresError(err)

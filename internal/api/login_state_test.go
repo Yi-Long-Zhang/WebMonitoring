@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -42,10 +43,10 @@ func loginStateFixtureWith(t *testing.T, cipher security.SecretBox) (*store.Memo
 		URL: "https://example.com/", Type: domain.AssetLogin, OwnerID: admin.ID,
 		Enabled: true, VerificationStatus: domain.VerificationVerified, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := repository.CreateAsset(asset); err != nil {
+	if err := repository.CreateAsset(context.Background(), asset); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.UpsertPolicy(domain.MonitorPolicy{
+	if err := repository.UpsertPolicy(context.Background(), domain.MonitorPolicy{
 		ID: "login-policy", TenantID: defaultTenant, AssetID: asset.ID, Version: 1,
 		HTTPIntervalSeconds: 300, BrowserIntervalSeconds: 1800, TimeoutSeconds: 30,
 		MaxResponseBytes: 5 * 1024 * 1024, IgnoreSelectors: []string{}, TrustedDomains: []string{},
@@ -91,7 +92,7 @@ func TestUpdatePolicyEncryptsAndRedactsLoginCredentials(t *testing.T) {
 		t.Fatalf("update policy status=%d body=%s", response.Code, response.Body.String())
 	}
 
-	stored, err := repository.GetPolicy(defaultTenant, "login-asset")
+	stored, err := repository.GetPolicy(context.Background(), defaultTenant, "login-asset")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +132,7 @@ func TestUpdatePolicyEncryptsAndRedactsLoginCredentials(t *testing.T) {
 	if reupdate.Code != http.StatusOK {
 		t.Fatalf("re-update status=%d body=%s", reupdate.Code, reupdate.Body.String())
 	}
-	preserved, err := repository.GetPolicy(defaultTenant, "login-asset")
+	preserved, err := repository.GetPolicy(context.Background(), defaultTenant, "login-asset")
 	if err != nil {
 		t.Fatal(err)
 	}

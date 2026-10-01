@@ -35,7 +35,7 @@ func TestRunAllTenantsSkipsWhenAnotherReplicaHoldsTheLease(t *testing.T) {
 	if len(results) != 0 {
 		t.Fatalf("swept while the lease was held elsewhere: %+v", results)
 	}
-	if _, err := repository.GetEvidence(testTenant, item.ID); err != nil {
+	if _, err := repository.GetEvidence(context.Background(), testTenant, item.ID); err != nil {
 		t.Fatalf("evidence was deleted without the lease: %v", err)
 	}
 }
@@ -57,7 +57,7 @@ func TestRunAllTenantsReleasesTheLease(t *testing.T) {
 
 func scheduledAudits(t *testing.T, repository store.Repository, tenantID string) []domain.AuditEvent {
 	t.Helper()
-	events, _, err := repository.ListAudits(tenantID, store.AuditFilter{}, store.ListOptions{})
+	events, _, err := repository.ListAudits(context.Background(), tenantID, store.AuditFilter{}, store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

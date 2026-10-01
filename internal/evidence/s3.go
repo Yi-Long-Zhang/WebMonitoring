@@ -149,17 +149,17 @@ func (s *S3Store) Put(tenantID, assetID, jobID, kind, mediaType string, content 
 	}, nil
 }
 
-func (s *S3Store) Open(objectKey string) (io.ReadCloser, error) {
+func (s *S3Store) Open(ctx context.Context, objectKey string) (io.ReadCloser, error) {
 	cleaned := path.Clean("/" + objectKey)
 	if strings.Contains(cleaned, "..") {
 		return nil, fmt.Errorf("invalid evidence object key")
 	}
-	// Background rather than a deadline: the context given to GetObject governs
-	// the object for as long as the caller reads it, so shortening it here would
-	// truncate a large download instead of bounding it. The transport's
-	// response-header timeout is what keeps the Stat below -- the call that would
-	// otherwise block on an unreachable store -- from hanging.
-	object, err := s.client.GetObject(context.Background(), s.bucket, strings.TrimPrefix(cleaned, "/"), minio.GetObjectOptions{})
+	// The caller's ctx governs the object for as long as it reads the stream, so
+	// Open takes it instead of pinning Background here: a client that goes away
+	// mid-download cancels the transfer instead of holding the stream open. The
+	// transport's response-header timeout is what keeps the Stat below -- the
+	// call that would otherwise block on an unreachable store -- from hanging.
+	object, err := s.client.GetObject(ctx, s.bucket, strings.TrimPrefix(cleaned, "/"), minio.GetObjectOptions{})
 	if err != nil {
 		return nil, err
 	}

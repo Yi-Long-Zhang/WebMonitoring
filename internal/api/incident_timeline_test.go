@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,7 +20,7 @@ import (
 func seedIncident(t *testing.T, repository store.Repository) domain.Incident {
 	t.Helper()
 	now := time.Now().UTC()
-	incident, created, err := repository.UpsertIncident(domain.Incident{
+	incident, created, err := repository.UpsertIncident(context.Background(), domain.Incident{
 		ID: identity.New(), TenantID: defaultTenant, AssetID: "asset-1",
 		BaselineID: "baseline-1", BaselineVersion: 1, Fingerprint: strings.Repeat("a", 64),
 		Severity: domain.SeverityHigh, Status: domain.IncidentOpen, Title: "changed",
@@ -68,7 +69,7 @@ func TestIncidentTransitionRecordsTimelineEntry(t *testing.T) {
 		t.Fatalf("transition status=%d body=%s", response.Code, response.Body.String())
 	}
 
-	events, _, err := repository.ListIncidentEvents(defaultTenant, incident.ID, store.ListOptions{})
+	events, _, err := repository.ListIncidentEvents(context.Background(), defaultTenant, incident.ID, store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +108,7 @@ func TestRejectedIncidentTransitionAddsNoTimelineEntry(t *testing.T) {
 		t.Fatalf("invalid transition status=%d, want 409; body=%s", response.Code, response.Body.String())
 	}
 
-	events, _, err := repository.ListIncidentEvents(defaultTenant, incident.ID, store.ListOptions{})
+	events, _, err := repository.ListIncidentEvents(context.Background(), defaultTenant, incident.ID, store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +181,7 @@ func TestIncidentTimelineEndpointIsReadableAndTenantScoped(t *testing.T) {
 
 func repositoryUserID(t *testing.T, repository store.Repository, username string) string {
 	t.Helper()
-	user, err := repository.FindUserByUsername(defaultTenant, username)
+	user, err := repository.FindUserByUsername(context.Background(), defaultTenant, username)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +216,7 @@ func TestIncidentCommentAppendsToTimeline(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("comment status=%d body=%s", response.Code, response.Body.String())
 	}
-	events, _, err := repository.ListIncidentEvents(defaultTenant, incident.ID, store.ListOptions{})
+	events, _, err := repository.ListIncidentEvents(context.Background(), defaultTenant, incident.ID, store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +253,7 @@ func TestIncidentCommentRejectsBlankNotes(t *testing.T) {
 			t.Fatalf("body %s status=%d, want 400", body, response.Code)
 		}
 	}
-	events, _, err := repository.ListIncidentEvents(defaultTenant, incident.ID, store.ListOptions{})
+	events, _, err := repository.ListIncidentEvents(context.Background(), defaultTenant, incident.ID, store.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
