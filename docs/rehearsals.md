@@ -23,6 +23,12 @@
   打排水日志、在途检查完成、退出码 0、不触发 60 秒强制退出；(4) 所有服务
   PID 1 为 init。
 - **结果**：
+  - 合并前整体回归（2026-10-01，`codex/worker-shutdown` 镜像）：
+    `compose-smoke.ps1` 通过（`Compose smoke test passed`，退出码 0，含控制台
+    Playwright E2E）；`multi-replica-drill.ps1` 通过（`Multi-replica drill passed`，
+    40 任务、duplicate groups 0、退出码 0）。 drill 首跑失败系其复用的
+    postgres 卷存着 CRLF 时期的 checksum 记录，属同一行尾问题的既有库症状，
+    `down -v` 清掉一次性演练卷后通过。
   - http-worker 排水：任务 14:56:26 进入 RUNNING（慢目标 20 秒），`stop` 发送
     SIGTERM，日志 `shutdown signal received; draining in-flight work` → 约 19 秒后
     `in-flight work drained`，容器退出码 0；任务 `finished_at` 14:56:46，
