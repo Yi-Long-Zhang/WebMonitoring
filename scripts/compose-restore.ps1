@@ -5,10 +5,29 @@ param(
     [string]$ConfirmText,
     # Restore a stack started under a different Compose project (for example the
     # one left running by compose-smoke.ps1 -KeepRunning).
-    [string]$ProjectName = ""
+    [string]$ProjectName = "",
+    # The deployment env file consulted for S3 credentials that are not already
+    # set in the process environment. Explicit environment variables always win.
+    # Set to an empty string to disable the lookup.
+    [string]$EnvFile = "deployments/compose/.env"
 )
 
 $ErrorActionPreference = "Stop"
+
+# See compose-backup.ps1 for the rationale: scheduled or bare-shell runs load
+# S3 credentials from the deployment env file, never echoed.
+if ($EnvFile -and (Test-Path -LiteralPath $EnvFile)) {
+    foreach ($line in [System.IO.File]::ReadAllLines((Resolve-Path -LiteralPath $EnvFile).Path)) {
+        if ($line -match '^\s*#' -or $line -notmatch '^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
+            continue
+        }
+        $name = $Matches[1]
+        if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($name))) {
+            continue
+        }
+        [Environment]::SetEnvironmentVariable($name, $Matches[2].Trim().Trim('"').Trim("'"))
+    }
+}
 $resolvedBackup = (Resolve-Path -LiteralPath $BackupRoot).Path
 $manifestPath = Join-Path $resolvedBackup "manifest.json"
 $databaseDump = Join-Path $resolvedBackup "webmonitoring.dump"

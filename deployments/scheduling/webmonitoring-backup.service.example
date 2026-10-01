@@ -1,0 +1,14 @@
+[Unit]
+Description=WebMonitoring nightly backup (PostgreSQL dump, evidence mirror, Redis snapshot)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+# Replace <REPO> with the absolute path of this repository checkout.
+WorkingDirectory=<REPO>
+# The backup script loads S3 credentials from deployments/compose/.env.
+ExecStart=/usr/bin/powershell -NoProfile -ExecutionPolicy Bypass -File scripts/compose-backup.ps1 -OutputRoot .data-backups -KeepBackups 14
+# A backup that overruns its window is likely stuck on docker; the next run
+# should start clean rather than pile up.
+TimeoutStartSec=7200

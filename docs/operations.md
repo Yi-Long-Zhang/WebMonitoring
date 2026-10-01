@@ -106,7 +106,41 @@ $env:S3_ENDPOINT = "http://localhost:9000"
 ```
 
 脚本不会把密码写入 manifest。备份前应暂停会产生大量写入的升级或维护操作，
-并记录备份时间、版本和校验值。
+并记录备份时间、版本和校验值。S3 凭据未显式设置时会从
+`deployments/compose/.env` 读取（显式环境变量优先），供计划任务等
+无预置环境的运行方式使用。
+
+**Q：备份保留多少份？**
+
+默认 14 份。每次备份成功后按时间戳目录名轮转出最旧的，只动本脚本命名的
+`yyyyMMdd-HHmmss` 目录，目录里的其他文件不会被清。用 `-KeepBackups` 或环境
+变量 `BACKUP_KEEP_COUNT` 调整。备份根目录默认 `.data-backups`（已被 Git
+忽略）；总量被保留策略压住在 14 份全量，规划磁盘时按 14 份估算即可。
+
+**Q：Redis 算备份范围吗？**
+
+队列是瞬态工作队列，权威状态在 `detection_jobs` 表，恢复路径不重放 Redis。
+备份脚本仍会留一份 `redis-cli --rdb` 的快照（`redis/dump.rdb`，写进 manifest
+参与 SHA-256 校验），作为取证参考；拿不到快照不会让整份备份失败。
+
+**Q：怎么定时备份？**
+
+模板在 `deployments/scheduling/`：Windows 用
+`register-windows-task.ps1` 注册每日计划任务，Linux 用
+`webmonitoring-backup.{service,timer}.example` 装 systemd timer。详见该目录
+README。注册后建议立即 `schtasks /Run`（或 `systemctl start
+webmonitoring-backup.service`）手工触发一次，确认首份备份落地。
+
+**Q：怎么演练备份能不能恢复？**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\backup-rehearsal.ps1
+```
+
+对运行中的栈连跑两个备份周期（`KeepBackups=1`），断言旧的那份被轮转出、
+幸存备份含 Redis 快照，然后跑恢复脚本的 dry-run（只校验 manifest 与
+SHA-256，不改任何数据）。每次演练结果记入 `docs/rehearsals.md`；真正的
+`-Execute` 恢复仍按上面的确认流程走。
 
 **Q：手工 dump 数据库怎么做？**
 

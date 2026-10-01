@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the WebMonitoring backup every night
+
+[Timer]
+# 02:30 local time. Backups are I/O heavy; pick a quiet window.
+OnCalendar=*-*-* 02:30:00
+# Run promptly after boot if the scheduled time was missed (e.g. the host was
+# off at 02:30), but only within the same day.
+Persistent=true
+Unit=webmonitoring-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -10,6 +10,37 @@
 
 ---
 
+## 0.5 备份保留、Redis 快照与调度模板实测 — 2026-10-02
+
+- **脚本**：`scripts/backup-rehearsal.ps1`（新增），对运行中的主栈连跑两个
+  备份周期（`-KeepBackups 1`，输出到一次性目录 `.data-backup-rehearsal`，
+  用后删除），随后用 `compose-restore.ps1` dry-run 校验幸存备份。
+- **关键断言**：(1) 第二个周期成功后旧备份目录被轮转出、且只留最新一份；
+  (2) manifest 带 `redisSnapshot` 字段且 `redis/dump.rdb` 真实存在并参与
+  SHA-256 校验；(3) 恢复脚本 dry-run 对幸存备份校验通过（不执行恢复）。
+- **结果**（2026-10-02，退出码 0）：
+  - 周期 1 产出 `20261002-001630`，周期 2 产出 `20261002-001646`，轮转日志
+    `Retention: kept 1 of 2 backups (KeepBackups=1)`，断言确认旧目录被删、
+    新目录幸存。
+  - `Redis snapshot present: redis/dump.rdb`（`redis-cli --rdb`，经
+    `REDISCLI_AUTH` 传参，密码不进进程列表）。
+  - `Backup verification passed`（manifest + 全文件 SHA-256），
+    `Backup rehearsal passed`。
+  - 四个 PowerShell 脚本 parse 检查通过（含新模板
+    `register-windows-task.ps1`；实际注册计划任务未做，模板未经 schtasks
+    真实注册验证）。
+- **修法摘要**：`compose-backup.ps1` 增加 `-KeepBackups`（默认 14，
+  `BACKUP_KEEP_COUNT` 可覆盖）按时间戳目录名轮转、`-EnvFile` 从
+  `deployments/compose/.env` 静默补 S3 凭据（显式环境变量优先）、Redis RDB
+  快照（拿不到不否决整份备份）；`compose-restore.ps1` 同步增加
+  `-EnvFile`。新增 `deployments/scheduling/`（Windows 计划任务注册脚本 +
+  systemd service/timer 模板 + README）。
+- **未覆盖**：计划任务/systemd 的真实调度触发（只做了脚本内两周期连跑）；
+  `-Execute` 真实恢复未在本节演练（此前验收已覆盖恢复链路）；备份期间
+  高写入下的快照一致性未压测（operations.md 已要求备份前暂停大量写入）。
+
+---
+
 ## 0.4 会话路径静默失败实测 — 2026-10-01
 
 - **脚本**：手工实测，真实 Compose 栈（分支 `codex/auth-failures` 构建的 api
