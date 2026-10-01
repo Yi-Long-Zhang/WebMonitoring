@@ -20,6 +20,9 @@
   必须 **500** 而非 401，也不返回会被下一条请求拒绝的 Cookie；(3) Redis 恢复后
   原会话直接 200——抖动不得把全员登出。
 - **结果**：
+  - 合并前整体回归（2026-10-02，`codex/auth-failures` 镜像）：`compose-smoke.ps1`
+    通过（退出码 0）；`multi-replica-drill.ps1` 通过（duplicate groups 0、
+    退出码 0）。
   - 中断前 `GET /api/v1/dashboard`：200。
   - `stop redis` 后同一 Cookie：500 `STORAGE_UNAVAILABLE`（非 401
     `SESSION_EXPIRED`）；正确密码登录：500 `SESSION_STORE_UNAVAILABLE`
