@@ -324,6 +324,20 @@ func scanAsset(row rowScanner) (domain.Asset, error) {
 	return asset, normalizePostgresError(err)
 }
 
+// CountAssets answers the dashboard's registry totals in one scan instead of
+// paging every asset row into the control plane.
+func (p *PostgresRepository) CountAssets(ctx context.Context, tenantID string) (int, int, error) {
+	var total, verified int
+	err := p.pool.QueryRow(ctx, `
+		SELECT count(*),
+			count(*) FILTER (WHERE verification_status='VERIFIED')
+		FROM assets WHERE tenant_id=$1`, tenantID).Scan(&total, &verified)
+	if err != nil {
+		return 0, 0, normalizePostgresError(err)
+	}
+	return total, verified, nil
+}
+
 func (p *PostgresRepository) CreateSite(ctx context.Context, site domain.Site) error {
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO sites (id, tenant_id, name, domain, owner_id, created_at, updated_at)
@@ -723,6 +737,50 @@ func (p *PostgresRepository) ReapTimedOut(ctx context.Context, tenantID string, 
 	return int(tag.RowsAffected()), nil
 }
 
+// JobSchedulingState collapses the tenant's job history into one row per
+// (asset, mode). MAX(created_at) feeds the due-interval check and
+// BOOL_OR(status IN ('QUEUED','RUNNING')) is the active-slot check; both
+// aggregate in the database, and the (tenant_id, asset_id, mode, created_at)
+// index from migration 000001 covers the GROUP BY without touching the table.
+func (p *PostgresRepository) JobSchedulingState(ctx context.Context, tenantID string) ([]JobActivity, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT asset_id, mode, MAX(created_at) AS latest,
+			BOOL_OR(status IN ('QUEUED','RUNNING')) AS active
+		FROM detection_jobs
+		WHERE tenant_id=$1
+		GROUP BY asset_id, mode`, tenantID)
+	if err != nil {
+		return nil, normalizePostgresError(err)
+	}
+	defer rows.Close()
+	result := make([]JobActivity, 0)
+	for rows.Next() {
+		var item JobActivity
+		if err := rows.Scan(&item.AssetID, &item.Mode, &item.LatestCreatedAt, &item.HasActive); err != nil {
+			return nil, normalizePostgresError(err)
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, normalizePostgresError(err)
+	}
+	return result, nil
+}
+
+// DeleteJobsBefore applies job retention. Only terminal rows are eligible:
+// QUEUED is work not yet started, and RUNNING is crash-recovery state that
+// ClaimJob reclaims, so touching either would destroy live scheduling state.
+func (p *PostgresRepository) DeleteJobsBefore(ctx context.Context, tenantID string, before time.Time) (int, error) {
+	tag, err := p.pool.Exec(ctx, `
+		DELETE FROM detection_jobs
+		WHERE tenant_id=$1 AND created_at < $2 AND status NOT IN ('QUEUED','RUNNING')`,
+		tenantID, before)
+	if err != nil {
+		return 0, normalizePostgresError(err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 const jobSelect = `
 	SELECT id,tenant_id,asset_id,mode,status,policy_version,COALESCE(baseline_version,0),
 		COALESCE(error_code,''),COALESCE(error_message,''),retry_count,max_attempts,created_at,started_at,finished_at
@@ -853,6 +911,35 @@ func scanEvidence(row rowScanner) (domain.Evidence, error) {
 		&item.Size, &item.SHA256, &item.ObjectKey, &item.CreatedAt, &item.RetainUntil,
 	)
 	return item, normalizePostgresError(err)
+}
+
+// IncidentStatusCounts feeds both the dashboard summary and the incident
+// gauges, so those numbers reflect the whole table rather than whichever page
+// a list endpoint happened to return.
+func (p *PostgresRepository) IncidentStatusCounts(ctx context.Context, tenantID string) (int, int, int, error) {
+	var open, highRisk, critical int
+	err := p.pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE status NOT IN ('CLOSED','FALSE_POSITIVE')),
+			count(*) FILTER (WHERE status NOT IN ('CLOSED','FALSE_POSITIVE') AND severity IN ('HIGH','CRITICAL')),
+			count(*) FILTER (WHERE status NOT IN ('CLOSED','FALSE_POSITIVE') AND severity='CRITICAL')
+		FROM incidents WHERE tenant_id=$1`, tenantID).Scan(&open, &highRisk, &critical)
+	if err != nil {
+		return 0, 0, 0, normalizePostgresError(err)
+	}
+	return open, highRisk, critical, nil
+}
+
+// FailedJobCount counts terminal failures for the dashboard and report
+// summaries without reading job rows at all.
+func (p *PostgresRepository) FailedJobCount(ctx context.Context, tenantID string) (int, error) {
+	var count int
+	err := p.pool.QueryRow(ctx, `
+		SELECT count(*) FROM detection_jobs
+		WHERE tenant_id=$1 AND status IN ('FAILED','TIMED_OUT')`, tenantID).Scan(&count)
+	if err != nil {
+		return 0, normalizePostgresError(err)
+	}
+	return count, nil
 }
 
 func (p *PostgresRepository) UpsertIncident(ctx context.Context, incident domain.Incident) (domain.Incident, IncidentUpsertOutcome, error) {

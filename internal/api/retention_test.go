@@ -92,7 +92,7 @@ func retentionServer(repository store.Repository, evidenceStore evidence.Store) 
 		repository, auth.NewService(repository, time.Hour), service, evidenceStore, guard, broker,
 		slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil)), false,
 	)
-	server.SetRetentionPolicy(1, 1)
+	server.SetRetentionPolicy(1, 1, 30)
 	return server
 }
 

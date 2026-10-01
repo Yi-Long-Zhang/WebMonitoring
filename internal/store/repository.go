@@ -79,6 +79,10 @@ type Repository interface {
 	UpdateAsset(ctx context.Context, asset domain.Asset) error
 	GetAsset(ctx context.Context, tenantID, id string) (domain.Asset, error)
 	ListAssets(ctx context.Context, tenantID string, opts ListOptions) ([]domain.Asset, string, error)
+	// CountAssets returns the tenant's asset total and how many of them are
+	// verified, as one aggregate query, so dashboards never page the whole
+	// registry into memory.
+	CountAssets(ctx context.Context, tenantID string) (total int, verified int, err error)
 
 	CreateSite(ctx context.Context, site domain.Site) error
 	UpdateSite(ctx context.Context, site domain.Site) error
@@ -115,6 +119,16 @@ type Repository interface {
 	ListJobs(ctx context.Context, tenantID string, opts ListOptions) ([]domain.DetectionJob, string, error)
 	CancelJob(ctx context.Context, tenantID, id string) (bool, error)
 	ReapTimedOut(ctx context.Context, tenantID string, before time.Time) (int, error)
+	// JobSchedulingState summarizes detection_jobs per (asset, mode) so the
+	// scheduler can decide what is due without hauling every historical job
+	// row into memory. LatestCreatedAt is zero when the pair has no rows at
+	// left at all; HasActive reports whether a QUEUED or RUNNING job exists,
+	// which is what makes a pair ineligible regardless of age.
+	JobSchedulingState(ctx context.Context, tenantID string) ([]JobActivity, error)
+	// DeleteJobsBefore removes terminal detection jobs older than the cutoff.
+	// QUEUED and RUNNING rows are never touched: a stale RUNNING row is crash
+	// recovery state for ClaimJob, and a QUEUED row is work not yet started.
+	DeleteJobsBefore(ctx context.Context, tenantID string, before time.Time) (int, error)
 
 	CreateEvidence(ctx context.Context, evidence domain.Evidence) error
 	GetEvidence(ctx context.Context, tenantID, id string) (domain.Evidence, error)
@@ -140,6 +154,15 @@ type Repository interface {
 	UpdateIncident(ctx context.Context, incident domain.Incident) error
 	GetIncident(ctx context.Context, tenantID, id string) (domain.Incident, error)
 	ListIncidents(ctx context.Context, tenantID string, opts ListOptions) ([]domain.Incident, string, error)
+	// IncidentStatusCounts returns, in one aggregate query, how many incidents
+	// are open, how many of those are high or critical, and how many of those
+	// are critical. Dashboard and metrics read the same numbers without
+	// depending on a page of the incident list.
+	IncidentStatusCounts(ctx context.Context, tenantID string) (open int, highRisk int, critical int, err error)
+	// FailedJobCount returns how many detection jobs ended FAILED or TIMED_OUT,
+	// so dashboards and reports never page the (retention-bounded but still
+	// large) job table into memory just to count it.
+	FailedJobCount(ctx context.Context, tenantID string) (int, error)
 	// AppendIncidentEvent adds one entry to an incident's timeline. Entries are
 	// append-only by design: the incident row cannot hold its own history,
 	// because the upsert overwrites `signals` on every recurrence.
@@ -175,4 +198,14 @@ type Repository interface {
 	AppendAudit(ctx context.Context, event domain.AuditEvent) error
 	ListAudits(ctx context.Context, tenantID string, filter AuditFilter, opts ListOptions) ([]domain.AuditEvent, string, error)
 	DeleteAuditsBefore(ctx context.Context, tenantID string, before time.Time) (int, error)
+}
+
+// JobActivity is the scheduler's per-(asset, mode) view of the job table: the
+// newest job's creation time and whether an active job currently occupies the
+// slot. It exists so scheduling reads stay flat as history accumulates.
+type JobActivity struct {
+	AssetID         string
+	Mode            string
+	LatestCreatedAt time.Time
+	HasActive       bool
 }

@@ -224,6 +224,9 @@ services:
       JOB_LEASE_SECONDS: ${JOB_LEASE_SECONDS:-600}
       EVIDENCE_RETENTION_DAYS: ${EVIDENCE_RETENTION_DAYS:-90}
       AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
+      # Terminal detection jobs are swept once per RETENTION_INTERVAL_HOURS
+      # once older than this. QUEUED/RUNNING rows are never touched.
+      JOB_RETENTION_DAYS: ${JOB_RETENTION_DAYS:-30}
       RETENTION_INTERVAL_HOURS: ${RETENTION_INTERVAL_HOURS:-24}
       # Empty endpoint keeps tracing off; set it to an OTLP/HTTP collector to enable.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}

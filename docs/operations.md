@@ -506,7 +506,12 @@ docker compose -f deployments/compose/docker-compose.yml exec -T postgres `
 
 ## 保留期维护
 
-默认证据保留 90 天、审计保留 365 天。
+默认证据保留 90 天、审计保留 365 天、**检测任务保留 30 天**（`JOB_RETENTION_DAYS`）。
+任务表是安装里增长最快的表（最快档位下每个资产每天约 288 行），所以任务保留
+不是可选项：只删**终态**行（`SUCCEEDED`/`FAILED`/`TIMED_OUT`/`CANCELLED`），
+`QUEUED`/`RUNNING` 行永远不会被清理——后者是崩溃恢复与在途工作的状态。
+调度器的到期判断不依赖旧任务行（它读每 `(asset, mode)` 的聚合），因此删除历史
+不会改变调度时机；一个从未检查过的资产对在下一次 tick 仍会被照常排队。
 
 **Q：保留任务什么时候跑？**
 
@@ -529,7 +534,8 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/v1/maintenance/ret
 
 **Q：什么不会被删？**
 
-被事件引用的证据不会删除；对象删除、元数据删除、审计删除和失败原因都会记录。
+被事件引用的证据不会删除；活动任务（QUEUED/RUNNING）不会删除；对象删除、
+元数据删除、审计删除、任务删除和失败原因都会记录。
 
 ---
 

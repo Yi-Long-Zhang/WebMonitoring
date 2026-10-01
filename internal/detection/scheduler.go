@@ -54,10 +54,31 @@ func (s *Scheduler) schedule(ctx context.Context, tenantID string) {
 	} else if reaped > 0 {
 		s.logger.Warn("reaped stale RUNNING detection jobs", "tenant_id", tenantID, "count", reaped)
 	}
-	jobs, _, err := s.repository.ListJobs(ctx, tenantID, store.ListOptions{})
+	// JobSchedulingState collapses the whole job history into one row per
+	// (asset, mode), so the 30s tick costs one aggregate query no matter how
+	// many jobs have accumulated. Without it, every tick hauled the full table
+	// into memory and grew linearly with history -- weeks of jobs meant the
+	// scheduler itself became the OOM source it was meant to prevent.
+	activity, err := s.repository.JobSchedulingState(ctx, tenantID)
 	if err != nil {
 		s.logger.Error("list scheduled jobs", "error", err)
 		return
+	}
+	state := make(map[string]store.JobActivity, len(activity))
+	for _, item := range activity {
+		state[item.AssetID+"/"+item.Mode] = item
+	}
+	// Policies load once and index by asset, replacing a per-asset GetPolicy
+	// round trip (N+1) with one list. An asset with no policy row has nothing
+	// to schedule, exactly as before.
+	policies, _, err := s.repository.ListPolicies(ctx, tenantID, store.ListOptions{})
+	if err != nil {
+		s.logger.Error("list scheduled policies", "error", err)
+		return
+	}
+	policyByAsset := make(map[string]domain.MonitorPolicy, len(policies))
+	for _, policy := range policies {
+		policyByAsset[policy.AssetID] = policy
 	}
 	assets, _, err := s.repository.ListAssets(ctx, tenantID, store.ListOptions{})
 	if err != nil {
@@ -68,12 +89,14 @@ func (s *Scheduler) schedule(ctx context.Context, tenantID string) {
 		if !asset.Enabled || asset.VerificationStatus != domain.VerificationVerified {
 			continue
 		}
-		policy, err := s.repository.GetPolicy(ctx, tenantID, asset.ID)
-		if err != nil || inMaintenanceWindow(policy, now) {
+		policy, ok := policyByAsset[asset.ID]
+		if !ok || inMaintenanceWindow(policy, now) {
 			continue
 		}
-		s.queueIfDue(ctx, tenantID, asset.ID, "HTTP", policy.HTTPIntervalSeconds, jobs, now)
-		s.queueIfDue(ctx, tenantID, asset.ID, "BROWSER", policy.BrowserIntervalSeconds, jobs, now)
+		item, _ := state[asset.ID+"/HTTP"]
+		s.queueIfDue(ctx, tenantID, asset.ID, "HTTP", policy.HTTPIntervalSeconds, item, now)
+		item, _ = state[asset.ID+"/BROWSER"]
+		s.queueIfDue(ctx, tenantID, asset.ID, "BROWSER", policy.BrowserIntervalSeconds, item, now)
 	}
 }
 
@@ -84,8 +107,8 @@ func (s *Scheduler) schedule(ctx context.Context, tenantID string) {
 // can queue the same asset in between; the partial unique index from migration
 // 000012 rejects the loser. Logging that at warn on every 30s tick would bury
 // real scheduling failures, so it is a silent no-op.
-func (s *Scheduler) queueIfDue(ctx context.Context, tenantID, assetID, mode string, intervalSeconds int, jobs []domain.DetectionJob, now time.Time) {
-	if !due(assetID, mode, intervalSeconds, jobs, now) {
+func (s *Scheduler) queueIfDue(ctx context.Context, tenantID, assetID, mode string, intervalSeconds int, item store.JobActivity, now time.Time) {
+	if !due(intervalSeconds, item, now) {
 		return
 	}
 	if _, err := s.service.Queue(ctx, tenantID, assetID, mode); err != nil &&
@@ -94,18 +117,16 @@ func (s *Scheduler) queueIfDue(ctx context.Context, tenantID, assetID, mode stri
 	}
 }
 
-func due(assetID, mode string, intervalSeconds int, jobs []domain.DetectionJob, now time.Time) bool {
+// due decides whether a check is due from the (asset, mode) aggregate alone:
+// an active job blocks regardless of age, otherwise the interval must have
+// elapsed since the newest job. A pair with no rows at all (zero item) is
+// always due -- the asset has never been checked.
+func due(intervalSeconds int, item store.JobActivity, now time.Time) bool {
 	if intervalSeconds <= 0 {
 		return false
 	}
-	var latest time.Time
-	for _, job := range jobs {
-		if job.AssetID == assetID && job.Mode == mode && job.CreatedAt.After(latest) {
-			latest = job.CreatedAt
-		}
-		if job.AssetID == assetID && job.Mode == mode && job.Status.IsActive() {
-			return false
-		}
+	if item.HasActive {
+		return false
 	}
-	return latest.IsZero() || now.Sub(latest) >= time.Duration(intervalSeconds)*time.Second
+	return item.LatestCreatedAt.IsZero() || now.Sub(item.LatestCreatedAt) >= time.Duration(intervalSeconds)*time.Second
 }

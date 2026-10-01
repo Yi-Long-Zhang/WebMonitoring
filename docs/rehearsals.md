@@ -10,6 +10,35 @@
 
 ---
 
+## 0.2 有界查询与任务保留实测 — 2026-10-01
+
+- **脚本**：手工实测，在真实 Compose 栈（`deployments/compose/docker-compose.yml`，
+  分支 `codex/bounded-queries` 构建的镜像）上执行：psql 灌入 100,000 行
+  `detection_jobs`（`generate_series`，40 天均匀散布，初始全部 SUCCEEDED，
+  其中 25,069 行早于 30 天窗口）+ 临时测量账号（argon2id，用后删除）。
+- **关键断言**：(1) dashboard 在 10 万行任务下仍为聚合查询延迟；(2) 保留
+  dry-run 报出的 `expiredJobs` 与窗口内行数一致且 execute 恰好删除这些行；
+  (3) 调度器跨副本不重复分组；(4) 主链路 smoke 回归通过。
+- **结果**：
+  - dashboard（登录会话实测，20 次采样）：p50 = 1ms、p95 = 2ms，
+    返回体正确；把 100 行改为 FAILED 后 p50 = 2ms、p95 = 3ms 且
+    `failedJobs = 100`，证明数字来自 `FailedJobCount` 聚合而非分页内容。
+  - 调度聚合查询 `EXPLAIN (ANALYZE)`（74,916 行上）：Seq Scan +
+    HashAggregate，执行 13.6ms，每组一行输出；单租户场景下计划器选择
+    顺序扫描是正确选择，成本由任务保留（30 天窗口）封顶，不随明细增长。
+  - 保留清理：dry-run `expiredJobs=25084 deletedJobs=0`；execute
+    `deletedJobs=25084` 且 `failureReasons` 为空；二次执行又清掉恰好
+    3 行（种子 `created_at` 随机散布在窗口边界上的行），无多删。
+  - 迁移 `000016`（`detection_jobs_reap_idx ON (tenant_id, status, started_at)`）
+    已应用，`pg_indexes` 可见。
+  - `multi-replica-drill.ps1`：40 资产 40 任务、0 重复分组、40 成功
+    （调度器改写后跨副本语义不变）；`compose-smoke.ps1`：
+    `Compose smoke test passed`，退出码 0。
+- **未覆盖**：`reports/summary` 仍是全表搬运（本次未改，其成本现由任务保留
+  封顶）；10 万行是在单租户单资产下灌入的，未测多租户大表下计划器是否仍选
+  顺序扫描（语义不受计划影响）。
+- **专项档案**：无。
+
 ## 合并后主链路回归（smoke）— 2026-09-26
 
 - **脚本**：`scripts/compose-smoke.ps1`（`-ExecutionPolicy Bypass`；策略探测本身

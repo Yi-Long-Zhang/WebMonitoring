@@ -27,6 +27,11 @@ const (
 	defaultWorkerToken           = "replace-with-a-random-token"
 	DefaultEvidenceRetentionDays = 90
 	DefaultAuditRetentionDays    = 365
+	// DefaultJobRetentionDays bounds detection_jobs: at the fastest supported
+	// interval one asset produces ~288 rows a day, so an unbounded table
+	// eventually dwarfs every other table in the installation. Terminal rows
+	// only -- the sweep never touches QUEUED or RUNNING state.
+	DefaultJobRetentionDays = 30
 )
 
 func IsProduction(get func(string) string) bool {

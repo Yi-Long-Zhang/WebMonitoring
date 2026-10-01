@@ -187,6 +187,7 @@ func main() {
 	server.SetRetentionPolicy(
 		config.PositiveInt(os.Getenv, "EVIDENCE_RETENTION_DAYS", config.DefaultEvidenceRetentionDays),
 		config.PositiveInt(os.Getenv, "AUDIT_RETENTION_DAYS", config.DefaultAuditRetentionDays),
+		config.PositiveInt(os.Getenv, "JOB_RETENTION_DAYS", config.DefaultJobRetentionDays),
 	)
 	if keyring, ok := secretCipher.(*security.Keyring); ok {
 		if signer, err := security.NewSignedURLSigner(keyring.PrimaryKeyMaterial()); err == nil {

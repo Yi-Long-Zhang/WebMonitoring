@@ -142,10 +142,11 @@ docker compose -f deployments/compose/docker-compose.yml restart postgres
 ### 处置 C：磁盘/卷写满
 
 先确认是哪个卷满（`docker system df -v`）。若是 `postgres-data` 满，通常不是
-「数据库变大」而是**保留任务没有执行**——证据元数据行、审计行只增不减。
+「数据库变大」而是**保留任务没有执行**——证据元数据行、审计行、检测任务行只增不减。
 保留任务由控制面进程托管（`internal/maintenance`），按
 `RETENTION_INTERVAL_HOURS`（默认 24h）执行，并持 `pg_try_advisory_lock` 的
-`maintenance.retention` 租约，**多个副本同时只有一个会跑**。
+`maintenance.retention` 租约，**多个副本同时只有一个会跑**。检测任务行由
+`JOB_RETENTION_DAYS`（默认 30 天）清理，只动终态行。
 
 ```bash
 # 是否有人持有保留租约 / 是否有副本在跳过

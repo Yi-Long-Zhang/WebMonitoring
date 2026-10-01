@@ -378,6 +378,23 @@ func (m *MemoryRepository) ListAssets(ctx context.Context, tenantID string, opts
 	return items, next, nil
 }
 
+// CountAssets mirrors the postgres aggregate for the embedded/in-memory mode.
+func (m *MemoryRepository) CountAssets(ctx context.Context, tenantID string) (int, int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	total, verified := 0, 0
+	for _, asset := range m.assets {
+		if asset.TenantID != tenantID {
+			continue
+		}
+		total++
+		if asset.VerificationStatus == domain.VerificationVerified {
+			verified++
+		}
+	}
+	return total, verified, nil
+}
+
 func (m *MemoryRepository) CreateSite(ctx context.Context, site domain.Site) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -680,6 +697,54 @@ func (m *MemoryRepository) CancelJob(ctx context.Context, tenantID, id string) (
 	return true, nil
 }
 
+// JobSchedulingState mirrors the postgres aggregate: one entry per (asset,
+// mode) with the newest creation time and whether an active job exists. The
+// two implementations must agree -- the cross-store tests exercise both.
+func (m *MemoryRepository) JobSchedulingState(ctx context.Context, tenantID string) ([]JobActivity, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	type pair struct{ assetID, mode string }
+	activity := make(map[pair]*JobActivity)
+	for _, job := range m.jobs {
+		if job.TenantID != tenantID {
+			continue
+		}
+		key := pair{job.AssetID, job.Mode}
+		item, ok := activity[key]
+		if !ok {
+			item = &JobActivity{AssetID: job.AssetID, Mode: job.Mode}
+			activity[key] = item
+		}
+		if job.CreatedAt.After(item.LatestCreatedAt) {
+			item.LatestCreatedAt = job.CreatedAt
+		}
+		if job.Status.IsActive() {
+			item.HasActive = true
+		}
+	}
+	result := make([]JobActivity, 0, len(activity))
+	for _, item := range activity {
+		result = append(result, *item)
+	}
+	return result, nil
+}
+
+// DeleteJobsBefore mirrors the postgres retention delete: terminal rows only,
+// so QUEUED work and RUNNING crash-recovery state survive the sweep.
+func (m *MemoryRepository) DeleteJobsBefore(ctx context.Context, tenantID string, before time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	deleted := 0
+	for key, job := range m.jobs {
+		if job.TenantID != tenantID || job.Status.IsActive() || !job.CreatedAt.Before(before) {
+			continue
+		}
+		delete(m.jobs, key)
+		deleted++
+	}
+	return deleted, nil
+}
+
 func (m *MemoryRepository) ReapTimedOut(ctx context.Context, tenantID string, before time.Time) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -780,6 +845,40 @@ func (m *MemoryRepository) DeleteEvidence(ctx context.Context, tenantID, id stri
 	}
 	delete(m.evidence, key)
 	return nil
+}
+
+// IncidentStatusCounts mirrors the postgres aggregate so dashboards and
+// gauges read identical numbers on both stores.
+func (m *MemoryRepository) IncidentStatusCounts(ctx context.Context, tenantID string) (int, int, int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	open, highRisk, critical := 0, 0, 0
+	for _, incident := range m.incidents {
+		if incident.TenantID != tenantID || incident.Status == domain.IncidentClosed || incident.Status == domain.IncidentFalsePositive {
+			continue
+		}
+		open++
+		if incident.Severity == domain.SeverityHigh || incident.Severity == domain.SeverityCritical {
+			highRisk++
+		}
+		if incident.Severity == domain.SeverityCritical {
+			critical++
+		}
+	}
+	return open, highRisk, critical, nil
+}
+
+// FailedJobCount mirrors the postgres aggregate for the in-memory store.
+func (m *MemoryRepository) FailedJobCount(ctx context.Context, tenantID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	for _, job := range m.jobs {
+		if job.TenantID == tenantID && (job.Status == domain.JobFailed || job.Status == domain.JobTimedOut) {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (m *MemoryRepository) UpsertIncident(ctx context.Context, incident domain.Incident) (domain.Incident, IncidentUpsertOutcome, error) {

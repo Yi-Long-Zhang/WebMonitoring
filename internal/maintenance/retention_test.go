@@ -9,6 +9,7 @@ import (
 
 	"webmonitoring/internal/domain"
 	"webmonitoring/internal/evidence"
+	"webmonitoring/internal/identity"
 	"webmonitoring/internal/store"
 )
 
@@ -21,7 +22,7 @@ func newTestRunner(t *testing.T) (*store.MemoryRepository, evidence.Store, *Runn
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := NewRunner(repository, evidenceStore, 24*time.Hour, slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil)))
+	runner := NewRunner(repository, evidenceStore, 24*time.Hour, 30*24*time.Hour, slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil)))
 	return repository, evidenceStore, runner
 }
 
@@ -154,5 +155,83 @@ func TestRunAllTenantsSkipsDisabledTenants(t *testing.T) {
 	}
 	if _, err := repository.GetEvidence(context.Background(), disabledTenant, parked.ID); err != nil {
 		t.Fatalf("disabled tenant evidence was removed: %v", err)
+	}
+}
+
+// seedJob stores a detection job directly in its final status so retention
+// behaviour can be tested without the job lifecycle.
+func seedJob(t *testing.T, repository store.Repository, tenantID, assetID string, status domain.JobStatus, createdAt time.Time) domain.DetectionJob {
+	t.Helper()
+	job := domain.DetectionJob{
+		ID: identity.New(), TenantID: tenantID, AssetID: assetID, Mode: "HTTP",
+		Status: status, PolicyVersion: 1, MaxAttempts: 3, CreatedAt: createdAt,
+	}
+	if status == domain.JobRunning {
+		job.StartedAt = &createdAt
+	} else if status != domain.JobQueued {
+		job.FinishedAt = &createdAt
+	}
+	if err := repository.CreateJob(context.Background(), job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	return job
+}
+
+// Job retention counts expired terminal jobs in a dry run without deleting,
+// then deletes exactly those rows on execute while leaving active state alone.
+func TestJobRetentionCountsThenDeletesTerminalRowsOnly(t *testing.T) {
+	repository, _, runner := newTestRunner(t)
+	old := time.Now().UTC().Add(-45 * 24 * time.Hour)
+	expired := seedJob(t, repository, testTenant, "asset", domain.JobSucceeded, old)
+	expiredFailed := seedJob(t, repository, testTenant, "asset", domain.JobFailed, old)
+	active := seedJob(t, repository, testTenant, "asset", domain.JobRunning, old)
+	recent := seedJob(t, repository, testTenant, "asset", domain.JobSucceeded, time.Now().UTC().Add(-24*time.Hour))
+
+	dry, err := runner.RunTenant(context.Background(), testTenant, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.ExpiredJobs != 2 || dry.DeletedJobs != 0 {
+		t.Fatalf("dry run = %+v, want 2 expired and 0 deleted", dry)
+	}
+	if _, err := repository.GetJob(context.Background(), testTenant, expired.ID); err != nil {
+		t.Fatalf("dry run deleted a job: %v", err)
+	}
+
+	result, err := runner.RunTenant(context.Background(), testTenant, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DeletedJobs != 2 {
+		t.Fatalf("deleted jobs = %d, want 2: %+v", result.DeletedJobs, result)
+	}
+	for _, job := range []domain.DetectionJob{expired, expiredFailed} {
+		if _, err := repository.GetJob(context.Background(), testTenant, job.ID); err != store.ErrNotFound {
+			t.Fatalf("expired job %s survived: %v", job.ID, err)
+		}
+	}
+	for _, job := range []domain.DetectionJob{active, recent} {
+		if _, err := repository.GetJob(context.Background(), testTenant, job.ID); err != nil {
+			t.Fatalf("protected job %s was deleted: %v", job.ID, err)
+		}
+	}
+}
+
+// A runner configured without job retention (zero window) must not touch the
+// job table: retention is opt-in per deployment, not a hidden default.
+func TestZeroJobRetentionDisablesJobSweep(t *testing.T) {
+	repository, evidenceStore, _ := newTestRunner(t)
+	runner := NewRunner(repository, evidenceStore, 24*time.Hour, 0, slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil)))
+	job := seedJob(t, repository, testTenant, "asset", domain.JobSucceeded, time.Now().UTC().Add(-90*24*time.Hour))
+
+	result, err := runner.RunTenant(context.Background(), testTenant, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExpiredJobs != 0 || result.DeletedJobs != 0 {
+		t.Fatalf("zero retention swept jobs: %+v", result)
+	}
+	if _, err := repository.GetJob(context.Background(), testTenant, job.ID); err != nil {
+		t.Fatalf("job deleted under zero retention: %v", err)
 	}
 }

@@ -69,6 +69,7 @@ type Server struct {
 	readiness         func(context.Context) map[string]error
 	evidenceRetention time.Duration
 	auditRetention    time.Duration
+	jobRetention      time.Duration
 	retention         *maintenance.Runner
 	signedURLSigner   *security.SignedURLSigner
 	signedURLTTL      time.Duration
@@ -97,9 +98,10 @@ func NewServer(
 		metrics:           metrics.New(),
 		evidenceRetention: time.Duration(config.DefaultEvidenceRetentionDays) * 24 * time.Hour,
 		auditRetention:    time.Duration(config.DefaultAuditRetentionDays) * 24 * time.Hour,
+		jobRetention:      time.Duration(config.DefaultJobRetentionDays) * 24 * time.Hour,
 		signedURLTTL:      5 * time.Minute,
 	}
-	server.retention = maintenance.NewRunner(repository, evidenceStore, server.auditRetention, logger)
+	server.retention = maintenance.NewRunner(repository, evidenceStore, server.auditRetention, server.jobRetention, logger)
 	server.handler = server.routes()
 	return server
 }
@@ -126,14 +128,17 @@ func (s *Server) SetReadiness(check func(context.Context) map[string]error) {
 	s.readiness = check
 }
 
-func (s *Server) SetRetentionPolicy(evidenceDays, auditDays int) {
+func (s *Server) SetRetentionPolicy(evidenceDays, auditDays, jobDays int) {
 	if evidenceDays > 0 {
 		s.evidenceRetention = time.Duration(evidenceDays) * 24 * time.Hour
 	}
 	if auditDays > 0 {
 		s.auditRetention = time.Duration(auditDays) * 24 * time.Hour
 	}
-	s.retention = maintenance.NewRunner(s.repository, s.evidence, s.auditRetention, s.logger)
+	if jobDays > 0 {
+		s.jobRetention = time.Duration(jobDays) * 24 * time.Hour
+	}
+	s.retention = maintenance.NewRunner(s.repository, s.evidence, s.auditRetention, s.jobRetention, s.logger)
 }
 
 // RetentionRunner exposes the shared retention runner so the process hosting
@@ -342,43 +347,27 @@ func (s *Server) logout(writer http.ResponseWriter, request *http.Request) {
 
 func (s *Server) dashboard(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
-	assets, _, err := s.repository.ListAssets(request.Context(), session.User.TenantID, store.ListOptions{})
+	// Every number below comes from an aggregate query. The previous version
+	// listed all assets, incidents and jobs (unbounded) on each dashboard load
+	// and counted in memory, so the endpoint degraded linearly with history.
+	assets, verifiedAssets, err := s.repository.CountAssets(request.Context(), session.User.TenantID)
 	if err != nil {
-		s.repositoryFailure(writer, request, "list dashboard assets", err)
+		s.repositoryFailure(writer, request, "count dashboard assets", err)
 		return
 	}
-	incidents, _, err := s.repository.ListIncidents(request.Context(), session.User.TenantID, store.ListOptions{})
+	open, _, critical, err := s.repository.IncidentStatusCounts(request.Context(), session.User.TenantID)
 	if err != nil {
-		s.repositoryFailure(writer, request, "list dashboard incidents", err)
+		s.repositoryFailure(writer, request, "count dashboard incidents", err)
 		return
 	}
-	jobs, _, err := s.repository.ListJobs(request.Context(), session.User.TenantID, store.ListOptions{})
+	failedJobs, err := s.repository.FailedJobCount(request.Context(), session.User.TenantID)
 	if err != nil {
-		s.repositoryFailure(writer, request, "list dashboard jobs", err)
+		s.repositoryFailure(writer, request, "count dashboard jobs", err)
 		return
 	}
 	summary := map[string]int{
-		"assets": len(assets), "verifiedAssets": 0, "openIncidents": 0,
-		"criticalIncidents": 0, "failedJobs": 0,
-	}
-	for _, asset := range assets {
-		if asset.VerificationStatus == domain.VerificationVerified {
-			summary["verifiedAssets"]++
-		}
-	}
-	for _, incident := range incidents {
-		if incident.Status != domain.IncidentClosed && incident.Status != domain.IncidentFalsePositive {
-			summary["openIncidents"]++
-			if incident.Severity == domain.SeverityCritical {
-				summary["criticalIncidents"]++
-			}
-		}
-	}
-	s.updateIncidentMetrics(incidents)
-	for _, job := range jobs {
-		if job.Status == domain.JobFailed || job.Status == domain.JobTimedOut {
-			summary["failedJobs"]++
-		}
+		"assets": assets, "verifiedAssets": verifiedAssets,
+		"openIncidents": open, "criticalIncidents": critical, "failedJobs": failedJobs,
 	}
 	writeJSON(writer, http.StatusOK, summary)
 }

@@ -97,7 +97,7 @@ func TestConcurrentReplicasQueueOneJobPerAsset(t *testing.T) {
 			defer finished.Done()
 			started.Done()
 			started.Wait()
-			scheduler.queueIfDue(context.Background(), tenantID, assetID, "HTTP", 300, nil, now)
+			scheduler.queueIfDue(context.Background(), tenantID, assetID, "HTTP", 300, store.JobActivity{}, now)
 		}()
 	}
 	finished.Wait()
@@ -137,5 +137,30 @@ func TestRepeatedScheduleDoesNotQueueWhileJobIsActive(t *testing.T) {
 	}
 	if enqueued := queue.enqueued(); enqueued != 1 {
 		t.Fatalf("enqueued=%d, want 1", enqueued)
+	}
+}
+
+// due() is the scheduling decision in isolation: the aggregate row alone must
+// decide, so a history of a million finished jobs cannot change the answer.
+func TestDueTable(t *testing.T) {
+	now := time.Now().UTC()
+	recent := now.Add(-time.Minute)
+	old := now.Add(-time.Hour)
+	cases := []struct {
+		label    string
+		interval int
+		item     store.JobActivity
+		want     bool
+	}{
+		{"disabled interval never due", 0, store.JobActivity{}, false},
+		{"never checked is due", 300, store.JobActivity{}, true},
+		{"active job blocks regardless of age", 300, store.JobActivity{LatestCreatedAt: old, HasActive: true}, false},
+		{"interval not elapsed", 300, store.JobActivity{LatestCreatedAt: recent}, false},
+		{"interval elapsed", 60, store.JobActivity{LatestCreatedAt: old}, true},
+	}
+	for _, testCase := range cases {
+		if got := due(testCase.interval, testCase.item, now); got != testCase.want {
+			t.Fatalf("%s: due = %v, want %v", testCase.label, got, testCase.want)
+		}
 	}
 }

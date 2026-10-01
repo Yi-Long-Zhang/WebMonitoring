@@ -18,13 +18,17 @@ import (
 // Result is the per-tenant outcome of one retention pass. Field names are part
 // of the JSON contract of the manual maintenance endpoint.
 type Result struct {
-	DryRun             bool     `json:"dryRun"`
-	ExpiredEvidence    int      `json:"expiredEvidence"`
-	DeletedEvidence    int      `json:"deletedEvidence"`
-	ProtectedEvidence  int      `json:"protectedEvidence"`
-	FailedEvidence     int      `json:"failedEvidence"`
-	DeletedAuditEvents int      `json:"deletedAuditEvents"`
-	FailureReasons     []string `json:"failureReasons"`
+	DryRun             bool `json:"dryRun"`
+	ExpiredEvidence    int  `json:"expiredEvidence"`
+	DeletedEvidence    int  `json:"deletedEvidence"`
+	ProtectedEvidence  int  `json:"protectedEvidence"`
+	FailedEvidence     int  `json:"failedEvidence"`
+	DeletedAuditEvents int  `json:"deletedAuditEvents"`
+	DeletedJobs        int  `json:"deletedJobs"`
+	// ExpiredJobs counts terminal detection jobs past the retention window,
+	// whether or not this run deleted them (dry runs report without deleting).
+	ExpiredJobs    int      `json:"expiredJobs"`
+	FailureReasons []string `json:"failureReasons"`
 }
 
 // Runner applies evidence and audit retention for a tenant.
@@ -38,6 +42,7 @@ type Runner struct {
 	repository     store.Repository
 	evidence       evidence.Store
 	auditRetention time.Duration
+	jobRetention   time.Duration
 	lease          store.ReplicaLease
 	logger         *slog.Logger
 }
@@ -46,9 +51,13 @@ func NewRunner(
 	repository store.Repository,
 	evidenceStore evidence.Store,
 	auditRetention time.Duration,
+	jobRetention time.Duration,
 	logger *slog.Logger,
 ) *Runner {
-	return &Runner{repository: repository, evidence: evidenceStore, auditRetention: auditRetention, logger: logger}
+	return &Runner{
+		repository: repository, evidence: evidenceStore,
+		auditRetention: auditRetention, jobRetention: jobRetention, logger: logger,
+	}
 }
 
 // SetLease installs the cross-replica lease that keeps concurrent control-plane
@@ -71,6 +80,14 @@ func (r *Runner) RunTenant(ctx context.Context, tenantID string, execute bool) (
 		DryRun:          !execute,
 		ExpiredEvidence: len(expired),
 		FailureReasons:  []string{},
+	}
+	if r.jobRetention > 0 {
+		var err error
+		result.ExpiredJobs, err = r.countExpiredJobs(ctx, tenantID, now.Add(-r.jobRetention))
+		if err != nil {
+			result.FailureReasons = append(result.FailureReasons, "job expiry count failed")
+			r.logger.Warn("retention could not count expired jobs", "tenant_id", tenantID, "error", err)
+		}
 	}
 	if !execute {
 		return result, nil
@@ -110,7 +127,45 @@ func (r *Runner) RunTenant(ctx context.Context, tenantID string, execute bool) (
 	} else {
 		result.DeletedAuditEvents = deletedAudits
 	}
+	if r.jobRetention > 0 {
+		deletedJobs, jobErr := r.repository.DeleteJobsBefore(ctx, tenantID, now.Add(-r.jobRetention))
+		if jobErr != nil {
+			result.FailureReasons = append(result.FailureReasons, "job deletion failed")
+			r.logger.Warn("retention could not delete detection jobs", "tenant_id", tenantID, "error", jobErr)
+		} else {
+			result.DeletedJobs = deletedJobs
+		}
+	}
 	return result, nil
+}
+
+// countExpiredJobs reports how many terminal jobs the retention window would
+// remove, so a dry run can show the number without changing anything. It reads
+// the terminal states individually because DeleteJobsBefore's active-row
+// protection lives in the store; counting by exclusion keeps the two in step.
+func (r *Runner) countExpiredJobs(ctx context.Context, tenantID string, before time.Time) (int, error) {
+	// ListJobs pages by created_at, so walk the window with a bounded page
+	// rather than an unbounded read: the whole point of job retention is that
+	// this table gets big.
+	const pageSize = 500
+	cursor := ""
+	expired := 0
+	for {
+		items, next, err := r.repository.ListJobs(ctx, tenantID, store.ListOptions{Limit: pageSize, Cursor: cursor})
+		if err != nil {
+			return 0, err
+		}
+		for _, job := range items {
+			if job.Status.IsActive() || !job.CreatedAt.Before(before) {
+				continue
+			}
+			expired++
+		}
+		if next == "" {
+			return expired, nil
+		}
+		cursor = next
+	}
 }
 
 // RunAllTenants applies retention to every enabled tenant. Returns the
