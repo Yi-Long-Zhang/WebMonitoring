@@ -325,6 +325,14 @@ nginx 只在启动时解析一次，`restart api` 换了容器 IP 之后就指�
 已被 Git 忽略。三个脚本使用不同的 Compose 项目名和主机端口（smoke：API 18080 /
 控制台 18088；压测：API 18081；多副本演练：API 18082），可以并存运行。
 
+**Q：Redis 挂了会怎样？**
+
+已登录用户的请求会收到 **5xx**（`STORAGE_UNAVAILABLE`），不是 401：API 区分
+「会话不存在」与「会话后端故障」，Redis 恢复后原会话直接复用，不会被登出。
+登录本身也会失败关闭（500 `SESSION_STORE_UNAVAILABLE`）而不是返回一个下一
+请求就会被拒的 Cookie。队列消费端（http-worker）按退避重试等待恢复，进程
+不退出。实测见 `docs/rehearsals.md` 2026-10-01 的 0.4 小节。
+
 ### 镜像准备
 
 **Q：首次运行要拉哪些镜像？**

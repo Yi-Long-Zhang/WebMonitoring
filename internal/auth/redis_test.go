@@ -29,9 +29,9 @@ func TestRedisSessionStoreRoundTrip(t *testing.T) {
 	if err := store.Put(ctx, record); err != nil {
 		t.Fatal(err)
 	}
-	stored, ok := store.Get(ctx, record.ID)
-	if !ok {
-		t.Fatal("session was not found after Put")
+	stored, err := store.Get(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if stored != record {
 		t.Fatalf("stored record = %+v, want %+v", stored, record)
@@ -43,8 +43,8 @@ func TestRedisSessionStoreRoundTrip(t *testing.T) {
 	if err := store.Delete(ctx, record.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := store.Get(ctx, record.ID); ok {
-		t.Fatal("deleted session is still readable")
+	if _, err := store.Get(ctx, record.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound after delete, got %v", err)
 	}
 }
 
@@ -59,8 +59,8 @@ func TestRedisSessionStoreIsSharedBetweenReplicas(t *testing.T) {
 	if err := NewRedisSessionStore(server.Addr()).Put(ctx, record); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := NewRedisSessionStore(server.Addr()).Get(ctx, record.ID); !ok {
-		t.Fatal("a session created by one replica is not visible to another")
+	if _, err := NewRedisSessionStore(server.Addr()).Get(ctx, record.ID); err != nil {
+		t.Fatalf("a session created by one replica is not visible to another: %v", err)
 	}
 }
 
@@ -71,13 +71,14 @@ func TestRedisSessionStoreFailsClosed(t *testing.T) {
 
 	// A malformed record must not be handed to the caller.
 	server.Set("session:corrupt", "not-json")
-	if _, ok := store.Get(ctx, "corrupt"); ok {
-		t.Fatal("a corrupt session record must be treated as missing")
+	if _, err := store.Get(ctx, "corrupt"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("a corrupt session record must read as missing, got %v", err)
 	}
-	// An unreachable Redis means "not logged in", never "logged in".
+	// An unreachable Redis is a backend failure, not "not logged in": the
+	// caller must be able to answer it with 5xx rather than 401.
 	server.Close()
-	if _, ok := store.Get(ctx, "session-1"); ok {
-		t.Fatal("an unreachable session store must not produce a session")
+	if _, err := store.Get(ctx, "session-1"); err == nil || errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("an unreachable session store must surface a backend error, got %v", err)
 	}
 	if err := store.Put(ctx, sessionRecord{ID: "session-1"}); err == nil {
 		t.Fatal("failing to persist a session must be reported")

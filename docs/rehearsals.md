@@ -10,6 +10,36 @@
 
 ---
 
+## 0.4 会话路径静默失败实测 — 2026-10-01
+
+- **脚本**：手工实测，真实 Compose 栈（分支 `codex/auth-failures` 构建的 api
+  镜像），临时账号（argon2id，用后连同审计行删除）；`docker compose stop redis`
+  制造中断，`start redis` 恢复。
+- **关键断言**：(1) Redis 中断期间，带有效会话 Cookie 的请求必须得到 **5xx**
+  而非 401（区分「不存在」与「后端故障」）；(2) 正确密码登录在会话写不进去时
+  必须 **500** 而非 401，也不返回会被下一条请求拒绝的 Cookie；(3) Redis 恢复后
+  原会话直接 200——抖动不得把全员登出。
+- **结果**：
+  - 中断前 `GET /api/v1/dashboard`：200。
+  - `stop redis` 后同一 Cookie：500 `STORAGE_UNAVAILABLE`（非 401
+    `SESSION_EXPIRED`）；正确密码登录：500 `SESSION_STORE_UNAVAILABLE`
+    （非 401 `INVALID_CREDENTIALS`）。
+  - `start redis` 后同一 Cookie 再请求：**200**（会话存活，无人被登出）；
+    新登录 201。
+  - 单元/接口回归：`internal/auth` 新增「Put 失败则登录失败」「Get 区分
+    ErrSessionNotFound 与后端错误」（miniredis 模拟 Redis 宕机），
+    `internal/api` 新增「会话后端故障 → 500」「登录写会话失败 → 500」；
+    全部通过，19 包全绿。
+- **修法摘要**：`SessionStore.Get` 签名从 `(record, bool)` 改为
+  `(record, error)`，新增 `ErrSessionNotFound` 哨兵；Redis 实现把 `redis.Nil`
+  映射为 NotFound、其余错误原样包装；`Service.Login` 的 `store.Put` 错误
+  从忽略改为失败关闭；`authenticate` 中间件按错误类型分 401/500，登录
+  handler 对后端故障返回 500 且不计入登录失败锁定计数。
+- **未覆盖**：会话存储故障期间登出（`DELETE` 同样 best-effort）无单独断言；
+    http-worker 消费端重试行为在 0.3 已实测，本次未重复。
+
+---
+
 ## 0.3 worker 优雅停机与消费重试实测 — 2026-10-01
 
 - **脚本**：手工实测，在真实 Compose 栈（分支 `codex/worker-shutdown` 构建的镜像）

@@ -311,8 +311,16 @@ func (s *Server) login(writer http.ResponseWriter, request *http.Request) {
 	}
 	session, err := s.auth.Login(request.Context(), tenantID, username, input.Password)
 	if err != nil {
-		s.loginGuard.RecordFailure(request.Context(), tenantID, username)
-		writeError(writer, request, http.StatusUnauthorized, "INVALID_CREDENTIALS", "用户名或密码错误", nil)
+		if errors.Is(err, auth.ErrInvalidCredentials) {
+			s.loginGuard.RecordFailure(request.Context(), tenantID, username)
+			writeError(writer, request, http.StatusUnauthorized, "INVALID_CREDENTIALS", "用户名或密码错误", nil)
+			return
+		}
+		// The credentials were fine but the session could not be persisted.
+		// 500, not 401: this is a backend outage, and counting it as a login
+		// failure would let a Redis blip lock accounts out.
+		s.logger.Error("login session persist failed", "username", username, "error", err)
+		writeError(writer, request, http.StatusInternalServerError, "SESSION_STORE_UNAVAILABLE", "登录状态保存失败，请稍后重试", nil)
 		return
 	}
 	s.loginGuard.RecordSuccess(request.Context(), tenantID, username)
@@ -2711,9 +2719,16 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			writeError(writer, request, http.StatusUnauthorized, "AUTH_REQUIRED", "请先登录", nil)
 			return
 		}
-		session, ok := s.auth.Get(request.Context(), cookie.Value)
-		if !ok {
+		session, err := s.auth.Get(request.Context(), cookie.Value)
+		if errors.Is(err, auth.ErrSessionNotFound) {
 			writeError(writer, request, http.StatusUnauthorized, "SESSION_EXPIRED", "会话已失效", nil)
+			return
+		}
+		if err != nil {
+			// The store itself failed (e.g. Redis is down). 500, not 401: the
+			// session may be perfectly valid, and answering 401 would log the
+			// user out for a transient outage.
+			s.repositoryFailure(writer, request, "load session", err)
 			return
 		}
 		next.ServeHTTP(writer, request.WithContext(context.WithValue(request.Context(), principalKey{}, session)))

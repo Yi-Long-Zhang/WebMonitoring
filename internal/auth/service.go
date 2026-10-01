@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"time"
 
 	"webmonitoring/internal/domain"
@@ -71,31 +72,45 @@ func (s *Service) Login(ctx context.Context, tenantID, username, password string
 		TenantID:  tenantID,
 		ExpiresAt: session.ExpiresAt,
 	}
-	_ = s.store.Put(ctx, record)
+	if err := s.store.Put(ctx, record); err != nil {
+		// Fail closed: a session the store cannot persist must not be reported
+		// as a successful login — the client would hold a cookie that the next
+		// request rejects, and the outage would look like a mystery logout.
+		return Session{}, fmt.Errorf("persist login session: %w", err)
+	}
 	return session, nil
 }
 
-func (s *Service) Get(ctx context.Context, id string) (Session, bool) {
-	record, ok := s.store.Get(ctx, id)
-	if !ok || time.Now().UTC().After(record.ExpiresAt) {
-		if ok {
-			_ = s.store.Delete(ctx, id)
+// Get resolves a session by id. It returns ErrSessionNotFound when the session
+// is absent, expired, or invalidated by a disabled user/tenant, and a wrapped
+// backend error when the store itself fails — callers must answer the former
+// with "not authenticated" and the latter with "try again later", so a store
+// outage cannot log everyone out.
+func (s *Service) Get(ctx context.Context, id string) (Session, error) {
+	record, err := s.store.Get(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrSessionNotFound) {
+			return Session{}, ErrSessionNotFound
 		}
-		return Session{}, false
+		return Session{}, fmt.Errorf("load session: %w", err)
+	}
+	if time.Now().UTC().After(record.ExpiresAt) {
+		_ = s.store.Delete(ctx, id)
+		return Session{}, ErrSessionNotFound
 	}
 	user, err := s.repository.GetUser(ctx, record.TenantID, record.UserID)
 	if err != nil || user.Disabled {
 		// Deleted or disabled users lose their session immediately: the record
 		// is re-hydrated from the repository on every authenticated request.
 		_ = s.store.Delete(ctx, id)
-		return Session{}, false
+		return Session{}, ErrSessionNotFound
 	}
 	tenant, err := s.repository.GetTenant(ctx, record.TenantID)
 	if err != nil || tenant.Disabled {
 		// A disabled or deleted tenant loses its live sessions on the next
 		// request rather than waiting for the session TTL to expire.
 		_ = s.store.Delete(ctx, id)
-		return Session{}, false
+		return Session{}, ErrSessionNotFound
 	}
 	return Session{
 		ID:        record.ID,
@@ -103,7 +118,7 @@ func (s *Service) Get(ctx context.Context, id string) (Session, bool) {
 		User:      user,
 		Tenant:    tenant,
 		ExpiresAt: record.ExpiresAt,
-	}, true
+	}, nil
 }
 
 func (s *Service) Delete(ctx context.Context, id string) {
