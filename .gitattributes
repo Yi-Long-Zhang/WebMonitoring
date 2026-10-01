@@ -1,0 +1,7 @@
+# Migration checksums are computed over raw bytes, so line endings are
+# part of the contract: CRLF in the worktree would make a rebuilt image
+# refuse against rows recorded from an LF build. Force LF regardless of
+# the platform checkout setting.
+db/migrations/*.sql text eol=lf
+# Keep this file itself LF so the warning noise stays out of git status.
+.gitattributes text eol=lf
