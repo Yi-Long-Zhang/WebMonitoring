@@ -134,6 +134,33 @@ func TestIncidentReportCarriesTheEvidenceAndTimeline(t *testing.T) {
 	if strings.Contains(body, "<img") || strings.Contains(body, "<iframe") {
 		t.Fatal("the report embedded page markup")
 	}
+	// The stylesheet has to survive the template. html/template's CSS context
+	// rewrote it away entirely the first time this was written, and nothing else
+	// in the suite noticed: the response still said text/html and the CSP still
+	// named a nonce.
+	styles := styleBlock(t, body)
+	if len(styles) < 400 {
+		t.Fatalf("the report's stylesheet rendered as %d bytes; it was escaped away", len(styles))
+	}
+	if !strings.Contains(styles, "@media print") {
+		t.Fatal("the print rules are missing from the stylesheet")
+	}
+}
+
+// styleBlock returns the contents of the document's single <style> element.
+func styleBlock(t *testing.T, body string) string {
+	t.Helper()
+	start := strings.Index(body, "<style")
+	if start < 0 {
+		t.Fatal("the report has no style element")
+	}
+	open := strings.Index(body[start:], ">")
+	rest := body[start+open+1:]
+	end := strings.Index(rest, "</style>")
+	if end < 0 {
+		t.Fatal("the report's style element is not closed")
+	}
+	return rest[:end]
 }
 
 func TestIncidentReportAnswersNotFoundForAnUnknownIncident(t *testing.T) {
@@ -160,6 +187,15 @@ func TestSummaryReportRendersTheAggregate(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("the summary does not mention %q", want)
 		}
+	}
+	// A cell whose key was guessed wrong renders as "<nil>", which is both wrong
+	// and exactly what the first version of this table did.
+	if strings.Contains(body, "<nil>") {
+		t.Fatal("the summary rendered an unresolved value")
+	}
+	// The trend section must actually carry the incident that was seeded into it.
+	if !strings.Contains(body, "网页篡改监测汇总报告") || !strings.Contains(body, "<td>1</td>") {
+		t.Fatal("the trend table carries no counts")
 	}
 	// The same rejection rules as the JSON form, because they share the builder.
 	badRange := getReport(t, server, cookie, "/api/v1/reports/summary/html?from=2026-02-01T00:00:00Z&to=2026-01-01T00:00:00Z")

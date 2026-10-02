@@ -419,6 +419,12 @@ try {
     if ([string]$reportHTML.Headers["Content-Security-Policy"] -notmatch "style-src 'nonce-") {
         throw "the report's own style block would be blocked by the inherited CSP"
     }
+    # The stylesheet has to survive the render. Checking only the header let a
+    # version through whose style block html/template had rewritten to 8 bytes,
+    # so the report printed unstyled while every assertion passed.
+    if ($reportHTML.Content -notmatch "@media print") {
+        throw "the report's stylesheet did not survive rendering"
+    }
     foreach ($needle in @("网页篡改监测事件报告", $incidentId, "证据清单", "处置时间线")) {
         if ($reportHTML.Content -notlike "*$needle*") {
             throw "the incident report does not mention $needle"

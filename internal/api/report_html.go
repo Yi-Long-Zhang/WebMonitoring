@@ -179,7 +179,12 @@ func (s *Server) writeReport(writer http.ResponseWriter, request *http.Request, 
 	writer.Header().Set("Content-Disposition", `inline; filename="`+filename+`"`)
 	var buffer bytes.Buffer
 	if err := reportTemplate.Execute(&buffer, map[string]any{
-		"Document": document, "Nonce": nonce, "Styles": reportPrintStyles,
+		"Document": document, "Nonce": nonce,
+		// template.CSS marks the value as trusted CSS so html/template leaves it
+		// alone. Without it the contextual escaper rewrites the stylesheet --
+		// measured: a 1.3 KB sheet came out as 8 bytes, and the report printed
+		// with no styling at all while every test still passed.
+		"Styles": template.CSS(reportPrintStyles),
 	}); err != nil {
 		s.logger.Error("report render failed", "error", err)
 		writeError(writer, request, http.StatusInternalServerError, "REPORT_FAILED", "无法生成报告", nil)
@@ -366,13 +371,16 @@ func buildSummaryReport(session auth.Session, request *http.Request, summary map
 		severityRows = append(severityRows, reportRow{severity, strconv.Itoa(severityCounts[severity])})
 	}
 
+	// The keys are buildTrend's, spelled out here so a rename is a compile-time
+	// thought rather than a table of <nil>: the first version of this renderer
+	// guessed them and printed exactly that.
 	trendRows := make([]reportRow, 0)
 	if trend, ok := summary["trend"].([]map[string]any); ok {
 		for _, day := range trend {
 			trendRows = append(trendRows, reportRow{
-				fmt.Sprint(day["day"]), fmt.Sprint(day["total"]),
-				fmt.Sprint(day["CRITICAL"]), fmt.Sprint(day["HIGH"]),
-				fmt.Sprint(day["MEDIUM"]), fmt.Sprint(day["LOW"]), fmt.Sprint(day["INFO"]),
+				reportCell(day["date"]), reportCell(day["total"]),
+				reportCell(day["critical"]), reportCell(day["high"]),
+				reportCell(day["medium"]), reportCell(day["low"]), reportCell(day["info"]),
 			})
 		}
 	}
@@ -425,6 +433,25 @@ func buildSummaryReport(session auth.Session, request *http.Request, summary map
 			},
 		},
 		Notice: "本汇总只做统计，不改变任何事件结论。逐条结论需回到事件报告与其关联证据。",
+	}
+}
+
+// reportCell renders one table cell. It exists so an unexpected shape shows as
+// an empty cell rather than as "<nil>" in a document someone hands to a customer.
+func reportCell(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return typed
+	case int:
+		return strconv.Itoa(typed)
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(typed)
+	default:
+		return fmt.Sprint(typed)
 	}
 }
 
