@@ -40,6 +40,10 @@
   unknown version 救援三步。
 - **未覆盖**：跨真实「旧镜像 vs 新库」组合（用假版本行等效验证了拒绝与点名
   路径）；down 文件的处置（维持死重，runbook 明确无人执行）。
+- **合并前整体回归**（2026-10-02，`codex/migration-safety` @ `13fc47c`）：
+  `compose-smoke.ps1` 通过（`Compose smoke test passed`，退出码 0，含控制台
+  Playwright E2E）；`multi-replica-drill.ps1` 通过（`Multi-replica drill
+  passed`，退出码 0）。合并后 main 快进到 `13fc47c` 所在提交。
 
 ---
 
