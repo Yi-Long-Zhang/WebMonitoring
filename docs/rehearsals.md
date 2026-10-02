@@ -10,6 +10,48 @@
 
 ---
 
+## 0.9 监测自身失效告警实测 — 2026-10-03
+
+- **脚本**：手工实测，运行中的主 Compose 栈（分支 `codex/monitoring-health` 代码）
+  + 两个一次性容器：`ops-target`（node:24-alpine，提供验证文件与页面）与
+  `ops-capture`（node:24-alpine，作为 webhook 接收端，打印收到的请求体）。
+  用后删除；演练资产用 API **暂停**（不删除），演练渠道用 API 删除。
+- **关键断言**（路线图的验收条目是「停掉目标，连跑 N 次检测失败后确认收到通知
+  渠道的告警，而不只看控制台事件」）：
+  1. 目标可用时先跑一次检测建立基线并 SUCCEEDED；
+  2. `docker stop ops-target` 后连跑 3 次检测，全部终态 FAILED；
+  3. 第 3 次失败后 webhook **真的收到了通知**，且 run 长度正确；
+  4. 第 4 次失败**不重复通知**（下一个倍数是 6）；
+  5. 通知**不写 `alert_deliveries` 行**（该表是事件绑定的）；
+  6. 审计留下 `monitoring.detection_failed`。
+- **结果**（2026-10-03，全部符合）：
+  - capture 容器收到：
+    `{"event":"monitoring.detection_failed","data":{"headline":"监测失效：连续检测失败",
+    "detail":"资产：ops rehearsal target\n模式：HTTP\n连续失败：3 次\n最近错误码：CHECK_FAILED\n…"}}`
+  - 第 4 次失败（run=4）后 capture 的通知条数**未增加**。
+  - 期间另有一条**独立**通知来自 0.7 演练遗留的资产（`sse rehearsal target`，其
+    目标早已移除，调度器按 300s 间隔持续失败它），内容为「连续失败：6 次」——
+    恰好验证了「每满一个阈值再提醒一次」的另一半，两条通知按资产各 1 条。
+  - `select count(*) from alert_deliveries` = **0**（运维通知不建投递行）。
+  - `audit_events`：`monitoring.detection_failed | FAILED |
+    {"mode":"HTTP","errorCode":"CHECK_FAILED","consecutiveFailures":3}`。
+  - 新指标在 `/metrics` 可见：
+    `webmonitoring_last_successful_detection_timestamp_seconds 1790961589`、
+    `webmonitoring_detection_checks_last_hour{result="failed"} 14`、
+    `{result="succeeded"} 1`。
+  - 单元测试另覆盖：run 规则（阈值 / 阈值间静默 / 下一个倍数）、取消的检测不参与
+    计数、运维通知排除被熔断的那条渠道且不写投递行、熔断↔恢复两个方向的翻转
+    （含冷却期探针窗口——`Open()` 在冷却结束后即返回 false，用它前后对比检测不到
+    恢复，这是实现中实测踩到并修掉的坑）。
+- **修法摘要**：`Repository.ConsecutiveFailedChecks` 从任务行推导尾部失败 run；
+  检测服务在终态失败后按无状态规则上报；`Dispatcher.SendOperationalNotice` 承担
+  无事件来源的运维消息；`Gate.RecordOutcome` 改为返回 `(open, changed)` 以报告
+  翻转；迁移 000017 为自检读建两个部分索引。
+- **未覆盖**：**熔断/恢复通知只做了单元验证，未在实机栈上跑通**（需要事件告警投递
+  失败到阈值，本次未构造）；`/metrics` 的新指标未在真实 Prometheus 上抓取。
+
+---
+
 ## 密钥轮换渠道重封装缺陷与 pgx 安全升级实测 — 2026-10-03
 
 - **脚本**：一次性 postgres:17-alpine 与 redis:8-alpine 容器（宿主端口 55432 /
