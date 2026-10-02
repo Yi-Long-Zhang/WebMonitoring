@@ -53,12 +53,11 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.64.8
-      # 漏洞扫描。锁版本而非 latest，理由同 golangci-lint。当前报告一个可达
-      # 漏洞 GO-2026-5004（pgx/v5 占位符混淆 SQL 注入，修复于 v5.9.2），升级
-      # 随紧随其后的 pgx 安全提交落地、届时本步骤改为阻断；在此之前
-      # continue-on-error 让结果可见而不把已知项变成全员的红色。
+      # 漏洞扫描。锁版本而非 latest，理由同 golangci-lint。阻断式：本步骤引入时
+      # 报出 GO-2026-5004（pgx/v5 占位符混淆 SQL 注入），随后的安全提交把
+      # pgx 升到 v5.11.0 并实测归零（govulncheck 退出码 0），因此不再需要
+      # continue-on-error。
       - name: Vulnerability scan (govulncheck)
-        continue-on-error: true
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           govulncheck ./...

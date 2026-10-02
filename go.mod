@@ -5,7 +5,7 @@ go 1.27
 require (
 	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/andybalholm/cascadia v1.3.3
-	github.com/jackc/pgx/v5 v5.7.6
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/minio/minio-go/v7 v7.0.95
 	github.com/redis/go-redis/v9 v9.12.1
 	go.opentelemetry.io/otel v1.46.0
