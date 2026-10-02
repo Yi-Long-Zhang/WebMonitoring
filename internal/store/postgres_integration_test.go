@@ -25,7 +25,7 @@ func TestPostgresMigrationJobClaimAndRestartRecovery(t *testing.T) {
 		t.Fatalf("PostgreSQL integration test unavailable: %v", err)
 	}
 	defer runner.Close()
-	if err := runner.Up(ctx); err != nil {
+	if err := runner.Up(ctx, true); err != nil {
 		t.Fatal(err)
 	}
 	statuses, err := runner.Status(ctx)
@@ -132,7 +132,7 @@ func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 		t.Fatalf("PostgreSQL integration test unavailable: %v", err)
 	}
 	defer runner.Close()
-	if err := runner.Up(ctx); err != nil {
+	if err := runner.Up(ctx, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -230,7 +230,7 @@ func TestPostgresKeysetPaginationWalksEveryRowOnce(t *testing.T) {
 		t.Fatalf("PostgreSQL integration test unavailable: %v", err)
 	}
 	defer runner.Close()
-	if err := runner.Up(ctx); err != nil {
+	if err := runner.Up(ctx, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -363,7 +363,7 @@ func TestAlertChannelUpdateKeepsCiphertextReadable(t *testing.T) {
 		t.Fatalf("PostgreSQL integration test unavailable: %v", err)
 	}
 	defer runner.Close()
-	if err := runner.Up(ctx); err != nil {
+	if err := runner.Up(ctx, true); err != nil {
 		t.Fatal(err)
 	}
 

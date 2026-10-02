@@ -1,0 +1,5 @@
+-- Sidecar destructive marker for 000012_active_job_uniqueness.up.sql.
+-- The up file itself cannot carry the "-- migrate:destructive" header directive:
+-- its bytes are frozen by the checksum recorded in every existing database.
+-- Existence of this file is what the migrate runner reads. The migration bulk-
+-- CANCELs duplicate active jobs before adding a partial unique index.

@@ -49,7 +49,7 @@ func TestRewrapAgainstPostgres(t *testing.T) {
 		t.Fatalf("PostgreSQL integration test unavailable: %v", err)
 	}
 	defer migrations.Close()
-	if err := migrations.Up(ctx); err != nil {
+	if err := migrations.Up(ctx, true); err != nil {
 		t.Fatal(err)
 	}
 

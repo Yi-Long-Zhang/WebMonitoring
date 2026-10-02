@@ -441,7 +441,38 @@ pnpm 版本。
 
 **Q：回滚策略是什么？**
 
-保留日志和审计记录，回滚 API/Worker 镜像版本；**不要回滚已经执行的破坏性数据库迁移**。
+**只前进、不回滚。** `db/migrations/*.down.sql` 存在但没有执行器，运行中的系统
+永远不会自动降级。回滚的正确做法是：回滚 API/Worker **镜像**版本 + 用备份恢复
+数据库到升级前（见「备份和恢复」），而不是逆向执行迁移。被标记为破坏性的迁移
+（`-- migrate:destructive` 指令或 `<名称>.destructive` 旁车文件，如 000012、
+000015）会改写或删除存量数据，**永远不要**对着已有数据的库手工补跑或回退。
+
+**Q：破坏性迁移怎么生效？**
+
+migrate 只认「升级窗口确认」：对已有数据的库应用带破坏性标记的迁移前，必须在
+`.env` 设 `MIGRATE_CONFIRM_DESTRUCTIVE=1` 并重建 migrate 服务；应用成功后把
+它撤掉，下一条破坏性迁移会再次拒绝，这是设计而非故障。**全新安装不需要它**
+（空库引导允许无人值守）。若 migrate 日志出现 `refusing to apply ... marked
+destructive`，说明有待应用的破坏性迁移而确认变量未设——阅读该迁移文件的
+头部注释确认影响面后再设变量，不要顺手设上不管。
+
+**Q：migrate 报 unknown migration version 怎么救？**
+
+报错形如 `database contains unknown migration version 999`：当前二进制里没有
+这个版本，说明数据库被比本镜像**更新**的二进制（或手工插入的行）动过，旧镜像
+拒绝启动是对的（失败关闭）。救援步骤：
+
+1. `docker compose run --rm migrate status`（或任意可连库的 psql）确认
+   `schema_migrations` 里的版本列表与本镜像 `db/migrations/` 的文件列表差在
+   哪里。
+2. 差集是**手工或事故产生的行**（如演练残留）：删除多余行
+   `DELETE FROM schema_migrations WHERE version = <N>;`，重新 `migrate up`。
+   这一步不触碰业务表，安全。
+3. 差集是**真实升级留下的**（库确实比镜像新）：不要删行——那等于对迁移撒谎。
+   回滚方向只能是「升级镜像到 ≥ 该版本」或「备份恢复到旧版本镜像对应的库」。
+4. 报 `integrity mismatch`（而非 unknown version）永远先怀疑**文件字节**
+   被改过（行尾、编码），对照 `git show HEAD:db/migrations/<file>` 核实，
+   见「迁移 checksum 不一致怎么办」。
 
 **Q：从哪里看状态？**
 

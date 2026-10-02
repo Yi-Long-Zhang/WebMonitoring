@@ -22,6 +22,15 @@ import (
 const (
 	lockKey       int64 = 0x574d5f4d49475241
 	migrationsDir       = "schema_migrations"
+	// destructiveDirective marks a migration whose SQL mutates or destroys
+	// existing data (dedup rewrites, deletes, irreversible column changes).
+	// It must appear on its own line in the file header of a new migration.
+	// Historical migrations that are already applied cannot gain the directive
+	// without invalidating their recorded checksum, so for those a sidecar
+	// marker file (<name without .up.sql>.destructive, existence-only) carries
+	// the same meaning. Both forms are honoured; see migrationFiles.
+	destructiveDirective = "-- migrate:destructive"
+	destructiveSuffix    = ".destructive"
 )
 
 type Runner struct {
@@ -65,7 +74,7 @@ func (r *Runner) Close() {
 	r.pool.Close()
 }
 
-func (r *Runner) Up(ctx context.Context) error {
+func (r *Runner) Up(ctx context.Context, allowDestructive bool) error {
 	return r.withLock(ctx, func(ctx context.Context, conn *pgxpool.Conn) error {
 		if err := r.ensureTable(ctx, conn); err != nil {
 			return err
@@ -83,6 +92,11 @@ func (r *Runner) Up(ctx context.Context) error {
 				return fmt.Errorf("database contains unknown migration version %d", version)
 			}
 		}
+		// A fresh database has no data to destroy: applying every migration in
+		// one go (installs, CI test databases) stays unattended. An upgrade of a
+		// database that already holds data must not run destructive SQL the
+		// operator has not explicitly acknowledged.
+		bootstrapping := len(applied) == 0
 		for _, file := range migrationFiles() {
 			checksum := checksum(file.contents)
 			if current, ok := applied[file.version]; ok {
@@ -91,6 +105,10 @@ func (r *Runner) Up(ctx context.Context) error {
 						file.name, current.name, current.checksum, checksum)
 				}
 				continue
+			}
+			if file.destructive && !bootstrapping && !allowDestructive {
+				return fmt.Errorf("migration %s is marked destructive (%s); refusing to apply it to a database that already holds data without confirmation: set MIGRATE_CONFIRM_DESTRUCTIVE=1 to acknowledge",
+					file.name, destructiveDirective)
 			}
 			if err := r.apply(ctx, conn, file, checksum); err != nil {
 				return err
@@ -167,9 +185,10 @@ func (r *Runner) Status(ctx context.Context) ([]Status, error) {
 }
 
 type migrationFile struct {
-	version  int
-	name     string
-	contents []byte
+	version     int
+	name        string
+	contents    []byte
+	destructive bool
 }
 
 type appliedMigration struct {
@@ -200,7 +219,12 @@ func migrationFiles() []migrationFile {
 		if err != nil {
 			panic(fmt.Sprintf("read migration %q: %v", entry.Name(), err))
 		}
-		result = append(result, migrationFile{version: version, name: entry.Name(), contents: contents})
+		result = append(result, migrationFile{
+			version:     version,
+			name:        entry.Name(),
+			contents:    contents,
+			destructive: isDestructive(entry.Name(), contents),
+		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].version < result[j].version })
 	for index := 1; index < len(result); index++ {
@@ -233,6 +257,37 @@ func verifyExistingSchema(ctx context.Context, conn *pgxpool.Conn) error {
 func checksum(contents []byte) string {
 	sum := sha256.Sum256(contents)
 	return hex.EncodeToString(sum[:])
+}
+
+// isDestructive reports whether a migration is marked as mutating or destroying
+// existing data, via the header directive (new migrations) or a sidecar marker
+// file (historical migrations whose bytes are frozen by recorded checksums).
+func isDestructive(name string, contents []byte) bool {
+	if hasDestructiveDirective(contents) {
+		return true
+	}
+	marker := strings.TrimSuffix(name, ".up.sql") + destructiveSuffix
+	info, err := fs.Stat(migrations.Files, marker)
+	return err == nil && !info.IsDir()
+}
+
+// hasDestructiveDirective scans the file header — the comment block before the
+// first statement — for the directive on its own line. Limiting the scan keeps
+// a mention of the directive in later explanatory comments harmless.
+func hasDestructiveDirective(contents []byte) bool {
+	lines := strings.Split(string(contents), "\n")
+	if len(lines) > 10 {
+		lines = lines[:10]
+	}
+	for _, line := range lines {
+		if strings.TrimSpace(line) == destructiveDirective {
+			return true
+		}
+		if !strings.HasPrefix(strings.TrimSpace(line), "--") && strings.TrimSpace(line) != "" {
+			return false
+		}
+	}
+	return false
 }
 
 type database interface {

@@ -1,0 +1,5 @@
+-- Sidecar destructive marker for 000015_incident_reopen.up.sql.
+-- The up file itself cannot carry the "-- migrate:destructive" header directive:
+-- its bytes are frozen by the checksum recorded in every existing database.
+-- Existence of this file is what the migrate runner reads. The migration merges
+-- duplicate incidents and DELETEs the superseded rows.

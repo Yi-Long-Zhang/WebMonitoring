@@ -115,6 +115,12 @@ services:
     command: ["up"]
     environment:
       POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy deployments/compose/.env.example into .env}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
+      # Set to 1 for an upgrade window whose pending migrations are marked
+      # destructive ("-- migrate:destructive"). Fresh installs never need it:
+      # bootstrapping an empty database is allowed unattended. Leave unset
+      # otherwise so a destructive upgrade fails closed instead of applying
+      # unreviewed data-mutating SQL.
+      MIGRATE_CONFIRM_DESTRUCTIVE: ${MIGRATE_CONFIRM_DESTRUCTIVE:-}
     depends_on:
       postgres: { condition: service_healthy }
     restart: "no"

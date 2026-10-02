@@ -10,6 +10,39 @@
 
 ---
 
+## 0.6 迁移回滚路径与破坏性标记实测 — 2026-10-02
+
+- **脚本**：手工实测，一次性 postgres 容器（`postgres:17-alpine`，宿主端口
+  55432，用后删除），本地 `go build ./apps/migrate` 出的二进制连 DSN 执行。
+- **关键断言**：(1) 空库引导不需要确认（安装/CI 不受阻）；(2) 有数据的库遇
+  未确认破坏性迁移必须**拒绝并点名迁移与环境变量**；(3) `MIGRATE_CONFIRM_DESTRUCTIVE=1`
+  后同一库应用成功；(4) 二进制遇到库里的未知版本拒绝启动并**点名版本**，
+  按 runbook 删除事故行后恢复。
+- **结果**（2026-10-02，全部符合）：
+  - 空库 `migrate up` 无确认变量：直接成功（16 条全应用）。
+  - 把库 rewind 到 v11（删除 12–16 的迁移记录与其创建的对象）后 `up`：
+    拒绝，`migration 000012_active_job_uniqueness.up.sql is marked destructive
+    (-- migrate:destructive); refusing ... set MIGRATE_CONFIRM_DESTRUCTIVE=1`，
+    退出码 1。
+  - 设 `MIGRATE_CONFIRM_DESTRUCTIVE=1` 后同一 `up`：12–16 应用成功，
+    `status` 全 applied。
+  - 手工插入 `version=999` 假行后 `up`：`database contains unknown migration
+    version 999`，退出码 1；按 runbook 删行后 `up` 干净退出。
+  - 单测：`hasDestructiveDirective`（头部指令识别、正文提及不误判、首个
+    语句后不再扫描）与已知破坏性迁移标记（000012/000015 旁车文件生效）
+    通过。
+- **修法摘要**：`migrationFile` 增 `destructive`；新迁移用文件头指令
+  `-- migrate:destructive`，历史迁移（字节被 checksum 冻结）用旁车文件
+  `db/migrations/<名>.destructive`（embed 图案同步扩为 `*.up.sql
+  *.destructive`）；`Up` 语义=空库引导放行、有数据且未确认则失败关闭；
+  `MIGRATE_CONFIRM_DESTRUCTIVE` 经 compose migrate 服务转发。runbook
+  （operations.md「升级失败怎么办」）补「只前进不回滚」、确认流程、
+  unknown version 救援三步。
+- **未覆盖**：跨真实「旧镜像 vs 新库」组合（用假版本行等效验证了拒绝与点名
+  路径）；down 文件的处置（维持死重，runbook 明确无人执行）。
+
+---
+
 ## 0.5 备份保留、Redis 快照与调度模板实测 — 2026-10-02
 
 - **脚本**：`scripts/backup-rehearsal.ps1`（新增），对运行中的主栈连跑两个

@@ -21,7 +21,7 @@ func newMigratedPostgresRepository(t *testing.T, dsn string) *PostgresRepository
 		t.Fatalf("PostgreSQL integration test unavailable: %v", err)
 	}
 	t.Cleanup(runner.Close)
-	if err := runner.Up(ctx); err != nil {
+	if err := runner.Up(ctx, true); err != nil {
 		t.Fatal(err)
 	}
 	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey, DefaultPoolConfig())

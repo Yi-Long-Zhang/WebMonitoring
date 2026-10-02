@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"webmonitoring/internal/migrate"
 )
@@ -28,7 +29,12 @@ func main() {
 
 	switch os.Args[1] {
 	case "up":
-		if err := runner.Up(ctx); err != nil {
+		// Acknowledged destructive upgrades: applying a migration marked
+		// "-- migrate:destructive" to a database that already holds data
+		// requires this variable for the upgrade window only.
+		allowDestructive := os.Getenv("MIGRATE_CONFIRM_DESTRUCTIVE") == "1" ||
+			strings.EqualFold(os.Getenv("MIGRATE_CONFIRM_DESTRUCTIVE"), "true")
+		if err := runner.Up(ctx, allowDestructive); err != nil {
 			log.Fatal(err)
 		}
 	case "status":
@@ -62,4 +68,6 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: migrate <up|status|baseline --version N>")
 	fmt.Fprintln(os.Stderr, "POSTGRES_DSN must be set")
+	fmt.Fprintln(os.Stderr, "up applies a destructive-marked migration to an existing database only when")
+	fmt.Fprintln(os.Stderr, "MIGRATE_CONFIRM_DESTRUCTIVE=1 (or true) is set for the upgrade window")
 }
