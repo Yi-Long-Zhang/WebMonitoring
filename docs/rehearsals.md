@@ -10,6 +10,31 @@
 
 ---
 
+## 阶段一 1.5 版本与构建标识实测 — 2026-10-03
+
+- **脚本**：`compose-smoke.ps1`（新增断言段「build identity」）+
+  `multi-replica-drill.ps1`；`internal/api/version_test.go`、
+  `internal/version/version_test.go`。
+- **关键断言**：(1) 未认证不能拿到部署的确切版本——那是让攻击者替你挑已知问题的
+  做法；(2) 没有 ldflags 注入的二进制仍要给出**真话**（dev/unknown），而不是空串
+  （读起来像接口坏了）；(3) 该端点不读仓储，数据库坏掉时也要答得上来。
+- **结果**（2026-10-03，全部符合）：
+  - 单元：`version.Current()` 四个字段均非空；未认证 401、已登录 200 且字段完整。
+  - smoke：匿名 `GET /api/v1/version` 返回 401；带会话返回的 version 与 goVersion
+    非空。
+- **修法摘要**：`internal/version`（链接期注入的 Version/Commit/BuildTime + Go 版本）；
+  `GET /api/v1/version` 挂在受保护 mux；四个 Go 镜像的 Dockerfile 接
+  VERSION/COMMIT/BUILD_TIME 构建参数，compose 从 `APP_VERSION`/`APP_COMMIT`/
+  `APP_BUILD_TIME` 转发（不设置时如实自称 dev）；控制台总览页显示版本与短 commit。
+- **合并前整体回归**（2026-10-03，`codex/version` @ `4a54159`）：
+  `compose-smoke.ps1` 通过（退出码 0，含控制台 Playwright E2E）；
+  `multi-replica-drill.ps1` 通过（退出码 0）。
+- **未覆盖**：**没有实测过带真实版本号的镜像构建**——smoke 用的是默认值，因此它
+  验证的是「接口可用且字段非空」，不是「`APP_VERSION=v1.2.3` 真的进了二进制」。
+  release 流程（`.github/workflows/release.yml`）也未接上这些构建参数。
+
+---
+
 ## 阶段一 1.4 维护窗口周期化实测 — 2026-10-03
 
 - **脚本**：`compose-smoke.ps1`（新增周期窗口往返断言）+ `multi-replica-drill.ps1`；
