@@ -37,6 +37,10 @@
   ResponseController 穿透中间件包装到达连接级控制。
 - **未覆盖**：浏览器 EventSource 断线重连路径（控制台侧
   `services/events/stream.ts` 已有指数退避重连，本次未模拟网络中断）。
+- **合并前整体回归**（2026-10-02，`codex/sse-deadline` @ `119b17b`）：
+  `compose-smoke.ps1` 通过（`Compose smoke test passed`，退出码 0，含控制台
+  Playwright E2E）；`multi-replica-drill.ps1` 通过（`Multi-replica drill
+  passed`，退出码 0）。合并后 main 快进到 `119b17b` 所在提交。
 
 ---
 
