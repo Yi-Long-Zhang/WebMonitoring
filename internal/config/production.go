@@ -118,7 +118,20 @@ func validateCommon(get func(string) string) []error {
 	failures = append(failures, validateAlertGate(get)...)
 	failures = append(failures, validateSMTP(get)...)
 	failures = append(failures, validateAllowedOrigins(get)...)
+	failures = append(failures, validateMetricsToken(get)...)
 	return failures
+}
+
+// validateMetricsToken refuses a production deployment that leaves the
+// /metrics endpoint open. The compose topology publishes the API port to the
+// host, so without a token anyone who can reach the host can read process,
+// pool and incident internals. An empty token stays legal in development,
+// where scraping without ceremony matters more than the exposure.
+func validateMetricsToken(get func(string) string) []error {
+	if strings.TrimSpace(get("METRICS_TOKEN")) == "" {
+		return []error{errors.New("METRICS_TOKEN is required in production: it gates the /metrics endpoint, and the compose topology publishes the API port to the host")}
+	}
+	return validateMinLength(get, "METRICS_TOKEN", 16)
 }
 
 // validateAllowedOrigins rejects a wildcard ALLOWED_ORIGINS in production. The

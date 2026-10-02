@@ -75,6 +75,9 @@ func main() {
 	guard := security.NewURLGuard(allowPrivate)
 	broker := events.NewBroker()
 	workerMetrics := metrics.New()
+	// The same gate as the API's /metrics: empty token is the development
+	// default, production validation refuses to start without a real one.
+	metricsToken := env("METRICS_TOKEN", "")
 	// Read per scrape, so the reported pool is the pool now rather than at the
 	// last tick of a sampler.
 	workerMetrics.OnCollect(func(registry *metrics.Registry) {
@@ -232,6 +235,12 @@ func main() {
 				return
 			}
 			if request.Method == http.MethodGet && request.URL.Path == "/metrics" {
+				if !metrics.BearerAuthorized(request, metricsToken) {
+					writer.Header().Set("Content-Type", "application/json")
+					writer.WriteHeader(http.StatusUnauthorized)
+					_, _ = writer.Write([]byte(`{"status":"unauthorized"}`))
+					return
+				}
 				workerMetrics.Handler().ServeHTTP(writer, request)
 				return
 			}

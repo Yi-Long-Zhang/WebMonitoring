@@ -10,6 +10,49 @@
 
 ---
 
+## 0.8 可观测性与 /metrics 鉴权实测 — 2026-10-03
+
+- **脚本**：手工实测，运行中的主 Compose 栈（分支 `codex/observability` 代码，
+  api 与 http-worker 已重建）；60 条事件由 SQL 直接灌入（55 OPEN + 5 CLOSED，
+  用后删除）。
+- **关键断言**：(1) 事件 gauge 此前统计「上次列表请求的那一页」，默认页大小 50
+  → 超过 50 个未结事件后 gauge 饱和在 50；修复后必须等于 SQL 聚合真值。(2)
+  `/metrics` 挂在无认证 root mux 且 compose 把 api 端口发布到主机，必须可用
+  `METRICS_TOKEN`（Bearer）关闭，生产校验强制设置。(3) 检测任务此前只有计数器
+  没有耗时直方图；且 worker 侧按 Go 错误打标签会把「检测失败但正常返回」的任务
+  误标 succeeded——必须按终态（succeeded/failed/timed_out）打标签。
+- **结果**（2026-10-03，全部符合）：
+  - 灌入 55 OPEN（30 LOW/15 MEDIUM/7 HIGH/3 CRITICAL）+ 5 CLOSED HIGH 后，
+    DB 聚合真值 55/10/3；`/metrics`（带令牌）读得
+    `open_incidents 55`、`high_risk_incidents 10`、`critical_incidents 3`——
+    旧实现在此场景下必然饱和在 50。
+  - `/metrics` 无令牌 401、错令牌 401、正确 Bearer 200；令牌从 `.env` 移除重建
+    后恢复开放（开发默认）。http-worker 的 `/metrics`（仅内部网络）同样
+    401/200。
+  - 任务耗时直方图 `webmonitoring_detection_job_duration_seconds` 按
+    `mode`/`result` 出序列：对不可达目标触发任务，终态 FAILED 记为
+    `result="failed"`（修复标签语义前同场景会被误记为 succeeded，已在代码
+    审查中纠正：直方图改在 `detection.Service` 终态分支打点，用
+    `job.StartedAt` 起算，重试只贡献终态一次）。
+  - 连接池 `OnCollect` 指标回归无恙（`postgres_pool_max_connections 10`）。
+  - govulncheck@v1.8.0 本地实跑：报 **1 个可达漏洞 GO-2026-5004**（pgx/v5
+    占位符混淆 SQL 注入，修复于 v5.9.2；调用链
+    `store.PostgresRepository.TryAcquire → sanitize.SanitizeSQL`）。CI 步骤以
+    continue-on-error 落地（结果可见、不把已知项变全员红色），pgx 升级随紧随
+    的安全提交完成并改回阻断。
+- **修法摘要**：`Repository` 增 `CountOpenIncidents`（平台级、无租户参数），
+  api main.go 在 `OnCollect` 里现读（3s 超时，失败保留旧值）；`listIncidents`
+  不再喂 gauge，原 `updateIncidentMetrics` 删除。`METRICS_TOKEN` 经
+  `Server.SetMetricsToken` + `metrics.BearerAuthorized`（constant-time 比较）
+  同时罩住 api 与 worker 两个 `/metrics`；生产门禁 `validateMetricsToken`
+  要求设置且 ≥16 字节。直方图在 `detection.Service` 成功/`failJob` 终态分支
+  打点。dependabot.yml（gomod/npm/github-actions，月度）与 CI govulncheck
+  （锁 v1.8.0）新增。
+- **未覆盖**：Prometheus 真实抓取（文本格式输出已人工核对）；CI 的
+  govulncheck/dependabot 步骤本身（推送后由 GitHub Actions 验证）。
+
+---
+
 ## 0.7 SSE 流越过服务端 WriteTimeout 实测 — 2026-10-02
 
 - **脚本**：手工实测，运行中的主 Compose 栈（分支 `codex/sse-deadline` 代码，

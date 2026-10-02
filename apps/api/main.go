@@ -215,6 +215,23 @@ func main() {
 			registry.Set("webmonitoring_postgres_pool_max_connections", float64(stats.MaxConns()), nil)
 		})
 	}
+	// The open-incident gauges are aggregate queries run at scrape time. The
+	// previous implementation counted whatever page of the incident list the
+	// console had last requested, so the gauges silently saturated at the page
+	// size (50 by default) once an installation held more open incidents.
+	server.Metrics().OnCollect(func(registry *metrics.Registry) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		open, highRisk, critical, err := repository.CountOpenIncidents(ctx)
+		if err != nil {
+			logger.Warn("collect incident gauges failed; keeping previous values", "error", err)
+			return
+		}
+		registry.Set("webmonitoring_open_incidents", float64(open), nil)
+		registry.Set("webmonitoring_high_risk_incidents", float64(highRisk), nil)
+		registry.Set("webmonitoring_critical_incidents", float64(critical), nil)
+	})
+	server.SetMetricsToken(env("METRICS_TOKEN", ""))
 	server.SetReadiness(func(checkContext context.Context) map[string]error {
 		failures := make(map[string]error)
 		if checker, ok := repository.(interface{ Ready(context.Context) error }); ok {

@@ -73,6 +73,7 @@ type Server struct {
 	retention         *maintenance.Runner
 	signedURLSigner   *security.SignedURLSigner
 	signedURLTTL      time.Duration
+	metricsToken      string
 	handler           http.Handler
 }
 
@@ -167,6 +168,32 @@ func (s *Server) SetSignedURLs(signer *security.SignedURLSigner, ttlSeconds int)
 	}
 }
 
+// SetMetricsToken gates /metrics behind `Authorization: Bearer <token>`. An
+// empty token keeps the endpoint open, which is the development default; the
+// production gate refuses to start without a real one. The check lives here
+// rather than in the metrics registry so the worker's metrics endpoint can
+// share it.
+func (s *Server) SetMetricsToken(token string) {
+	s.metricsToken = token
+}
+
+// MetricsAuthorized reports whether a scrape request may read /metrics.
+// Exported through the server so the worker health endpoint applies the same
+// rule to its own metrics listener.
+func (s *Server) MetricsAuthorized(request *http.Request) bool {
+	return metrics.BearerAuthorized(request, s.metricsToken)
+}
+
+func (s *Server) metricsHandler() http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if !s.MetricsAuthorized(request) {
+			writeError(writer, request, http.StatusUnauthorized, "METRICS_AUTH_REQUIRED", "metrics 端点需要 Bearer 令牌", nil)
+			return
+		}
+		s.metrics.Handler().ServeHTTP(writer, request)
+	})
+}
+
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	s.handler.ServeHTTP(writer, request)
 }
@@ -175,7 +202,7 @@ func (s *Server) routes() http.Handler {
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", s.health)
 	root.HandleFunc("GET /readyz", s.ready)
-	root.Handle("GET /metrics", s.metrics.Handler())
+	root.Handle("GET /metrics", s.metricsHandler())
 	root.HandleFunc("POST /api/v1/auth/session", s.login)
 	root.HandleFunc("GET /api/v1/evidence/signed/{token}", s.downloadSignedEvidence)
 
@@ -1646,27 +1673,7 @@ func (s *Server) listIncidents(writer http.ResponseWriter, request *http.Request
 		s.repositoryFailure(writer, request, "list incidents", err)
 		return
 	}
-	s.updateIncidentMetrics(incidents)
 	writeList(writer, incidents, nextCursor)
-}
-
-func (s *Server) updateIncidentMetrics(incidents []domain.Incident) {
-	open, highRisk, critical := 0, 0, 0
-	for _, incident := range incidents {
-		if incident.Status == domain.IncidentClosed || incident.Status == domain.IncidentFalsePositive {
-			continue
-		}
-		open++
-		if incident.Severity == domain.SeverityHigh || incident.Severity == domain.SeverityCritical {
-			highRisk++
-		}
-		if incident.Severity == domain.SeverityCritical {
-			critical++
-		}
-	}
-	s.metrics.Set("webmonitoring_open_incidents", float64(open), nil)
-	s.metrics.Set("webmonitoring_high_risk_incidents", float64(highRisk), nil)
-	s.metrics.Set("webmonitoring_critical_incidents", float64(critical), nil)
 }
 
 func (s *Server) getIncident(writer http.ResponseWriter, request *http.Request) {

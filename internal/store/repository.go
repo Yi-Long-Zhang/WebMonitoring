@@ -159,6 +159,10 @@ type Repository interface {
 	// are critical. Dashboard and metrics read the same numbers without
 	// depending on a page of the incident list.
 	IncidentStatusCounts(ctx context.Context, tenantID string) (open int, highRisk int, critical int, err error)
+	// CountOpenIncidents is the platform-wide form of IncidentStatusCounts for
+	// /metrics: a scrape carries no tenant context, so the gauges must count
+	// across every tenant.
+	CountOpenIncidents(ctx context.Context) (open int, highRisk int, critical int, err error)
 	// FailedJobCount returns how many detection jobs ended FAILED or TIMED_OUT,
 	// so dashboards and reports never page the (retention-bounded but still
 	// large) job table into memory just to count it.

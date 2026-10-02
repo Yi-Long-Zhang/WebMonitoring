@@ -58,6 +58,7 @@ func TestValidateProductionAPIAcceptsExplicitSecrets(t *testing.T) {
 		"S3_SECRET_KEY": "strong-object-secret-123", "BROWSER_WORKER_URL": "http://browser-worker:8081",
 		"BROWSER_WORKER_TOKEN": "strong-worker-token-123", "ALERT_SECRET_KEY": base64.StdEncoding.EncodeToString(make([]byte, 32)),
 		"ADMIN_PASSWORD": "strong-admin-password", "SESSION_SECURE": "true", "ALLOW_PRIVATE_TARGETS": "false",
+		"METRICS_TOKEN": "strong-metrics-token-0123456",
 	}
 	if err := ValidateProductionAPI(func(name string) string { return values[name] }); err != nil {
 		t.Fatalf("unexpected validation error: %v", err)
@@ -80,6 +81,7 @@ func workerEnv() map[string]string {
 		"BROWSER_WORKER_TOKEN":  "strong-worker-token-123",
 		"SESSION_SECURE":        "true",
 		"ALLOW_PRIVATE_TARGETS": "false",
+		"METRICS_TOKEN":         "strong-metrics-token-0123456",
 	}
 }
 
@@ -134,6 +136,7 @@ func productionEnvWithSecrets() map[string]string {
 		"S3_SECRET_KEY": "strong-object-secret-123", "BROWSER_WORKER_URL": "http://browser-worker:8081",
 		"BROWSER_WORKER_TOKEN": "strong-worker-token-123",
 		"ADMIN_PASSWORD":       "strong-admin-password", "SESSION_SECURE": "true", "ALLOW_PRIVATE_TARGETS": "false",
+		"METRICS_TOKEN": "strong-metrics-token-0123456",
 	}
 }
 
@@ -313,5 +316,26 @@ func TestValidateProductionJobLease(t *testing.T) {
 				t.Fatalf("error does not name the variable: %v", err)
 			}
 		})
+	}
+}
+
+// The compose topology publishes the API port to the host, so an ungated
+// /metrics endpoint is an information disclosure in production. Development
+// keeps the empty-token default, which is why the check lives in the
+// production validators only.
+func TestValidateProductionRequiresMetricsToken(t *testing.T) {
+	values := productionEnvWithSecrets()
+	delete(values, "METRICS_TOKEN")
+	err := ValidateProductionAPI(func(name string) string { return values[name] })
+	if err == nil {
+		t.Fatal("expected an open /metrics endpoint to be rejected in production")
+	}
+	if !strings.Contains(err.Error(), "METRICS_TOKEN") {
+		t.Fatalf("error %q does not name METRICS_TOKEN", err)
+	}
+
+	values["METRICS_TOKEN"] = "short"
+	if err := ValidateProductionAPI(func(name string) string { return values[name] }); err == nil {
+		t.Fatal("expected a short METRICS_TOKEN to be rejected in production")
 	}
 }

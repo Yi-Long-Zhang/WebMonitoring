@@ -480,8 +480,22 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 	s.broker.Publish("detection.job.succeeded", job)
 	if s.metrics != nil {
 		s.metrics.Inc("webmonitoring_detection_jobs_total", map[string]string{"mode": job.Mode, "status": string(job.Status)})
+		s.observeJobDuration(job, finished)
 	}
 	return nil
+}
+
+// observeJobDuration records one histogram sample per terminal job outcome,
+// measured from the attempt's claim time. Retry attempts only contribute the
+// terminal outcome, so the count matches the job table's terminal rows.
+func (s *Service) observeJobDuration(job domain.DetectionJob, finished time.Time) {
+	if job.StartedAt == nil {
+		return
+	}
+	s.metrics.ObserveDuration("webmonitoring_detection_job_duration_seconds", finished.Sub(*job.StartedAt), map[string]string{
+		"mode":   job.Mode,
+		"result": strings.ToLower(string(job.Status)),
+	})
 }
 
 func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code string, err error) error {
@@ -542,6 +556,7 @@ func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code str
 	}
 	if s.metrics != nil {
 		s.metrics.Inc("webmonitoring_detection_jobs_total", map[string]string{"mode": job.Mode, "status": string(job.Status), "error_code": code})
+		s.observeJobDuration(job, finished)
 		if strings.HasPrefix(code, "EVIDENCE_") {
 			s.metrics.Inc("webmonitoring_evidence_failures_total", map[string]string{"error_code": code})
 			s.metrics.Inc("webmonitoring_evidence_writes_total", map[string]string{"status": "failed"})

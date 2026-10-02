@@ -868,6 +868,27 @@ func (m *MemoryRepository) IncidentStatusCounts(ctx context.Context, tenantID st
 	return open, highRisk, critical, nil
 }
 
+// CountOpenIncidents mirrors the postgres platform-wide aggregate for the
+// in-memory store.
+func (m *MemoryRepository) CountOpenIncidents(ctx context.Context) (int, int, int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	open, highRisk, critical := 0, 0, 0
+	for _, incident := range m.incidents {
+		if incident.Status == domain.IncidentClosed || incident.Status == domain.IncidentFalsePositive {
+			continue
+		}
+		open++
+		if incident.Severity == domain.SeverityHigh || incident.Severity == domain.SeverityCritical {
+			highRisk++
+		}
+		if incident.Severity == domain.SeverityCritical {
+			critical++
+		}
+	}
+	return open, highRisk, critical, nil
+}
+
 // FailedJobCount mirrors the postgres aggregate for the in-memory store.
 func (m *MemoryRepository) FailedJobCount(ctx context.Context, tenantID string) (int, error) {
 	m.mu.Lock()

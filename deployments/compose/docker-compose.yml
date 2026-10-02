@@ -253,6 +253,9 @@ services:
       LOGIN_LOCKOUT_MINUTES: ${LOGIN_LOCKOUT_MINUTES:-15}
       SESSION_SECURE: ${SESSION_SECURE:-false}
       ALLOW_PRIVATE_TARGETS: ${ALLOW_PRIVATE_TARGETS:-false}
+      # Gates /metrics (Authorization: Bearer). Empty keeps it open, which the
+      # production gate refuses; set it before exposing the API port.
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
       # Only the API serves browser traffic, so only the API reads this. Empty
       # means same-origin, which is the single-host topology's default.
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
@@ -327,6 +330,7 @@ services:
       WORKER_ID: ${WORKER_ID:-}
       SESSION_SECURE: ${SESSION_SECURE:-false}
       ALLOW_PRIVATE_TARGETS: ${ALLOW_PRIVATE_TARGETS:-false}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
       POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy deployments/compose/.env.example into .env}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
       <<: [*postgres-pool-env, *queue-alert-env]
       # Set REDIS_ADDR to redis://:password@redis:6379 when REDIS_PASSWORD is set.

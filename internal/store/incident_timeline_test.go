@@ -401,3 +401,65 @@ func TestListIncidentEventsIsolatesIncidentsAndPages(t *testing.T) {
 		})
 	}
 }
+
+// CountOpenIncidents backs the /metrics gauges, so it must agree across stores
+// and must count across tenants (a scrape carries no tenant context) while
+// excluding closed and dismissed incidents from every tier.
+//
+// The count is platform-wide by design, so the shared integration database
+// already holds other tests' incidents. The assertions measure the delta this
+// test creates rather than an absolute value, which would otherwise depend on
+// what ran before it.
+func TestCountOpenIncidentsAgreesAcrossStores(t *testing.T) {
+	for name, repository := range testRepositories(t) {
+		t.Run(name, func(t *testing.T) {
+			beforeOpen, beforeHighRisk, beforeCritical, err := repository.CountOpenIncidents(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			tenantA, assetA, baselineA := seedIncidentFixture(t, repository)
+			tenantB, assetB, baselineB := seedIncidentFixture(t, repository)
+			clock := roundClock()
+
+			if _, _, err := repository.UpsertIncident(context.Background(), incidentRound(
+				tenantA, assetA, baselineA, identity.New(), domain.SeverityLow,
+				[]domain.Signal{signal("low")}, nil, clock())); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := repository.UpsertIncident(context.Background(), incidentRound(
+				tenantA, assetA, baselineA, identity.New(), domain.SeverityCritical,
+				[]domain.Signal{signal("critical")}, nil, clock())); err != nil {
+				t.Fatal(err)
+			}
+			closedHigh, _, err := repository.UpsertIncident(context.Background(), incidentRound(
+				tenantA, assetA, baselineA, identity.New(), domain.SeverityHigh,
+				[]domain.Signal{signal("closed")}, nil, clock()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			closedHigh.Status = domain.IncidentClosed
+			if err := repository.UpdateIncident(context.Background(), closedHigh); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := repository.UpsertIncident(context.Background(), incidentRound(
+				tenantB, assetB, baselineB, identity.New(), domain.SeverityMedium,
+				[]domain.Signal{signal("other-tenant")}, nil, clock())); err != nil {
+				t.Fatal(err)
+			}
+
+			open, highRisk, critical, err := repository.CountOpenIncidents(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if open-beforeOpen != 3 {
+				t.Fatalf("open grew by %d, want 3 (low + critical + other tenant; the closed HIGH must not count)", open-beforeOpen)
+			}
+			if highRisk-beforeHighRisk != 1 {
+				t.Fatalf("highRisk grew by %d, want 1 (only the open CRITICAL; closed HIGH excluded)", highRisk-beforeHighRisk)
+			}
+			if critical-beforeCritical != 1 {
+				t.Fatalf("critical grew by %d, want 1", critical-beforeCritical)
+			}
+		})
+	}
+}

@@ -1,0 +1,18 @@
+# Dependabot keeps the two dependency graphs from silently rotting between the
+# manual batches in the roadmap (2.6). Monthly matches the internal-tool cadence:
+# weekly noise has no audience here, and "never" is how the vite/typescript
+# major-version backlog happened.
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"

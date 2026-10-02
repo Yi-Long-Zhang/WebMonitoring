@@ -929,6 +929,22 @@ func (p *PostgresRepository) IncidentStatusCounts(ctx context.Context, tenantID 
 	return open, highRisk, critical, nil
 }
 
+// CountOpenIncidents is the platform-wide variant of IncidentStatusCounts:
+// the /metrics scrape carries no tenant context, so the gauges count across
+// every tenant.
+func (p *PostgresRepository) CountOpenIncidents(ctx context.Context) (int, int, int, error) {
+	var open, highRisk, critical int
+	err := p.pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE status NOT IN ('CLOSED','FALSE_POSITIVE')),
+			count(*) FILTER (WHERE status NOT IN ('CLOSED','FALSE_POSITIVE') AND severity IN ('HIGH','CRITICAL')),
+			count(*) FILTER (WHERE status NOT IN ('CLOSED','FALSE_POSITIVE') AND severity='CRITICAL')
+		FROM incidents`).Scan(&open, &highRisk, &critical)
+	if err != nil {
+		return 0, 0, 0, normalizePostgresError(err)
+	}
+	return open, highRisk, critical, nil
+}
+
 // FailedJobCount counts terminal failures for the dashboard and report
 // summaries without reading job rows at all.
 func (p *PostgresRepository) FailedJobCount(ctx context.Context, tenantID string) (int, error) {

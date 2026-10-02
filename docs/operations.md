@@ -478,7 +478,9 @@ destructive`，说明有待应用的破坏性迁移而确认变量未设——�
 
 - `GET /healthz`：进程是否存活。
 - `GET /readyz`：PostgreSQL、Redis、MinIO 和 Browser Worker 是否就绪。
-- `GET /metrics`：请求、任务、告警、事件和数据库连接池指标。
+- `GET /metrics`：请求、任务、告警、事件和数据库连接池指标。设了
+  `METRICS_TOKEN` 后需带 `Authorization: Bearer <token>`；生产校验强制要求
+  设置（至少 16 字节），空值只在开发环境保持开放。
 - Redis detection/alert Stream 的 pending 和 dead-letter 状态。
 
 完整的只读诊断命令（curl/docker compose 示例）单源在
@@ -544,10 +546,11 @@ destructive`，说明有待应用的破坏性迁移而确认变量未设——�
 `ALERT_MAX_PER_CHANNEL_PER_WINDOW`、`ALERT_FAILURE_THRESHOLD`、
 `ALERT_CIRCUIT_COOLDOWN_SECONDS`），它们同样只由 `api` 与 `http-worker` 读取。
 
-配完可以用 `/metrics` 核对是否生效：
+配完可以用 `/metrics` 核对是否生效（设置了 `METRICS_TOKEN` 时带上
+`Authorization: Bearer <token>`）：
 
 ```powershell
-Invoke-RestMethod http://localhost:8080/metrics | Select-String postgres_pool
+Invoke-RestMethod http://localhost:8080/metrics -Headers @{ Authorization = "Bearer $env:METRICS_TOKEN" } | Select-String postgres_pool
 # webmonitoring_postgres_pool_max_connections 10
 # webmonitoring_postgres_pool_connections{state="total"} 3
 # webmonitoring_postgres_pool_connections{state="acquired"} 1
@@ -682,9 +685,11 @@ TLS_CERT_DIR=/etc/letsencrypt/live/example.com \
 
 **Q：为什么边缘对 `/metrics` 返回 404？**
 
-控制面的 `/metrics` 挂在不带认证的根 mux 上，**对外发布等于把资产数、任务吞吐和
-错误率暴露给任何能访问该主机的人**。`/healthz` 与 `/readyz` 保留对外，外部负载
-均衡需要它们。
+`/metrics` 暴露资产数、任务吞吐、错误率和连接池占用，对外发布等于把这些
+**内部拓扑细节**交给任何能访问该主机的人——凭据虽然已被脱敏，主机名和库名
+不在脱敏范围内。`/metrics` 因此默认只留在内部网络；对外时边缘应继续返回
+404，而不是依赖 `METRICS_TOKEN` 把端点挂在公网可达处。`/healthz` 与
+`/readyz` 保留对外，外部负载均衡需要它们。
 
 **Q：为什么 `/api/` 要关掉 `proxy_buffering`？**
 
