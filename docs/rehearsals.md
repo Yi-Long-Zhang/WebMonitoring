@@ -10,6 +10,36 @@
 
 ---
 
+## 阶段一 1.3 指派通知与超时升级实测 — 2026-10-03
+
+- **脚本**：`compose-smoke.ps1`（新增断言段「assignment contact and the escalation
+  trigger」）+ `multi-replica-drill.ps1`；`internal/api/escalation_test.go`、
+  `internal/store/escalation_test.go`。
+- **关键断言**：(1) 已指派必须真的通知到人，而不是只改一行数据；(2) 一条高危事件
+  只上报**一次**，多副本各有定时器也不能重复；(3) 邮件地址非法要在入口被拒，而不是
+  存下来看起来配好了。
+- **结果**（2026-10-03，全部符合）：
+  - 单元：无主 HIGH 事件在阈值后上报 1 条，第二次扫描报 0（`escalated_at` 已打标），
+    审计 `incident.escalated` 恰好一行且带 `adminsNotified`；已被认领 / MEDIUM /
+    已关闭 / 刚创建的四种情况下扫描均报 0；跨存储 `MarkIncidentEscalated` 两次调用
+    只有第一次返回 true（memory 与 postgres 一致）。
+  - 地址校验：合法与留空各 201；无 @、@ 后为空、@ 前为空、域名无点、含空格、
+    **含换行（邮件头注入的形状）** 各 400 `INVALID_EMAIL`。
+  - smoke：带邮箱创建用户后响应与列表都回读得到该地址；三种非法地址均
+    400 `INVALID_EMAIL`；手工触发 `POST /maintenance/escalation` 返回
+    `reported` 与 `unclaimedMinutes`。
+- **修法摘要**：迁移 000018（`users.email`）与 000019（`incidents.escalated_at` +
+  部分索引）；`Dispatcher.SendUserNotice` 走与渠道投递共用的 `sendEmailTo`；指派
+  通知仅在负责人**确实变化**时发出；扫描先原子打标再发送。
+- **合并前整体回归**（2026-10-03，`codex/assignment-notify` @ `db9d057`）：
+  `compose-smoke.ps1` 通过（退出码 0，含控制台 Playwright E2E）；
+  `multi-replica-drill.ps1` 通过（退出码 0）。
+- **未覆盖**：**邮件实际投递未在实机验证**——栈里没有 SMTP 中继，测试断言的是
+  「调用与记录」（审计行、打标、接口形状），不是「信件确实到了收件人」。真实 SMTP
+  下的收信需人工确认。
+
+---
+
 ## 阶段一 1.2 打印就绪报告实测 — 2026-10-03
 
 - **脚本**：`compose-smoke.ps1`（新增断言段「print-ready reports」）+
