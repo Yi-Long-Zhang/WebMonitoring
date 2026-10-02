@@ -10,6 +10,36 @@
 
 ---
 
+## 0.7 SSE 流越过服务端 WriteTimeout 实测 — 2026-10-02
+
+- **脚本**：手工实测，运行中的主 Compose 栈（分支 `codex/sse-deadline` 代码，
+  api 已重建）+ 一次性 `sse-target` 容器（node:24-alpine，仅用于 FILE 验证资产，
+  用后删除）。
+- **关键断言**：`http.Server.WriteTimeout`（2 分钟）是**绝对写截止**，旧实现
+  下 SSE 流会在该点静默失效（写错误被 `_, _ =` 吞掉，循环空转）；修复后每次
+  写前续期写截止，流必须无限存活，且第 2 分钟后事件仍能送达。
+- **结果**（2026-10-02，全部符合）：
+  - 单测 `TestStreamEventsSurvivesPastServerWriteTimeout`：真实
+    `http.Server`（WriteTimeout 压到 400ms）+ 登录 Cookie 挂
+    `/api/v1/events/stream`，收到 ready 后越过 400ms 死线发布事件，**如期收到
+    update**；同一测试在修复前的代码上失败（红→绿已验证，修复前报
+    `no update event received after the server's WriteTimeout had passed`）。
+  - 单测 `TestStreamEventsStopsOnWriteFailure`：写入即失败的 ResponseWriter
+    让 handler 立即返回（订阅释放），不再在断链上空转。
+  - 真实栈：`curl -N` 挂流 **约 6 分钟**（23:08:56–23:14:45），心跳每 20s
+    到达且 **23:10:56（2 分钟死线）之后全部继续**（23:11:16、23:11:36…
+    直至 23:14:36）；T+150s（23:11:45）与 T+330s（23:14:45）各触发一次检测
+    任务，`detection.job.queued` 更新事件**均即时送达**。
+- **修法摘要**：`streamEvents` 每次写前
+  `http.NewResponseController(writer).SetWriteDeadline(now+30s)` 续期
+  （单次写仍 bounded 30s，连接不再被绝对截止杀死）；写失败即 return
+  （原 `_, _ =` 吞错循环空转）；`metricsResponseWriter` 补 `Unwrap()` 使
+  ResponseController 穿透中间件包装到达连接级控制。
+- **未覆盖**：浏览器 EventSource 断线重连路径（控制台侧
+  `services/events/stream.ts` 已有指数退避重连，本次未模拟网络中断）。
+
+---
+
 ## 0.6 迁移回滚路径与破坏性标记实测 — 2026-10-02
 
 - **脚本**：手工实测，一次性 postgres 容器（`postgres:17-alpine`，宿主端口

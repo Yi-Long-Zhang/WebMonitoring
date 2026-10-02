@@ -2562,6 +2562,13 @@ func (s *Server) downloadReport(writer http.ResponseWriter, request *http.Reques
 	_, _ = writer.Write(buffer.Bytes())
 }
 
+// sseWriteTimeout bounds a single write on the event stream. The server's
+// WriteTimeout is an absolute per-request ceiling (2 minutes), which would
+// silently kill every stream at that mark; renewing the deadline before each
+// write keeps an idle-but-connected console stream alive indefinitely while
+// still bounding how long one stalled write may hold the handler.
+const sseWriteTimeout = 30 * time.Second
+
 func (s *Server) streamEvents(writer http.ResponseWriter, request *http.Request) {
 	flusher, ok := writer.(http.Flusher)
 	if !ok {
@@ -2573,8 +2580,22 @@ func (s *Server) streamEvents(writer http.ResponseWriter, request *http.Request)
 	writer.Header().Set("X-Accel-Buffering", "no")
 	channel, unsubscribe := s.broker.Subscribe()
 	defer unsubscribe()
-	_, _ = fmt.Fprint(writer, "event: ready\ndata: {}\n\n")
-	flusher.Flush()
+	controller := http.NewResponseController(writer)
+	write := func(payload string) bool {
+		// Best effort: recorders and other non-network writers do not support
+		// deadlines, and a failure here means the connection is already gone
+		// (the write below then reports the same). Only the write result is
+		// authoritative for ending the stream.
+		_ = controller.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
+		if _, err := fmt.Fprint(writer, payload); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+	if !write("event: ready\ndata: {}\n\n") {
+		return
+	}
 	heartbeat := time.NewTicker(20 * time.Second)
 	defer heartbeat.Stop()
 	for {
@@ -2582,11 +2603,13 @@ func (s *Server) streamEvents(writer http.ResponseWriter, request *http.Request)
 		case <-request.Context().Done():
 			return
 		case payload := <-channel:
-			_, _ = fmt.Fprintf(writer, "event: update\ndata: %s\n\n", payload)
-			flusher.Flush()
+			if !write(fmt.Sprintf("event: update\ndata: %s\n\n", payload)) {
+				return
+			}
 		case <-heartbeat.C:
-			_, _ = fmt.Fprint(writer, ": heartbeat\n\n")
-			flusher.Flush()
+			if !write(": heartbeat\n\n") {
+				return
+			}
 		}
 	}
 }
@@ -2940,6 +2963,13 @@ func (w *metricsResponseWriter) Flush() {
 	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+// Unwrap exposes the underlying writer so http.ResponseController can reach
+// the connection-level controls (SetWriteDeadline for the SSE stream) through
+// this wrapper.
+func (w *metricsResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 func (s *Server) appendAudit(
