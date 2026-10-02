@@ -58,7 +58,12 @@ function statusType(status: string) {
       <div class="summary-card"><span class="summary-label">检测失败</span><strong>{{ dashboard?.failedJobs ?? 0 }}</strong><small>请检查节点或目标状态</small></div>
     </div>
     <section class="panel metrics-panel">
-      <div class="panel-header"><div><span class="section-kicker">OPERATIONS METRICS</span><h2>运行质量</h2></div><small class="muted">基于当前租户数据</small></div>
+      <div class="panel-header">
+        <div><span class="section-kicker">OPERATIONS METRICS</span><h2>运行质量</h2></div>
+        <!-- A printable rendering of the same numbers, not a second computation:
+             it is served by the endpoint that produced this page's summary. -->
+        <a class="report-link" href="/api/v1/reports/summary/html" target="_blank" rel="noopener">打印汇总报告</a>
+      </div>
       <div class="metric-row"><div><span>检测成功率</span><strong>{{ successRate }}%</strong></div><div><span>MTTD</span><strong>{{ formatDuration(reportSummary?.mttdSeconds) }}</strong></div><div><span>MTTA</span><strong>{{ formatDuration(reportSummary?.mttaSeconds) }}</strong></div><div><span>MTTR</span><strong>{{ formatDuration(reportSummary?.mttrSeconds) }}</strong></div><div><span>告警事件</span><strong>{{ reportSummary?.incidents ?? 0 }}</strong></div></div>
     </section>
     <div class="chart-grid">

@@ -654,6 +654,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/reports/{incidentId}/html": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description 单事件的打印就绪渲染，与 ZIP 导出是同一批材料的两种形态：ZIP 是给审计
+         *     留存的原始字节，这里是给人读的，因此**只列出证据而不内嵌其内容**——原始
+         *     快照就是被捕获的网页本身，内联等于把不受信的标记放进报告。所有字段都经
+         *     模板转义，响应带 `Content-Disposition: inline` 与按响应生成的 style
+         *     nonce（脚本仍然禁止）。
+         */
+        get: operations["incidentReportHTML"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/summary/html": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description 汇总报告的打印就绪渲染。它由 `GET /reports/summary` 同一段聚合逻辑产出、
+         *     只做渲染，因此两者不可能对同一区间给出不同的数字。查询参数与 JSON 形态
+         *     完全一致。
+         */
+        get: operations["summaryReportHTML"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/events/stream": {
         parameters: {
             query?: never;
@@ -2573,6 +2617,56 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    incidentReportHTML: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                incidentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 打印就绪的事件报告 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            404: components["responses"]["Error"];
+            424: components["responses"]["Error"];
+        };
+    };
+    summaryReportHTML: {
+        parameters: {
+            query?: {
+                from?: string;
+                to?: string;
+                assetId?: string;
+                severity?: components["schemas"]["Severity"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 打印就绪的汇总报告 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            400: components["responses"]["Error"];
         };
     };
     streamEvents: {

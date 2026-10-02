@@ -256,6 +256,11 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("POST /api/v1/maintenance/retention", s.requireRoles(s.runRetentionMaintenance, domain.RoleAdmin))
 	protected.HandleFunc("GET /api/v1/reports/summary", s.reportSummary)
 	protected.HandleFunc("GET /api/v1/reports/{incidentId}", s.downloadReport)
+	// The printable rendering of the same material. It is a separate path rather
+	// than a format parameter so the ZIP export keeps its exact contract -- a
+	// client that downloads the archive today is not affected by this existing.
+	protected.HandleFunc("GET /api/v1/reports/{incidentId}/html", s.incidentReportHTML)
+	protected.HandleFunc("GET /api/v1/reports/summary/html", s.summaryReportHTML)
 	protected.HandleFunc("GET /api/v1/events/stream", s.streamEvents)
 	protected.HandleFunc("GET /api/v1/sites", s.listSites)
 	protected.HandleFunc("POST /api/v1/sites", s.requireRoles(s.createSite, domain.RoleAdmin))
@@ -2124,29 +2129,37 @@ func (s *Server) listAlertDeliveries(writer http.ResponseWriter, request *http.R
 	writeList(writer, items, nextCursor)
 }
 
+// reportSummary answers the JSON form of the aggregate. The HTML form renders
+// the same map rather than recomputing it, so the two renderings cannot drift
+// apart into two different reports of the same period.
 func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request) {
+	summary, failure := s.summarizeReport(request)
+	if failure != nil {
+		failure.write(s, writer, request)
+		return
+	}
+	writeJSON(writer, http.StatusOK, summary)
+}
+
+func (s *Server) summarizeReport(request *http.Request) (map[string]any, *reportRequestFailure) {
 	session := principal(request)
 	from, to, err := reportRange(request)
 	if err != nil {
-		writeError(writer, request, http.StatusBadRequest, "INVALID_REPORT_RANGE", err.Error(), nil)
-		return
+		return nil, &reportRequestFailure{status: http.StatusBadRequest, code: "INVALID_REPORT_RANGE", message: err.Error()}
 	}
 	assetID := request.URL.Query().Get("assetId")
 	if assetID != "" {
 		if _, err := s.repository.GetAsset(request.Context(), session.User.TenantID, assetID); err != nil {
-			s.notFound(writer, request)
-			return
+			return nil, notFoundFailure()
 		}
 	}
 	severityFilter := strings.ToUpper(strings.TrimSpace(request.URL.Query().Get("severity")))
 	if severityFilter != "" && !validSeverity(domain.Severity(severityFilter)) {
-		writeError(writer, request, http.StatusBadRequest, "INVALID_SEVERITY", "风险等级无效", nil)
-		return
+		return nil, &reportRequestFailure{status: http.StatusBadRequest, code: "INVALID_SEVERITY", message: "风险等级无效"}
 	}
 	assets, _, err := s.repository.ListAssets(request.Context(), session.User.TenantID, store.ListOptions{})
 	if err != nil {
-		s.repositoryFailure(writer, request, "list report assets", err)
-		return
+		return nil, repositoryFailure("list report assets", err)
 	}
 	verifiedAssets := 0
 	assetIDs := make(map[string]struct{})
@@ -2164,8 +2177,7 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 	}
 	jobs, _, err := s.repository.ListJobs(request.Context(), session.User.TenantID, store.ListOptions{})
 	if err != nil {
-		s.repositoryFailure(writer, request, "list report jobs", err)
-		return
+		return nil, repositoryFailure("list report jobs", err)
 	}
 	jobCount, successfulJobs, failedJobs := 0, 0, 0
 	for _, job := range jobs {
@@ -2182,8 +2194,7 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 	}
 	incidents, _, err := s.repository.ListIncidents(request.Context(), session.User.TenantID, store.IncidentFilter{}, store.ListOptions{})
 	if err != nil {
-		s.repositoryFailure(writer, request, "list report incidents", err)
-		return
+		return nil, repositoryFailure("list report incidents", err)
 	}
 	severityCounts := map[string]int{}
 	incidentIDs := make(map[string]struct{})
@@ -2223,8 +2234,7 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 	}
 	deliveries, _, err := s.repository.ListAlertDeliveries(request.Context(), session.User.TenantID, "", store.ListOptions{})
 	if err != nil {
-		s.repositoryFailure(writer, request, "list report deliveries", err)
-		return
+		return nil, repositoryFailure("list report deliveries", err)
 	}
 	alertDeliveries := 0
 	for _, delivery := range deliveries {
@@ -2232,13 +2242,13 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 			alertDeliveries++
 		}
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{
+	return map[string]any{
 		"assets": len(assetIDs), "verifiedAssets": verifiedAssets,
 		"detectionJobs": jobCount, "successfulJobs": successfulJobs, "failedJobs": failedJobs,
 		"incidents": len(incidentIDs), "severityCounts": severityCounts, "alertDeliveries": alertDeliveries,
 		"mttdSeconds": averageSeconds(mttd), "mttaSeconds": averageSeconds(mtta), "mttrSeconds": averageSeconds(mttr),
 		"trend": buildTrend(trendDay, from, to),
-	})
+	}, nil
 }
 
 // buildTrend renders the per-day severity counts as a dense, ascending series

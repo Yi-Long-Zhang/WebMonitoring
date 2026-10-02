@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$KeepRunning
 )
 
@@ -403,6 +403,34 @@ try {
     Invoke-WebRequest -Uri "$apiBase/api/v1/reports/$($incidents.items[0].id)" `
         -WebSession $session -OutFile $reportPath | Out-Null
     Test-EvidenceArchive $reportPath $incidents.items[0] $evidence.items
+
+    # --- print-ready reports -------------------------------------------------
+    # The ZIP above is the machine-readable bundle; this is the same material
+    # rendered for a person. What is asserted here is what a browser needs (an
+    # inline HTML response whose style block the page's own CSP will accept) and
+    # what the report must not do (inline the captured page).
+    $reportHTML = Invoke-WebRequest -Uri "$apiBase/api/v1/reports/$incidentId/html" -WebSession $session
+    if ($reportHTML.StatusCode -ne 200) {
+        throw "the incident report returned $($reportHTML.StatusCode)"
+    }
+    if ([string]$reportHTML.Headers["Content-Type"] -notlike "text/html*") {
+        throw "the incident report served $([string]$reportHTML.Headers['Content-Type'])"
+    }
+    if ([string]$reportHTML.Headers["Content-Security-Policy"] -notmatch "style-src 'nonce-") {
+        throw "the report's own style block would be blocked by the inherited CSP"
+    }
+    foreach ($needle in @("网页篡改监测事件报告", $incidentId, "证据清单", "处置时间线")) {
+        if ($reportHTML.Content -notlike "*$needle*") {
+            throw "the incident report does not mention $needle"
+        }
+    }
+    $summaryHTML = Invoke-WebRequest -Uri "$apiBase/api/v1/reports/summary/html" -WebSession $session
+    if ($summaryHTML.StatusCode -ne 200 -or [string]$summaryHTML.Headers["Content-Type"] -notlike "text/html*") {
+        throw "the summary report served $($summaryHTML.StatusCode)/$([string]$summaryHTML.Headers['Content-Type'])"
+    }
+    if ($summaryHTML.Content -notlike "*网页篡改监测汇总报告*") {
+        throw "the summary report does not render its heading"
+    }
 
     Invoke-Compose @("restart", "api", "http-worker")
     Wait-Healthy "api"

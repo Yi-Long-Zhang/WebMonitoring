@@ -84,6 +84,7 @@ button, input { font: inherit; }
 .muted { color: var(--muted); }
 .evidence-link { margin-left: 12px; color: var(--teal); font-size: 12px; text-decoration: none; }
 .evidence-link.no-margin { margin-left: 0; }
+.report-link { color: var(--teal); font-size: 12px; text-decoration: none; }
 .asset-filter { width: 220px; }
 .el-table { --el-table-header-bg-color: #fafbfd; --el-table-border-color: #edf0f4; --el-table-row-hover-bg-color: #f7fbfb; }
 .el-table th.el-table__cell { color: #8190a3; font-size: 11px; font-weight: 700; }

@@ -173,6 +173,7 @@ async function submitComment() {
           <el-button v-if="row.status === 'INVESTIGATING' && canOperate" type="success" link @click.stop="emit('transition', row, 'RESOLVED', row.ownerId || '')">标记恢复</el-button>
           <el-button v-if="['OPEN', 'INVESTIGATING'].includes(row.status) && canOperate" type="danger" link @click.stop="emit('transition', row, 'FALSE_POSITIVE', row.ownerId || '')">误报</el-button>
           <a class="evidence-link" :href="`/api/v1/reports/${row.id}`" @click.stop>导出证据</a>
+          <a class="evidence-link" :href="`/api/v1/reports/${row.id}/html`" target="_blank" rel="noopener" @click.stop>打印报告</a>
         </template></el-table-column>
       </el-table>
       <ListFooter :has-more="hasMore" :loading="loadingMore" @load-more="emit('loadMore')" />

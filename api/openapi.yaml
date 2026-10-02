@@ -812,6 +812,55 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         "200": { description: ZIP 证据报告 }
+  /reports/{incidentId}/html:
+    get:
+      operationId: incidentReportHTML
+      description: |
+        单事件的打印就绪渲染，与 ZIP 导出是同一批材料的两种形态：ZIP 是给审计
+        留存的原始字节，这里是给人读的，因此**只列出证据而不内嵌其内容**——原始
+        快照就是被捕获的网页本身，内联等于把不受信的标记放进报告。所有字段都经
+        模板转义，响应带 `Content-Disposition: inline` 与按响应生成的 style
+        nonce（脚本仍然禁止）。
+      parameters:
+        - name: incidentId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 打印就绪的事件报告
+          content:
+            text/html:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/Error" }
+        "424": { $ref: "#/components/responses/Error" }
+  /reports/summary/html:
+    get:
+      operationId: summaryReportHTML
+      description: |
+        汇总报告的打印就绪渲染。它由 `GET /reports/summary` 同一段聚合逻辑产出、
+        只做渲染，因此两者不可能对同一区间给出不同的数字。查询参数与 JSON 形态
+        完全一致。
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: assetId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: severity
+          in: query
+          schema: { $ref: "#/components/schemas/Severity" }
+      responses:
+        "200":
+          description: 打印就绪的汇总报告
+          content:
+            text/html:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
   /events/stream:
     get:
       operationId: streamEvents
