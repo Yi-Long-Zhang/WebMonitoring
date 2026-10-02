@@ -1187,7 +1187,25 @@ export interface components {
             maintenanceWindowStart?: string;
             /** Format: date-time */
             maintenanceWindowEnd?: string;
+            maintenanceSchedule?: components["schemas"]["MaintenanceSchedule"];
             auth?: components["schemas"]["AuthConfig"];
+        };
+        /**
+         * @description 每周重复的维护窗口。它与 maintenanceWindowStart/End 的绝对区间**同时生效**
+         *     （任一命中即为维护中）：绝对区间留给一次性的封版，周期窗口留给每周发版。
+         *     起止分钟是「某地本地时间的分钟数」，时区用 utcOffsetMinutes 给出——镜像里
+         *     没有 tzdata，用 IANA 名称会在恰恰设置了它的部署上静默退回 UTC。
+         *     结束早于开始表示跨午夜（23:00-01:00 是常态形状），此时窗口归属它开始的那一天。
+         *     窗口不匹配时资产看起来安静而健康，实际上什么都没查，因此非法取值一律拒绝
+         *     而不是钳制。
+         */
+        MaintenanceSchedule: {
+            /** @description 覆盖的星期，0=周日 … 6=周六。留空表示每天。 */
+            weekdays?: number[];
+            startMinute: number;
+            endMinute: number;
+            /** @default 0 */
+            utcOffsetMinutes: number;
         };
         PolicyList: {
             items: components["schemas"]["Policy"][];
@@ -1883,6 +1901,7 @@ export interface operations {
                     trustedDomains: string[];
                     /** Format: date-time */
                     maintenanceWindowStart?: string;
+                    maintenanceSchedule?: components["schemas"]["MaintenanceSchedule"];
                     /** Format: date-time */
                     maintenanceWindowEnd?: string;
                     auth?: components["schemas"]["AuthConfigInput"];

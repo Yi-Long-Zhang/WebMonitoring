@@ -746,9 +746,15 @@ func nextBaselineVersion(baselines []domain.BaselineVersion) int {
 	return maximum + 1
 }
 
+// inMaintenanceWindow reports whether checks should be held off right now. The
+// absolute range and the weekly recurrence are additive: either one matching is
+// enough, so an asset can carry a recurring window plus a one-off freeze.
 func inMaintenanceWindow(policy domain.MonitorPolicy, now time.Time) bool {
-	return policy.MaintenanceWindowStart != nil && policy.MaintenanceWindowEnd != nil &&
-		!now.Before(*policy.MaintenanceWindowStart) && now.Before(*policy.MaintenanceWindowEnd)
+	if policy.MaintenanceWindowStart != nil && policy.MaintenanceWindowEnd != nil &&
+		!now.Before(*policy.MaintenanceWindowStart) && now.Before(*policy.MaintenanceWindowEnd) {
+		return true
+	}
+	return policy.MaintenanceSchedule != nil && policy.MaintenanceSchedule.Contains(now)
 }
 
 func incidentTitle(asset domain.Asset, severity domain.Severity, signals []domain.Signal) string {

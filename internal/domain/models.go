@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 type Role string
 
@@ -150,6 +153,54 @@ type Asset struct {
 // authenticated page rather than the login form. Username and password are only
 // ever stored encrypted (AES-GCM with associated data bound to tenant+asset);
 // they are never returned by the API, logged, or written to spans.
+// MaintenanceSchedule is a window that comes back every week.
+//
+// The times are minutes from midnight in a fixed offset rather than a timezone
+// name: the images are distroless and carry no tzdata, so a name would silently
+// fall back to UTC on exactly the deployments that set it. An offset is also
+// what the customer's own "every Wednesday at 02:00" means when their zone has
+// no daylight saving, which is the case this was built for.
+type MaintenanceSchedule struct {
+	// Weekdays covered, 0 = Sunday through 6 = Saturday. Empty means every day,
+	// which is how a nightly window is expressed.
+	Weekdays []int `json:"weekdays,omitempty"`
+	// Minutes from midnight, 0-1440, in UTCOffsetMinutes.
+	StartMinute int `json:"startMinute"`
+	EndMinute   int `json:"endMinute"`
+	// UTCOffsetMinutes is the offset the two minutes above are expressed in,
+	// e.g. 480 for UTC+8. Zero means UTC.
+	UTCOffsetMinutes int `json:"utcOffsetMinutes,omitempty"`
+}
+
+// Contains reports whether an instant falls inside a recurrence of this
+// schedule. A window whose end is not after its start crosses midnight, which is
+// the normal shape for a nightly maintenance freeze: 23:00-01:00 has to cover
+// both sides of the day boundary or it would never match at all.
+func (s MaintenanceSchedule) Contains(now time.Time) bool {
+	if s.StartMinute == s.EndMinute {
+		return false
+	}
+	local := now.UTC().Add(time.Duration(s.UTCOffsetMinutes) * time.Minute)
+	weekday := int(local.Weekday())
+	minute := local.Hour()*60 + local.Minute()
+	if len(s.Weekdays) > 0 {
+		// The weekday of the window is the weekday it started on, so the
+		// after-midnight half of a crossing window belongs to the previous day.
+		day := weekday
+		if s.EndMinute < s.StartMinute && minute < s.EndMinute {
+			day = (day + 6) % 7
+		}
+		if !slices.Contains(s.Weekdays, day) {
+			return false
+		}
+	}
+	if s.EndMinute > s.StartMinute {
+		return minute >= s.StartMinute && minute < s.EndMinute
+	}
+	// Crosses midnight.
+	return minute >= s.StartMinute || minute < s.EndMinute
+}
+
 type AuthConfig struct {
 	LoginURL          string            `json:"loginUrl"`
 	UsernameField     string            `json:"usernameField"`
@@ -162,21 +213,30 @@ type AuthConfig struct {
 }
 
 type MonitorPolicy struct {
-	ID                     string      `json:"id"`
-	TenantID               string      `json:"tenantId"`
-	AssetID                string      `json:"assetId"`
-	Version                int         `json:"version"`
-	HTTPIntervalSeconds    int         `json:"httpIntervalSeconds"`
-	BrowserIntervalSeconds int         `json:"browserIntervalSeconds"`
-	TimeoutSeconds         int         `json:"timeoutSeconds"`
-	MaxResponseBytes       int64       `json:"maxResponseBytes"`
-	IgnoreSelectors        []string    `json:"ignoreSelectors"`
-	TrustedDomains         []string    `json:"trustedDomains"`
-	MaintenanceWindowStart *time.Time  `json:"maintenanceWindowStart,omitempty"`
-	MaintenanceWindowEnd   *time.Time  `json:"maintenanceWindowEnd,omitempty"`
-	Auth                   *AuthConfig `json:"auth,omitempty"`
-	CreatedAt              time.Time   `json:"createdAt"`
-	UpdatedAt              time.Time   `json:"updatedAt"`
+	ID                     string     `json:"id"`
+	TenantID               string     `json:"tenantId"`
+	AssetID                string     `json:"assetId"`
+	Version                int        `json:"version"`
+	HTTPIntervalSeconds    int        `json:"httpIntervalSeconds"`
+	BrowserIntervalSeconds int        `json:"browserIntervalSeconds"`
+	TimeoutSeconds         int        `json:"timeoutSeconds"`
+	MaxResponseBytes       int64      `json:"maxResponseBytes"`
+	IgnoreSelectors        []string   `json:"ignoreSelectors"`
+	TrustedDomains         []string   `json:"trustedDomains"`
+	MaintenanceWindowStart *time.Time `json:"maintenanceWindowStart,omitempty"`
+	MaintenanceWindowEnd   *time.Time `json:"maintenanceWindowEnd,omitempty"`
+	// MaintenanceSchedule makes the window recur, so a customer who ships every
+	// Wednesday night sets it once instead of editing the absolute range every
+	// week -- which is what the two fields above alone required, and what the
+	// first release cycle of any weekly deployer runs into.
+	//
+	// Both forms are honoured and they are additive: an asset is in maintenance
+	// if either one matches. The absolute pair stays because a one-off freeze
+	// (a migration, an incident) is genuinely a one-off.
+	MaintenanceSchedule *MaintenanceSchedule `json:"maintenanceSchedule,omitempty"`
+	Auth                *AuthConfig          `json:"auth,omitempty"`
+	CreatedAt           time.Time            `json:"createdAt"`
+	UpdatedAt           time.Time            `json:"updatedAt"`
 }
 
 type ResourceRef struct {

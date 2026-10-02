@@ -300,6 +300,7 @@ paths:
                   type: array
                   items: { type: string }
                 maintenanceWindowStart: { type: string, format: date-time }
+                maintenanceSchedule: { $ref: "#/components/schemas/MaintenanceSchedule" }
                 maintenanceWindowEnd: { type: string, format: date-time }
                 auth: { $ref: "#/components/schemas/AuthConfigInput" }
       responses:
@@ -1577,7 +1578,27 @@ components:
           items: { type: string }
         maintenanceWindowStart: { type: string, format: date-time }
         maintenanceWindowEnd: { type: string, format: date-time }
+        maintenanceSchedule: { $ref: "#/components/schemas/MaintenanceSchedule" }
         auth: { $ref: "#/components/schemas/AuthConfig" }
+    MaintenanceSchedule:
+      type: object
+      required: [startMinute, endMinute]
+      description: |
+        每周重复的维护窗口。它与 maintenanceWindowStart/End 的绝对区间**同时生效**
+        （任一命中即为维护中）：绝对区间留给一次性的封版，周期窗口留给每周发版。
+        起止分钟是「某地本地时间的分钟数」，时区用 utcOffsetMinutes 给出——镜像里
+        没有 tzdata，用 IANA 名称会在恰恰设置了它的部署上静默退回 UTC。
+        结束早于开始表示跨午夜（23:00-01:00 是常态形状），此时窗口归属它开始的那一天。
+        窗口不匹配时资产看起来安静而健康，实际上什么都没查，因此非法取值一律拒绝
+        而不是钳制。
+      properties:
+        weekdays:
+          type: array
+          description: 覆盖的星期，0=周日 … 6=周六。留空表示每天。
+          items: { type: integer, minimum: 0, maximum: 6 }
+        startMinute: { type: integer, minimum: 0, maximum: 1440 }
+        endMinute: { type: integer, minimum: 0, maximum: 1440 }
+        utcOffsetMinutes: { type: integer, minimum: -720, maximum: 840, default: 0 }
     PolicyList:
       type: object
       required: [items, nextCursor]

@@ -637,6 +637,28 @@ try {
         -WebSession $session -Headers $csrf -ContentType "application/json" `
         -Body '{"httpIntervalSeconds":300,"browserIntervalSeconds":1800,"timeoutSeconds":30,"maxResponseBytes":1048576,"ignoreSelectors":[],"trustedDomains":[],"auth":{"loginUrl":"http://smoke-login/login","usernameField":"username","passwordField":"password","submitSelector":"#submit-login","username":"smoke","password":"smoke-password"}}' | Out-Null
 
+    # --- recurring maintenance window ---------------------------------------
+    # A weekly deployer should set the window once rather than edit an absolute
+    # range every week. The round-trip is what matters: a window that is silently
+    # dropped or stored with the wrong offset stops monitoring without saying
+    # anything, because the asset then looks quiet and healthy.
+    $policyList = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/policies" -WebSession $session
+    $currentPolicy = $policyList.items | Where-Object assetId -eq $loginAsset.id | Select-Object -First 1
+    $scheduleBody = "{`"httpIntervalSeconds`":$($currentPolicy.httpIntervalSeconds),`"browserIntervalSeconds`":$($currentPolicy.browserIntervalSeconds),`"timeoutSeconds`":$($currentPolicy.timeoutSeconds),`"maxResponseBytes`":$($currentPolicy.maxResponseBytes),`"ignoreSelectors`":[],`"trustedDomains`":[],`"maintenanceSchedule`":{`"weekdays`":[3],`"startMinute`":120,`"endMinute`":240,`"utcOffsetMinutes`":480}}"
+    $scheduled = Invoke-RestMethod -Method Put -Uri "$apiBase/api/v1/policies/$($loginAsset.id)" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" -Body $scheduleBody
+    if ($scheduled.maintenanceSchedule.startMinute -ne 120 -or $scheduled.maintenanceSchedule.utcOffsetMinutes -ne 480) {
+        throw "the maintenance window did not round-trip: $($scheduled.maintenanceSchedule | ConvertTo-Json -Compress)"
+    }
+    if (@($scheduled.maintenanceSchedule.weekdays).Count -ne 1 -or $scheduled.maintenanceSchedule.weekdays[0] -ne 3) {
+        throw "the maintenance weekdays did not round-trip"
+    }
+    $zeroWindow = Invoke-ApiExpectError -Method Put -Uri "$apiBase/api/v1/policies/$($loginAsset.id)" -WebSession $session -Headers $csrf `
+        -Body "{`"httpIntervalSeconds`":300,`"browserIntervalSeconds`":1800,`"timeoutSeconds`":30,`"maxResponseBytes`":1048576,`"ignoreSelectors`":[],`"trustedDomains`":[],`"maintenanceSchedule`":{`"startMinute`":120,`"endMinute`":120}}"
+    if ($zeroWindow.Status -ne 400 -or $zeroWindow.Code -ne "INVALID_POLICY") {
+        throw "a zero-length maintenance window returned $($zeroWindow.Status)/$($zeroWindow.Code)"
+    }
+
     $authenticatedTitle = Get-SnapshotTitle $session $csrf $loginAsset.id
     if ($authenticatedTitle -ne "Smoke protected console") {
         throw "authenticated browser check saw '$authenticatedTitle', expected the protected page"

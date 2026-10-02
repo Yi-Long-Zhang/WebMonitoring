@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1408,15 +1409,19 @@ func (s *Server) updatePolicy(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	var input struct {
-		HTTPIntervalSeconds    int             `json:"httpIntervalSeconds"`
-		BrowserIntervalSeconds int             `json:"browserIntervalSeconds"`
-		TimeoutSeconds         int             `json:"timeoutSeconds"`
-		MaxResponseBytes       int64           `json:"maxResponseBytes"`
-		IgnoreSelectors        []string        `json:"ignoreSelectors"`
-		TrustedDomains         []string        `json:"trustedDomains"`
-		MaintenanceWindowStart *time.Time      `json:"maintenanceWindowStart"`
-		MaintenanceWindowEnd   *time.Time      `json:"maintenanceWindowEnd"`
-		Auth                   json.RawMessage `json:"auth"`
+		HTTPIntervalSeconds    int        `json:"httpIntervalSeconds"`
+		BrowserIntervalSeconds int        `json:"browserIntervalSeconds"`
+		TimeoutSeconds         int        `json:"timeoutSeconds"`
+		MaxResponseBytes       int64      `json:"maxResponseBytes"`
+		IgnoreSelectors        []string   `json:"ignoreSelectors"`
+		TrustedDomains         []string   `json:"trustedDomains"`
+		MaintenanceWindowStart *time.Time `json:"maintenanceWindowStart"`
+		MaintenanceWindowEnd   *time.Time `json:"maintenanceWindowEnd"`
+		// Raw so the handler can tell "not mentioned" from "explicitly null":
+		// a *T decodes both to nil, and without the distinction a window could
+		// be set but never cleared. Same reason the auth field below is raw.
+		MaintenanceSchedule json.RawMessage `json:"maintenanceSchedule"`
+		Auth                json.RawMessage `json:"auth"`
 	}
 	if !decodeJSON(writer, request, &input) {
 		return
@@ -1443,6 +1448,24 @@ func (s *Server) updatePolicy(writer http.ResponseWriter, request *http.Request)
 	current.TrustedDomains = append([]string(nil), input.TrustedDomains...)
 	current.MaintenanceWindowStart = input.MaintenanceWindowStart
 	current.MaintenanceWindowEnd = input.MaintenanceWindowEnd
+	// A missing key leaves the existing recurrence alone; an explicit null clears
+	// it. Without that distinction there is no way to remove a recurring window.
+	if len(input.MaintenanceSchedule) > 0 {
+		if bytes.Equal(bytes.TrimSpace(input.MaintenanceSchedule), []byte("null")) {
+			current.MaintenanceSchedule = nil
+		} else {
+			var schedule maintenanceScheduleInput
+			if err := json.Unmarshal(input.MaintenanceSchedule, &schedule); err != nil {
+				writeError(writer, request, http.StatusBadRequest, "INVALID_POLICY", "周期性维护窗口格式无效", nil)
+				return
+			}
+			parsed, ok := validatedSchedule(writer, request, &schedule)
+			if !ok {
+				return
+			}
+			current.MaintenanceSchedule = parsed
+		}
+	}
 	// A missing "auth" key preserves existing login state; an explicit null
 	// disables it; an object enables or reconfigures it.
 	if len(input.Auth) > 0 {
@@ -2648,6 +2671,64 @@ func parseIncidentFilter(request *http.Request) (store.IncidentFilter, error) {
 		return store.IncidentFilter{}, errors.New("to 不能早于 from")
 	}
 	return filter, nil
+}
+
+// maintenanceScheduleInput mirrors domain.MaintenanceSchedule but as a pointer
+// tree, because the handler has to tell "the caller did not mention it" from
+// "the caller cleared it".
+type maintenanceScheduleInput struct {
+	Weekdays         []int `json:"weekdays"`
+	StartMinute      *int  `json:"startMinute"`
+	EndMinute        *int  `json:"endMinute"`
+	UTCOffsetMinutes *int  `json:"utcOffsetMinutes"`
+}
+
+// validatedSchedule checks a recurrence before it is stored.
+//
+// A malformed window is refused rather than clamped, and the reason is the same
+// one that makes the window dangerous: a window that silently never matches
+// stops monitoring without saying so -- the asset looks quiet and healthy while
+// nothing is being checked. A window that silently always matches is the
+// opposite failure, suppressing every alert.
+func validatedSchedule(writer http.ResponseWriter, request *http.Request, input *maintenanceScheduleInput) (*domain.MaintenanceSchedule, bool) {
+	if input.StartMinute == nil || input.EndMinute == nil {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_POLICY", "周期性维护窗口必须给出起止时间", nil)
+		return nil, false
+	}
+	start, end := *input.StartMinute, *input.EndMinute
+	if start < 0 || start > 1440 || end < 0 || end > 1440 {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_POLICY", "维护窗口时间必须是一天内的分钟数", nil)
+		return nil, false
+	}
+	if start == end {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_POLICY", "维护窗口的起止时间不能相同", nil)
+		return nil, false
+	}
+	offset := 0
+	if input.UTCOffsetMinutes != nil {
+		offset = *input.UTCOffsetMinutes
+	}
+	if offset < -720 || offset > 840 {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_POLICY", "时区偏移必须在 -12:00 到 +14:00 之间", nil)
+		return nil, false
+	}
+	weekdays := make([]int, 0, len(input.Weekdays))
+	seen := make(map[int]struct{}, len(input.Weekdays))
+	for _, day := range input.Weekdays {
+		if day < 0 || day > 6 {
+			writeError(writer, request, http.StatusBadRequest, "INVALID_POLICY", "星期取值必须是 0（周日）到 6（周六）", nil)
+			return nil, false
+		}
+		if _, duplicate := seen[day]; duplicate {
+			continue
+		}
+		seen[day] = struct{}{}
+		weekdays = append(weekdays, day)
+	}
+	sort.Ints(weekdays)
+	return &domain.MaintenanceSchedule{
+		Weekdays: weekdays, StartMinute: start, EndMinute: end, UTCOffsetMinutes: offset,
+	}, true
 }
 
 // notifyAssignee tells whoever an incident was just handed to.
