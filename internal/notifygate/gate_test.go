@@ -304,3 +304,39 @@ func TestNormalizeChannelIDIsStable(t *testing.T) {
 		t.Fatal("normalisation does not collapse case and surrounding space")
 	}
 }
+
+// The transition report has to be correct in a case Open() cannot express: once
+// the cooldown lapses the breaker still holds its record but stops refusing, so
+// Open reads false for a breaker that is only probing. Reading Open before and
+// after the probe would therefore see no change and the recovery -- the news
+// that a channel is carrying alerts again -- would never be reported.
+func TestRecordOutcomeReportsTransitionsAcrossTheProbeWindow(t *testing.T) {
+	gate, clock := newTestGate(Policy{MaxPerWindow: 0, FailureThreshold: 2, Cooldown: time.Minute})
+	ctx := context.Background()
+
+	if _, changed := gate.RecordOutcome(ctx, "channel", false); changed {
+		t.Fatal("the first failure reported a transition; the breaker was not open")
+	}
+	open, changed := gate.RecordOutcome(ctx, "channel", false)
+	if !changed || !open {
+		t.Fatalf("reaching the threshold reported open=%v changed=%v, want true/true", open, changed)
+	}
+	// A further failure while already open is not a second suspension.
+	if open, changed := gate.RecordOutcome(ctx, "channel", false); changed || !open {
+		t.Fatalf("a repeated failure reported open=%v changed=%v, want true/false", open, changed)
+	}
+
+	// Past the cooldown the breaker stops refusing but is still recorded, which
+	// is the state Open() cannot distinguish from a closed one.
+	clock.advance(2 * time.Minute)
+	if gate.Open(ctx, "channel") {
+		t.Fatal("the breaker is still refusing after its cooldown lapsed")
+	}
+	if open, changed := gate.RecordOutcome(ctx, "channel", true); !changed || open {
+		t.Fatalf("the recovering delivery reported open=%v changed=%v, want false/true", open, changed)
+	}
+	// And a success on a channel that was never suspended is not news.
+	if _, changed := gate.RecordOutcome(ctx, "channel", true); changed {
+		t.Fatal("a routine success reported a transition")
+	}
+}

@@ -8,11 +8,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -696,4 +699,114 @@ func TestSendOperationalNoticeSkipsSubjectChannelAndWritesNoDelivery(t *testing.
 	if len(deliveries) != 0 {
 		t.Fatalf("notice wrote %d delivery rows; alert deliveries are incident-scoped", len(deliveries))
 	}
+}
+
+// A channel's breaker changing state is a fact nobody is told today: the console
+// shows it only to whoever is already looking at that channel's row. Both
+// directions have to be reported, and the notice must not go through the channel
+// it is about.
+func TestBreakerTransitionNotifiesOtherChannels(t *testing.T) {
+	var failing atomic.Bool
+	failing.Store(true)
+	failingServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		if failing.Load() {
+			writer.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer failingServer.Close()
+
+	var mu sync.Mutex
+	var observed []string
+	observer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload struct {
+			Event string `json:"event"`
+		}
+		_ = json.NewDecoder(request.Body).Decode(&payload)
+		mu.Lock()
+		observed = append(observed, payload.Event)
+		mu.Unlock()
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer observer.Close()
+	events := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), observed...)
+	}
+
+	repository := store.NewMemoryRepository()
+	guard := security.NewURLGuard(true)
+	for _, server := range []*httptest.Server{failingServer, observer} {
+		guard.AllowedPorts[strconv.Itoa(server.Listener.Addr().(*net.TCPAddr).Port)] = struct{}{}
+	}
+	channels := []domain.AlertChannel{
+		{ID: "broken", TenantID: "tenant", Name: "broken hook", Type: "WEBHOOK", URL: failingServer.URL, Enabled: true, CreatedAt: time.Now().UTC()},
+		{ID: "observer", TenantID: "tenant", Name: "observer hook", Type: "WEBHOOK", URL: observer.URL, Enabled: true, CreatedAt: time.Now().UTC()},
+	}
+	for _, channel := range channels {
+		if err := repository.CreateAlertChannel(context.Background(), channel); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dispatcher := NewDispatcher(repository, guard)
+	dispatcher.SetRetryPolicy(1, time.Millisecond)
+	// One failure opens the breaker, and the cooldown is short enough that the
+	// next delivery is allowed through as the probe -- which is what lets this
+	// test reach the recovery half in the same run.
+	dispatcher.SetGate(notifygate.NewMemoryGate(notifygate.Policy{
+		FailureThreshold: 1, Cooldown: time.Millisecond, MaxPerWindow: 0,
+	}))
+	dispatcher.SetLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	incident := domain.Incident{ID: "incident", TenantID: "tenant", AssetID: "asset", Severity: domain.SeverityHigh, Title: "changed"}
+	asset := domain.Asset{ID: "asset", TenantID: "tenant", Name: "site"}
+
+	if failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonCreated); len(failures) == 0 {
+		t.Fatal("expected the broken channel to report a delivery failure")
+	}
+	if !containsEvent(events(), "monitoring.channel_suspended") {
+		t.Fatalf("observer saw %v, want the breaker-open notice", events())
+	}
+
+	// Let the cooldown lapse and let the channel work again: the probe succeeds,
+	// the breaker closes, and the recovery has to be reported just as loudly.
+	failing.Store(false)
+	time.Sleep(5 * time.Millisecond)
+	if failures := dispatcher.SendIncident(t.Context(), incident, asset, domain.AlertReasonRecurred); len(failures) != 0 {
+		t.Fatalf("recovered delivery failed: %v", failures)
+	}
+	if !containsEvent(events(), "monitoring.channel_restored") {
+		t.Fatalf("observer saw %v, want the breaker-recovery notice", events())
+	}
+
+	audits, _, err := repository.ListAudits(context.Background(), "tenant", store.AuditFilter{ResourceType: "alert_channel"}, store.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := make([]string, 0, len(audits))
+	for _, audit := range audits {
+		actions = append(actions, audit.Action)
+	}
+	for _, want := range []string{"monitoring.channel_suspended", "monitoring.channel_restored"} {
+		found := false
+		for _, action := range actions {
+			if action == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("audit actions = %v, want %s recorded", actions, want)
+		}
+	}
+}
+
+func containsEvent(events []string, want string) bool {
+	for _, event := range events {
+		if event == want {
+			return true
+		}
+	}
+	return false
 }

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -48,6 +49,11 @@ type Dispatcher struct {
 	// stopped working. A nil gate is unlimited, which is what a test dispatcher
 	// and an unconfigured deployment get.
 	gate *notifygate.Gate
+	// logger reports the side effects that have no caller to return an error to
+	// -- a breaker-transition notice that could not be delivered, an audit row
+	// that could not be written. They must never fail the delivery that
+	// triggered them, so they are logged rather than propagated.
+	logger *slog.Logger
 }
 
 // SMTPConfig holds the outbound SMTP relay settings for EMAIL alert channels.
@@ -161,6 +167,16 @@ func NewDispatcher(repository store.Repository, guard *security.URLGuard) *Dispa
 		},
 		maxAttempts: 3,
 		baseBackoff: 250 * time.Millisecond,
+		logger:      slog.Default(),
+	}
+}
+
+// SetLogger installs the logger for side effects that cannot be returned to a
+// caller. Unset it and they go to slog's default, which is never a reason to
+// drop them silently.
+func (d *Dispatcher) SetLogger(logger *slog.Logger) {
+	if logger != nil {
+		d.logger = logger
 	}
 }
 
@@ -251,7 +267,7 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 				// A success is what closes the breaker, so it is recorded before
 				// the loop can run again -- and only on the attempt that actually
 				// reached the endpoint, not on the ones that backed off.
-				d.gate.RecordOutcome(ctx, channel.ID, true)
+				d.recordOutcome(ctx, channel, true)
 				d.record(channel.Type, "DELIVERED")
 				lastErr = nil
 				break
@@ -277,7 +293,7 @@ func (d *Dispatcher) SendIncident(ctx context.Context, incident domain.Incident,
 			// One failure per delivery, after the whole ladder has been spent,
 			// not one per attempt: the breaker is counting dead channels, and a
 			// single message that needed three tries is one channel that failed.
-			d.gate.RecordOutcome(ctx, channel.ID, false)
+			d.recordOutcome(ctx, channel, false)
 			d.record(channel.Type, "FAILED")
 			failures = append(failures, fmt.Errorf("channel %s: %w", channel.ID, lastErr))
 		}
@@ -320,6 +336,51 @@ func (d *Dispatcher) record(channelType, status string) {
 		d.metrics.Inc("webmonitoring_alert_deliveries_total", map[string]string{
 			"channel_type": channelType, "status": status,
 		})
+	}
+}
+
+// recordOutcome feeds a delivery result back to the breaker and, when the
+// breaker has just changed state, tells someone.
+//
+// Both directions are news the operator has no other way to receive. A channel
+// that has stopped working is invisible until an incident happens to need it,
+// and the console shows the suspended state only to whoever is already looking
+// at that channel's row. The recovery matters just as much: a breach that has
+// closed is a channel whose alerts are flowing again, and without a notice
+// "suspended" is a state nobody learns has ended.
+//
+// It never touches the caller's error path. The incident was delivered or it was
+// not; whether the notice about a channel's health could itself be delivered is
+// a different question, and letting it fail the incident would turn a reporting
+// problem into a delivery problem.
+func (d *Dispatcher) recordOutcome(ctx context.Context, channel domain.AlertChannel, delivered bool) {
+	open, changed := d.gate.RecordOutcome(ctx, channel.ID, delivered)
+	if !changed {
+		return
+	}
+	action, event, headline, state := "monitoring.channel_restored", "monitoring.channel_restored", "告警渠道已恢复", "restored"
+	if open {
+		action, event, headline, state = "monitoring.channel_suspended", "monitoring.channel_suspended", "告警渠道已熔断", "suspended"
+	}
+	detail := fmt.Sprintf(
+		"渠道：%s\n类型：%s\n状态：%s\n该渠道此前的告警可能没有送达——恢复后请确认这段时间的事件是否已被处理。",
+		channel.Name, channel.Type, state,
+	)
+	// The channel itself is excluded: it is by definition the one that just
+	// stopped carrying messages.
+	if failures := d.SendOperationalNotice(ctx, channel.TenantID, event, headline, detail, channel.ID); len(failures) > 0 {
+		// Not returned to the caller: see above. Logged so the notice is not
+		// lost without trace.
+		d.logger.Warn("channel health notice could not be delivered",
+			"channel_id", channel.ID, "event", event, "failures", len(failures))
+	}
+	if err := d.repository.AppendAudit(ctx, domain.AuditEvent{
+		ID: identity.New(), TenantID: channel.TenantID, Action: action,
+		ResourceType: "alert_channel", ResourceID: channel.ID, Result: "SUCCESS",
+		TraceID: "notify", Details: map[string]any{"channelType": channel.Type, "state": state},
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		d.logger.Warn("could not record the channel health audit", "channel_id", channel.ID, "error", err)
 	}
 }
 

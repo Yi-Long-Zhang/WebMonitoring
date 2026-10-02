@@ -94,6 +94,7 @@ func main() {
 		browserChecker = browserClient
 	}
 	dispatcher := notify.NewDispatcher(repository, guard)
+	dispatcher.SetLogger(logger)
 	dispatcher.SetRetryPolicy(
 		int(envInt64("ALERT_MAX_ATTEMPTS", 3)),
 		time.Duration(envInt64("ALERT_RETRY_BASE_MILLISECONDS", 250))*time.Millisecond,

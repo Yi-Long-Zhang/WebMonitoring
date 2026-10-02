@@ -199,18 +199,26 @@ func (g *Gate) breakerDecision(ctx context.Context, channelID string) (Decision,
 // RecordOutcome feeds a delivery result back to the breaker. A success closes
 // it; a failure past the threshold opens it. It is nil-safe and swallows store
 // errors -- losing a failure count is not worth failing a delivery over.
-func (g *Gate) RecordOutcome(ctx context.Context, channelID string, delivered bool) {
+//
+// It reports the state it left behind and whether that state changed, because
+// this is the only place that knows: Open answers "is this channel being refused
+// right now", which is deliberately not the same question -- a breaker whose
+// cooldown has lapsed is still recorded but is letting a probe through, so
+// reading Open before and after a successful probe would show no change at all
+// and the recovery would go unreported.
+func (g *Gate) RecordOutcome(ctx context.Context, channelID string, delivered bool) (open bool, changed bool) {
 	if g == nil || channelID == "" || g.policy.FailureThreshold <= 0 {
-		return
+		return false, false
 	}
 	if delivered {
+		wasOpen := g.breakerRecorded(ctx, channelID)
 		_ = g.store.Reset(ctx, g.failureKey(channelID))
 		_ = g.store.Reset(ctx, g.breakerKey(channelID))
-		return
+		return false, wasOpen
 	}
 	count, err := g.store.Incr(ctx, g.failureKey(channelID))
 	if err != nil {
-		return
+		return false, false
 	}
 	// The counter is re-armed on every failure so it cannot lapse between two of
 	// them. The lifetime is not the cooldown: a channel failing once an hour is
@@ -220,9 +228,19 @@ func (g *Gate) RecordOutcome(ctx context.Context, channelID string, delivered bo
 	// not to bound anything.
 	_ = g.store.Expire(ctx, g.failureKey(channelID), failureCountLifetime)
 	if count >= int64(g.policy.FailureThreshold) {
+		wasOpen := g.breakerRecorded(ctx, channelID)
 		_ = g.store.SetWithTTL(ctx, g.breakerKey(channelID),
 			g.now().UTC().Format(time.RFC3339Nano), breakerOpenLifetime)
+		return true, !wasOpen
 	}
+	return false, false
+}
+
+// breakerRecorded reports whether the breaker has an open record, regardless of
+// whether its cooldown has lapsed.
+func (g *Gate) breakerRecorded(ctx context.Context, channelID string) bool {
+	openedAt, err := g.store.Get(ctx, g.breakerKey(channelID))
+	return err == nil && openedAt != ""
 }
 
 // failureCountLifetime is how long a consecutive-failure count survives without
