@@ -434,6 +434,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/incidents/batch-transition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["batchTransitionIncidents"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/evidence": {
         parameters: {
             query?: never;
@@ -922,6 +938,19 @@ export interface components {
         Severity: "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
         /** @enum {string} */
         IncidentStatus: "OPEN" | "ACKNOWLEDGED" | "INVESTIGATING" | "RESOLVED" | "CLOSED" | "FALSE_POSITIVE";
+        IncidentBatchResult: {
+            requested: number;
+            updated: number;
+            results: {
+                index: number;
+                /** Format: uuid */
+                incidentId: string;
+                /** @enum {string} */
+                status: "UPDATED" | "REJECTED";
+                code?: string;
+                message?: string;
+            }[];
+        };
         Signal: {
             /** Format: uuid */
             id: string;
@@ -2001,6 +2030,19 @@ export interface operations {
             query?: {
                 limit?: components["parameters"]["Limit"];
                 cursor?: components["parameters"]["Cursor"];
+                /** @description 按事件状态精确匹配。 */
+                status?: components["schemas"]["IncidentStatus"];
+                severity?: components["schemas"]["Severity"];
+                /** @description 按资产精确匹配。 */
+                assetId?: string;
+                /** @description 按负责人精确匹配。未指派的事件不会被任何 ownerId 命中。 */
+                ownerId?: string;
+                /** @description 在标题中做不分大小写的子串匹配。`%` 等 LIKE 元字符按字面处理。 */
+                keyword?: string;
+                /** @description 闭区间下界，比较 last_seen_at（列表的排序键）。 */
+                from?: string;
+                /** @description 闭区间上界。早于 from 会被拒绝。 */
+                to?: string;
             };
             header?: never;
             path?: never;
@@ -2017,6 +2059,7 @@ export interface operations {
                     "application/json": components["schemas"]["IncidentList"];
                 };
             };
+            400: components["responses"]["Error"];
         };
     };
     getIncident: {
@@ -2130,6 +2173,43 @@ export interface operations {
                     "application/json": components["schemas"]["Incident"];
                 };
             };
+        };
+    };
+    batchTransitionIncidents: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    incidentIds: string[];
+                    status: components["schemas"]["IncidentStatus"];
+                    /** Format: uuid */
+                    ownerId?: string;
+                    resolution?: string;
+                };
+            };
+        };
+        responses: {
+            /**
+             * @description 逐行结果。行的结果彼此独立：被拒的行不会回滚已成功的行，因为状态机
+             *     决定了「一部分能流转」是常态而不是错误，一个笼统的错误码无法告诉
+             *     调用方哪些行动了。
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentBatchResult"];
+                };
+            };
+            400: components["responses"]["Error"];
         };
     };
     listEvidence: {

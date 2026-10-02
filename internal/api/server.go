@@ -239,6 +239,10 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("GET /api/v1/incidents/{id}/timeline", s.listIncidentTimeline)
 	protected.HandleFunc("POST /api/v1/incidents/{id}/comments", s.requireRoles(s.addIncidentComment, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("POST /api/v1/incidents/{id}/transition", s.requireRoles(s.transitionIncident, domain.RoleAdmin, domain.RoleOperator))
+	// Registered before the {id} patterns above are matched by the mux's own
+	// precedence rules (a literal segment wins over a wildcard), so "batch" can
+	// never be read as an incident id.
+	protected.HandleFunc("POST /api/v1/incidents/batch-transition", s.requireRoles(s.batchTransitionIncidents, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/evidence", s.listEvidence)
 	protected.HandleFunc("GET /api/v1/evidence/{id}/download", s.downloadEvidence)
 	protected.HandleFunc("POST /api/v1/evidence/{id}/signed-url", s.requireRoles(s.signedEvidenceURL, domain.RoleAdmin, domain.RoleOperator))
@@ -1668,12 +1672,150 @@ func (s *Server) cancelJob(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) listIncidents(writer http.ResponseWriter, request *http.Request) {
-	incidents, nextCursor, err := s.repository.ListIncidents(request.Context(), principal(request).User.TenantID, listOptions(request))
+	filter, err := parseIncidentFilter(request)
+	if err != nil {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_FILTER", err.Error(), nil)
+		return
+	}
+	incidents, nextCursor, err := s.repository.ListIncidents(request.Context(), principal(request).User.TenantID, filter, listOptions(request))
 	if err != nil {
 		s.repositoryFailure(writer, request, "list incidents", err)
 		return
 	}
 	writeList(writer, incidents, nextCursor)
+}
+
+// maxBatchIncidents bounds one batch transition request. Each row is a read, a
+// write, a timeline entry, an audit row and a notification, so this is a much
+// heavier loop than the asset import it otherwise mirrors; 200 keeps one caller
+// from occupying the control plane for a whole page of incidents.
+const maxBatchIncidents = 200
+
+// batchTransitionIncidents moves several incidents through the same transition
+// in one request.
+//
+// The semantics are the asset import's: rows are independent, a rejected row
+// does not roll back the ones that succeeded, and the response reports each row
+// rather than one aggregate error. That is the only honest shape here, because
+// the transitions are state-dependent -- acknowledging a page of OPEN incidents
+// and closing a page that mixes states cannot both fully succeed, and a caller
+// that got a bare 409 would not know which rows moved.
+//
+// Each updated incident gets its own audit row and timeline entry, exactly as a
+// single transition does. An aggregate audit would be cheaper and would destroy
+// the property that matters: that an auditor reading one incident's history sees
+// who changed it and when, without having to find the batch it was part of.
+func (s *Server) batchTransitionIncidents(writer http.ResponseWriter, request *http.Request) {
+	session := principal(request)
+	var input struct {
+		IncidentIDs []string              `json:"incidentIds"`
+		Status      domain.IncidentStatus `json:"status"`
+		OwnerID     string                `json:"ownerId"`
+		Resolution  string                `json:"resolution"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	if len(input.IncidentIDs) == 0 {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_BATCH", "incidentIds 不能为空", nil)
+		return
+	}
+	if len(input.IncidentIDs) > maxBatchIncidents {
+		writeError(writer, request, http.StatusBadRequest, "BATCH_TOO_LARGE", "单次批量操作的事件数超出上限", map[string]any{"limit": maxBatchIncidents})
+		return
+	}
+	if !validIncidentStatuses[string(input.Status)] {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_FILTER", "status 不是合法的事件状态", nil)
+		return
+	}
+	// The owner is validated once rather than per row: it is one value, and a
+	// batch that named a foreign owner would reject every row with the same
+	// answer, which the caller can act on better as a single 400.
+	ownerID := strings.TrimSpace(input.OwnerID)
+	if ownerID != "" {
+		if _, err := s.repository.GetUser(request.Context(), session.User.TenantID, ownerID); err != nil {
+			writeError(writer, request, http.StatusBadRequest, "INVALID_OWNER", "负责人不属于当前租户", nil)
+			return
+		}
+	}
+
+	type rowResult struct {
+		Index      int    `json:"index"`
+		IncidentID string `json:"incidentId"`
+		Status     string `json:"status"`
+		Code       string `json:"code,omitempty"`
+		Message    string `json:"message,omitempty"`
+	}
+	results := make([]rowResult, 0, len(input.IncidentIDs))
+	updated := 0
+	for index, id := range input.IncidentIDs {
+		result := rowResult{Index: index, IncidentID: id, Status: "REJECTED"}
+		incident, err := s.repository.GetIncident(request.Context(), session.User.TenantID, id)
+		if err != nil {
+			result.Code, result.Message = "INCIDENT_NOT_FOUND", "事件不存在"
+			results = append(results, result)
+			continue
+		}
+		before := incident
+		if err := detection.ValidateTransition(incident.Status, input.Status); err != nil {
+			result.Code, result.Message = "INVALID_INCIDENT_TRANSITION", err.Error()
+			results = append(results, result)
+			continue
+		}
+		if (input.Status == domain.IncidentResolved || input.Status == domain.IncidentFalsePositive || input.Status == domain.IncidentClosed) &&
+			strings.TrimSpace(input.Resolution) == "" && strings.TrimSpace(incident.Resolution) == "" {
+			result.Code, result.Message = "RESOLUTION_REQUIRED", "恢复、关闭或误报状态必须填写说明"
+			results = append(results, result)
+			continue
+		}
+		incident.Status = input.Status
+		switch {
+		case ownerID != "":
+			incident.OwnerID = ownerID
+		case input.Status == domain.IncidentAcknowledged && incident.OwnerID == "":
+			// Same default as the single transition: acknowledging an unowned
+			// incident claims it for whoever acknowledged it.
+			incident.OwnerID = session.User.ID
+		}
+		if resolution := strings.TrimSpace(input.Resolution); resolution != "" {
+			incident.Resolution = resolution
+		}
+		if input.Status == domain.IncidentAcknowledged && incident.AcknowledgedAt == nil {
+			now := time.Now().UTC()
+			incident.AcknowledgedAt = &now
+		}
+		if input.Status == domain.IncidentResolved || input.Status == domain.IncidentFalsePositive {
+			now := time.Now().UTC()
+			incident.ResolvedAt = &now
+		}
+		if input.Status == domain.IncidentInvestigating {
+			incident.ResolvedAt = nil
+		}
+		if err := s.repository.UpdateIncident(request.Context(), incident); err != nil {
+			result.Code, result.Message = "INCIDENT_UPDATE_FAILED", "无法更新事件"
+			results = append(results, result)
+			continue
+		}
+		// As in the single transition: the timeline entry is best-effort because
+		// the status has already changed, and its loss is the lesser harm.
+		if err := s.repository.AppendIncidentEvent(request.Context(),
+			detection.IncidentTransitionEvent(before, incident, session.User, time.Now().UTC()),
+		); err != nil {
+			s.logger.Error("persist incident timeline entry failed", "incident_id", incident.ID, "error", err)
+		}
+		s.appendAudit(request, session.User, "incident.transition", "incident", incident.ID, "SUCCESS", map[string]any{"status": input.Status, "batch": true})
+		s.broker.Publish("incident.updated", incident)
+		s.detection.NotifyIncident(request.Context(), incident, domain.AlertReasonTransitioned)
+		updated++
+		result.Status = "UPDATED"
+		results = append(results, result)
+	}
+	s.appendAudit(request, session.User, "incident.batch_transition", "incident", "", "SUCCESS", map[string]any{
+		"requested": len(input.IncidentIDs), "updated": updated, "status": input.Status,
+	})
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"requested": len(input.IncidentIDs), "updated": updated, "results": results,
+	})
 }
 
 func (s *Server) getIncident(writer http.ResponseWriter, request *http.Request) {
@@ -2038,7 +2180,7 @@ func (s *Server) reportSummary(writer http.ResponseWriter, request *http.Request
 			failedJobs++
 		}
 	}
-	incidents, _, err := s.repository.ListIncidents(request.Context(), session.User.TenantID, store.ListOptions{})
+	incidents, _, err := s.repository.ListIncidents(request.Context(), session.User.TenantID, store.IncidentFilter{}, store.ListOptions{})
 	if err != nil {
 		s.repositoryFailure(writer, request, "list report incidents", err)
 		return
@@ -2441,6 +2583,46 @@ func parseAuditFilter(request *http.Request) (store.AuditFilter, error) {
 	return filter, nil
 }
 
+// parseIncidentFilter reads the optional incident narrowing query parameters.
+// It follows parseAuditFilter: a malformed value is a 400 rather than a silently
+// empty list, because the caller asked a precise question and answering it
+// wrongly is worse than refusing.
+func parseIncidentFilter(request *http.Request) (store.IncidentFilter, error) {
+	query := request.URL.Query()
+	filter := store.IncidentFilter{
+		Status:   query.Get("status"),
+		Severity: query.Get("severity"),
+		AssetID:  query.Get("assetId"),
+		OwnerID:  query.Get("ownerId"),
+		Keyword:  strings.TrimSpace(query.Get("keyword")),
+	}
+	if filter.Status != "" && !validIncidentStatuses[filter.Status] {
+		return store.IncidentFilter{}, errors.New("status 不是合法的事件状态")
+	}
+	if filter.Severity != "" && !validSeverities[filter.Severity] {
+		return store.IncidentFilter{}, errors.New("severity 只能是 LOW、MEDIUM、HIGH 或 CRITICAL")
+	}
+	// Postgres casts both to uuid, so a non-uuid reaches the driver as 22P02 and
+	// surfaces as a 500 instead of a rejected filter.
+	if filter.AssetID != "" && !looksLikeUUID(filter.AssetID) {
+		return store.IncidentFilter{}, errors.New("assetId 必须是 UUID")
+	}
+	if filter.OwnerID != "" && !looksLikeUUID(filter.OwnerID) {
+		return store.IncidentFilter{}, errors.New("ownerId 必须是 UUID")
+	}
+	var err error
+	if filter.From, err = parseAuditTime(query.Get("from")); err != nil {
+		return store.IncidentFilter{}, fmt.Errorf("from 必须是 RFC3339 时间: %w", err)
+	}
+	if filter.To, err = parseAuditTime(query.Get("to")); err != nil {
+		return store.IncidentFilter{}, fmt.Errorf("to 必须是 RFC3339 时间: %w", err)
+	}
+	if !filter.From.IsZero() && !filter.To.IsZero() && filter.To.Before(filter.From) {
+		return store.IncidentFilter{}, errors.New("to 不能早于 from")
+	}
+	return filter, nil
+}
+
 func parseAuditTime(raw string) (time.Time, error) {
 	if raw == "" {
 		return time.Time{}, nil
@@ -2475,6 +2657,22 @@ func looksLikeUUID(value string) bool {
 // SUCCESS or FAILED, and the retention sweep emits PARTIAL when some tenants
 // were skipped.
 var validAuditResults = map[string]bool{"SUCCESS": true, "FAILED": true, "PARTIAL": true}
+
+// validIncidentStatuses and validSeverities are the closed sets an incident
+// filter may name. They are spelled out rather than derived from the domain
+// constants so that a new status has to be added here deliberately: a filter
+// that accepted a status the listing can never return would answer every query
+// with an empty page instead of saying the value is wrong.
+var validIncidentStatuses = map[string]bool{
+	string(domain.IncidentOpen): true, string(domain.IncidentAcknowledged): true,
+	string(domain.IncidentInvestigating): true, string(domain.IncidentResolved): true,
+	string(domain.IncidentClosed): true, string(domain.IncidentFalsePositive): true,
+}
+
+var validSeverities = map[string]bool{
+	string(domain.SeverityInfo): true, string(domain.SeverityLow): true, string(domain.SeverityMedium): true,
+	string(domain.SeverityHigh): true, string(domain.SeverityCritical): true,
+}
 
 // runRetentionMaintenance is the authorized manual trigger. It delegates to the
 // same maintenance.Runner the background loop uses, so a dry run here reports

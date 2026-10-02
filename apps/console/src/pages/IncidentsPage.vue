@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import IncidentTimeline from "../components/monitoring/IncidentTimeline.vue";
 import ListFooter from "../components/monitoring/ListFooter.vue";
+import type { IncidentFilterParams } from "../services/api/client";
 import type { AlertDelivery, Asset, Evidence, Incident, User } from "../types/domain";
 
 type Props = {
@@ -26,8 +27,52 @@ type Props = {
 const props = defineProps<Props>();
 const emit = defineEmits<{
   transition: [incident: Incident, status: Incident["status"], ownerId: string];
+  batchTransition: [ids: string[], status: Incident["status"]];
+  filter: [params: IncidentFilterParams];
   loadMore: [];
 }>();
+
+const STATUSES = ["OPEN", "ACKNOWLEDGED", "INVESTIGATING", "RESOLVED", "CLOSED", "FALSE_POSITIVE"];
+const SEVERITIES = ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"];
+
+const filterStatus = ref("");
+const filterSeverity = ref("");
+const filterKeyword = ref("");
+// The server compares last_seen_at, which is the listing's ordering key; the
+// picker emits the exact RFC3339 shape the contract expects so a range the
+// operator picked is never rejected for its formatting.
+const filterRange = ref<[string, string] | undefined>();
+
+function applyFilters() {
+  emit("filter", {
+    status: filterStatus.value || undefined,
+    severity: filterSeverity.value || undefined,
+    keyword: filterKeyword.value.trim() || undefined,
+    from: filterRange.value?.[0] || undefined,
+    to: filterRange.value?.[1] || undefined,
+  });
+}
+
+function clearFilters() {
+  filterStatus.value = "";
+  filterSeverity.value = "";
+  filterKeyword.value = "";
+  filterRange.value = undefined;
+  applyFilters();
+}
+
+// Selection is held by id, not by row object: the store replaces data.incidents
+// on every SSE refresh, so row objects are short-lived.
+const selectedIds = ref<string[]>([]);
+function onSelectionChange(rows: Incident[]) {
+  selectedIds.value = rows.map((row) => row.id);
+}
+
+function batch(status: Incident["status"]) {
+  if (selectedIds.value.length === 0) return;
+  emit("batchTransition", [...selectedIds.value], status);
+  selectedIds.value = [];
+}
 
 // Held by id rather than by object: the store replaces data.incidents on every
 // refresh, so a captured object would keep showing the state the drawer was
@@ -88,8 +133,34 @@ async function submitComment() {
     <div class="page-toolbar">
       <div><span class="section-kicker">INCIDENT RESPONSE</span><p class="toolbar-copy">所有事件都必须关联证据，关闭高风险事件需要处置说明。</p></div>
     </div>
+    <section class="panel audit-filters">
+      <el-select v-model="filterStatus" clearable placeholder="状态" class="filter-select">
+        <el-option v-for="value in STATUSES" :key="value" :label="value" :value="value" />
+      </el-select>
+      <el-select v-model="filterSeverity" clearable placeholder="风险" class="filter-select narrow">
+        <el-option v-for="value in SEVERITIES" :key="value" :label="value" :value="value" />
+      </el-select>
+      <el-input v-model="filterKeyword" clearable placeholder="标题关键字" class="filter-input" @keyup.enter="applyFilters" />
+      <el-date-picker
+        v-model="filterRange"
+        type="datetimerange"
+        value-format="YYYY-MM-DDTHH:mm:ss[Z]"
+        start-placeholder="最近发现起"
+        end-placeholder="最近发现止"
+        class="filter-range"
+      />
+      <el-button type="primary" @click="applyFilters">查询</el-button>
+      <el-button @click="clearFilters">重置</el-button>
+    </section>
     <section class="panel">
-      <el-table :data="incidents" empty-text="暂无安全事件" @row-click="openIncident">
+      <div v-if="canOperate && selectedIds.length > 0" class="batch-bar">
+        <span class="batch-count">已选 {{ selectedIds.length }} 项</span>
+        <el-button size="small" @click="batch('ACKNOWLEDGED')">批量认领</el-button>
+        <el-button size="small" type="danger" plain @click="batch('FALSE_POSITIVE')">批量误报</el-button>
+        <el-button size="small" plain @click="batch('CLOSED')">批量关闭</el-button>
+      </div>
+      <el-table :data="incidents" empty-text="暂无安全事件" row-key="id" @selection-change="onSelectionChange" @row-click="openIncident">
+        <el-table-column v-if="canOperate" type="selection" width="42" reserve-selection />
         <el-table-column label="风险" width="105"><template #default="{ row }"><el-tag :type="statusType(row.severity)" effect="dark">{{ row.severity }}</el-tag></template></el-table-column>
         <el-table-column label="事件" min-width="290"><template #default="{ row }"><strong>{{ row.title }}</strong><small class="table-sub">{{ assetMap.get(row.assetId)?.url }}</small></template></el-table-column>
         <el-table-column prop="occurrenceCount" label="次数" width="80" />

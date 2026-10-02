@@ -364,8 +364,10 @@ async function assertIncidentResponse(page, baseURL) {
   // the walk takes whichever one is available rather than assuming OPEN. Order
   // matters: the first two need no disposal note, so they are preferred when
   // present. 标记误报 is the fallback because it is offered from both OPEN and
-  // INVESTIGATING -- and those are the only two states a fresh compose smoke
-  // leaves behind, so this path is always reachable. Without it, a repeated run
+  // INVESTIGATING. A fresh compose smoke leaves its incident at INVESTIGATING
+  // (its batch-step assertions move it there), and a long-lived stack may hold
+  // anything at all -- which is why the fallback is what makes this path always
+  // reachable. Without it, a repeated run
   // against a long-lived stack (every incident already past ACKNOWLEDGED) would
   // find nothing to do and fail, which reads as a defect when it is only
   // consumed state.
@@ -393,10 +395,13 @@ async function assertIncidentResponse(page, baseURL) {
     const candidate = page.locator(".el-table__row").filter({ has: page.getByRole("button", { name: rowLabel }) }).first();
     if ((await candidate.count()) === 0) continue;
     await candidate.scrollIntoViewIfNeeded();
-    // Column 1 is 事件, the cell holding the incident title. Read before the
-    // click, so it is the row that was acted on rather than whatever the drawer
-    // shows afterwards.
-    movedTitle = (await candidate.locator("td").nth(1).locator("strong").innerText()).trim();
+    // The 事件 cell is the only one holding a <strong>, and locating it that way
+    // rather than by column index keeps this working when the table grows a
+    // column that is only rendered for some roles -- which is exactly what the
+    // selection column is.
+    // Read before the click, so it is the row that was acted on rather than
+    // whatever the drawer shows afterwards.
+    movedTitle = (await candidate.locator("td:has(strong) strong").first().innerText()).trim();
     await candidate.click();
     await page.locator(".el-drawer").waitFor({ timeout: 15000 });
     await page.locator(".el-drawer").getByRole("button", { name: drawerLabel }).click();

@@ -207,7 +207,37 @@ export function cancelJob(id: string) {
   return request<DetectionJob>(`/detection-jobs/${id}/cancel`, { method: "POST" });
 }
 
-export function getIncidents(params: PageParams = {}) {
+// IncidentFilterParams mirrors the narrowing query parameters GET /incidents
+// accepts. Every field is optional and an absent one means "do not filter on
+// this dimension"; `from`/`to` are an inclusive RFC3339 range on lastSeenAt,
+// which is the listing's ordering key.
+export type IncidentFilterParams = PageParams & {
+  status?: string;
+  severity?: string;
+  ownerId?: string;
+  keyword?: string;
+  from?: string;
+  to?: string;
+};
+
+// IncidentBatchRow is one line of a batch result. Rows are independent: a
+// REJECTED row carries a code the caller can branch on, and does not undo the
+// UPDATEed ones.
+export type IncidentBatchRow = {
+  index: number;
+  incidentId: string;
+  status: "UPDATED" | "REJECTED";
+  code?: string;
+  message?: string;
+};
+
+export type IncidentBatchResult = {
+  requested: number;
+  updated: number;
+  results: IncidentBatchRow[];
+};
+
+export function getIncidents(params: IncidentFilterParams = {}) {
   return request<ListResponse<Incident>>(`/incidents${listQuery(params)}`);
 }
 
@@ -298,6 +328,13 @@ export type AuditFilterParams = PageParams & {
 
 export function getAuditEvents(params: AuditFilterParams = {}) {
   return request<ListResponse<AuditEvent>>(`/audit-events${listQuery(params)}`);
+}
+
+export function batchTransitionIncidents(incidentIds: string[], status: IncidentStatus, resolution = "", ownerId = "") {
+  return request<IncidentBatchResult>(`/incidents/batch-transition`, {
+    method: "POST",
+    body: JSON.stringify({ incidentIds, status, resolution, ownerId }),
+  });
 }
 
 export function transitionIncident(id: string, status: IncidentStatus, resolution = "", ownerId = "") {

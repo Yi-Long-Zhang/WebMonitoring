@@ -59,6 +59,49 @@ func (f AuditFilter) Matches(event domain.AuditEvent) bool {
 	return true
 }
 
+// IncidentFilter narrows an incident listing. Like AuditFilter, every field is
+// optional and the zero value means "do not filter on this dimension", so
+// IncidentFilter{} returns every incident the tenant has.
+//
+// It is a separate type from AuditFilter for the same reason AuditFilter is a
+// separate type from ListOptions: the dimensions belong to this listing, and
+// sharing one struct across listings would let a handler pass a predicate the
+// method cannot honour while the zero value quietly meant something else.
+//
+// The time bounds are on LastSeenAt because that is the listing's ordering key.
+// Bounding on a column the page is not ordered by would let a cursor skip rows
+// that a later page should have shown.
+type IncidentFilter struct {
+	Status   string
+	Severity string
+	AssetID  string
+	OwnerID  string
+	// Keyword matches anywhere in the title, case-insensitively.
+	Keyword string
+	// Inclusive bounds on last_seen_at. A zero time means unbounded.
+	From time.Time
+	To   time.Time
+}
+
+// Matches reports whether an incident satisfies every set dimension. The
+// Postgres implementation mirrors these predicates in SQL; both are exercised by
+// the same cross-store test so the two cannot drift silently.
+func (f IncidentFilter) Matches(incident domain.Incident) bool {
+	switch {
+	case f.Status != "" && string(incident.Status) != f.Status,
+		f.Severity != "" && string(incident.Severity) != f.Severity,
+		f.AssetID != "" && incident.AssetID != f.AssetID,
+		f.OwnerID != "" && incident.OwnerID != f.OwnerID,
+		!f.From.IsZero() && incident.LastSeenAt.Before(f.From),
+		!f.To.IsZero() && incident.LastSeenAt.After(f.To):
+		return false
+	}
+	if f.Keyword != "" && !strings.Contains(strings.ToLower(incident.Title), strings.ToLower(f.Keyword)) {
+		return false
+	}
+	return true
+}
+
 // applyPage slices a slice that is already sorted by its keyset key in
 // descending order into the page selected by opts. It returns the trimmed page
 // plus the cursor for the following page (empty when there is no further page).

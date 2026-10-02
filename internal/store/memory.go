@@ -1075,12 +1075,14 @@ func (m *MemoryRepository) GetIncident(ctx context.Context, tenantID, id string)
 	return cloneIncident(incident), nil
 }
 
-func (m *MemoryRepository) ListIncidents(ctx context.Context, tenantID string, opts ListOptions) ([]domain.Incident, string, error) {
+func (m *MemoryRepository) ListIncidents(ctx context.Context, tenantID string, filter IncidentFilter, opts ListOptions) ([]domain.Incident, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]domain.Incident, 0)
 	for _, incident := range m.incidents {
-		if incident.TenantID == tenantID {
+		// Filter before sorting and paging, mirroring the postgres order of
+		// WHERE predicates ahead of the keyset clause.
+		if incident.TenantID == tenantID && filter.Matches(incident) {
 			result = append(result, cloneIncident(incident))
 		}
 	}

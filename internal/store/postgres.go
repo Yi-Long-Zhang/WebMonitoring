@@ -1141,9 +1141,44 @@ func (p *PostgresRepository) GetIncident(ctx context.Context, tenantID, id strin
 	return scanIncident(p.pool.QueryRow(ctx, incidentSelect+` WHERE tenant_id=$1 AND id=$2`, tenantID, id))
 }
 
-func (p *PostgresRepository) ListIncidents(ctx context.Context, tenantID string, opts ListOptions) ([]domain.Incident, string, error) {
+// ListIncidents reads one page of a tenant's incidents, narrowed by filter.
+//
+// Every predicate is appended before paginateQuery runs: that helper numbers its
+// placeholders from len(args), so a predicate added afterwards would reuse a
+// number the keyset clause already took.
+func (p *PostgresRepository) ListIncidents(ctx context.Context, tenantID string, filter IncidentFilter, opts ListOptions) ([]domain.Incident, string, error) {
 	args := []any{tenantID}
 	query := incidentSelect + ` WHERE tenant_id=$1`
+	if filter.Status != "" {
+		query += fmt.Sprintf(` AND status=$%d`, len(args)+1)
+		args = append(args, filter.Status)
+	}
+	if filter.Severity != "" {
+		query += fmt.Sprintf(` AND severity=$%d`, len(args)+1)
+		args = append(args, filter.Severity)
+	}
+	if filter.AssetID != "" {
+		query += fmt.Sprintf(` AND asset_id=$%d::uuid`, len(args)+1)
+		args = append(args, filter.AssetID)
+	}
+	if filter.OwnerID != "" {
+		query += fmt.Sprintf(` AND owner_id=$%d::uuid`, len(args)+1)
+		args = append(args, filter.OwnerID)
+	}
+	if filter.Keyword != "" {
+		// position() rather than ILIKE: a keyword containing % or _ is a literal
+		// to the operator typing it, and would silently become a wildcard here.
+		query += fmt.Sprintf(` AND position(lower($%d) in lower(title)) > 0`, len(args)+1)
+		args = append(args, filter.Keyword)
+	}
+	if !filter.From.IsZero() {
+		query += fmt.Sprintf(` AND last_seen_at >= $%d`, len(args)+1)
+		args = append(args, filter.From)
+	}
+	if !filter.To.IsZero() {
+		query += fmt.Sprintf(` AND last_seen_at <= $%d`, len(args)+1)
+		args = append(args, filter.To)
+	}
 	query, args = paginateQuery(query, args, opts, "last_seen_at")
 	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {

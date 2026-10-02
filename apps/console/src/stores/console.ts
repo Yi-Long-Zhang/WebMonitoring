@@ -17,7 +17,7 @@ import {
   getTenants,
   getUsers,
 } from "../services/api/client";
-import type { AuditFilterParams, PageParams } from "../services/api/client";
+import type { AuditFilterParams, IncidentFilterParams, PageParams } from "../services/api/client";
 // The element types of the paged lists are inferred from the client function
 // signatures (getAssets returns ListResponse<Asset>), so only the types used
 // explicitly below are imported here.
@@ -88,7 +88,10 @@ export const useConsoleStore = defineStore("console", () => {
   const sites = paged(getSites);
   const policies = paged(getPolicies);
   const baselines = paged(getBaselines);
-  const incidents = paged(getIncidents);
+  // Like the audit list: the incident list is now narrowable, so the store has
+  // to remember the operator's filter across the SSE refreshes that re-fetch it.
+  const incidentFilters = ref<IncidentFilterParams>({});
+  const incidents = paged((params: PageParams) => getIncidents({ ...params, ...incidentFilters.value }));
   const jobs = paged(getJobs);
   const evidence = paged(getEvidence);
   const alertDeliveries = paged(getAlertDeliveries);
@@ -149,6 +152,15 @@ export const useConsoleStore = defineStore("console", () => {
     await audits.loadFirst();
   }
 
+  // applyIncidentFilters replaces the incident narrowing and reloads from the
+  // top, for the same reason applyAuditFilters forgets first: a filter selects a
+  // different set of rows, not a subset of the pages already held.
+  async function applyIncidentFilters(next: IncidentFilterParams) {
+    incidentFilters.value = next;
+    incidents.forget();
+    await incidents.loadFirst();
+  }
+
   // A bulk import adds rows to the head of the same (createdAt DESC, id DESC)
   // ordering, so the accumulated pages are dropped rather than merged into --
   // the same reason applyAuditFilters forgets first.
@@ -206,6 +218,8 @@ export const useConsoleStore = defineStore("console", () => {
     isLoadingMore,
     loadMore,
     applyAuditFilters,
+    applyIncidentFilters,
+    incidentFilters,
     reloadAssets,
     reloadAudits,
   };

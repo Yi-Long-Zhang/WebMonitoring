@@ -336,6 +336,56 @@ try {
         throw "the transition entry records $($timeline.items[0].fromStatus) -> $($timeline.items[0].toStatus)"
     }
 
+    # --- incident filtering and batch transition ----------------------------
+    # The smoke run holds exactly one incident so far, which is enough to prove
+    # both halves that a filter cannot fake: a matching filter still returns it,
+    # and a non-matching one returns nothing. A filter that was silently dropped
+    # would pass the first check and fail the second.
+    $openOnly = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/incidents?status=OPEN" -WebSession $session
+    if (@($openOnly.items | Where-Object id -eq $incidentId).Count -ne 1) {
+        throw "status=OPEN did not return the open incident"
+    }
+    $dismissedOnly = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/incidents?status=FALSE_POSITIVE" -WebSession $session
+    if (@($dismissedOnly.items).Count -ne 0) {
+        throw "status=FALSE_POSITIVE returned $(@($dismissedOnly.items).Count) incidents, expected none"
+    }
+    $keywordMiss = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/incidents?keyword=no-such-title-fragment" -WebSession $session
+    if (@($keywordMiss.items).Count -ne 0) {
+        throw "a keyword matching nothing returned $(@($keywordMiss.items).Count) incidents"
+    }
+    # A malformed filter is refused rather than answered: letting it through
+    # would reach Postgres as a bad uuid cast (a 500) or silently return a
+    # subset the caller did not ask for.
+    foreach ($malformed in @("?severity=URGENT", "?assetId=not-a-uuid", "?status=ARCHIVED")) {
+        $rejected = Invoke-ApiExpectError -Method Get -Uri "$apiBase/api/v1/incidents$malformed" -WebSession $session
+        if ($rejected.Status -ne 400 -or $rejected.Code -ne "INVALID_FILTER") {
+            throw "malformed filter $malformed returned $($rejected.Status)/$($rejected.Code), expected 400/INVALID_FILTER"
+        }
+    }
+
+    # A batch over one incident that is already ACKNOWLEDGED: the row must be
+    # rejected per row rather than failing the call, because "some rows cannot
+    # move" is the normal case for a state-dependent transition.
+    $batch = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/incidents/batch-transition" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" `
+        -Body "{`"incidentIds`":[`"$incidentId`"],`"status`":`"ACKNOWLEDGED`"}"
+    if ($batch.requested -ne 1 -or $batch.updated -ne 0) {
+        throw "batch re-acknowledging = requested $($batch.requested) updated $($batch.updated), expected 1/0"
+    }
+    if ($batch.results[0].status -ne "REJECTED" -or $batch.results[0].code -ne "INVALID_INCIDENT_TRANSITION") {
+        throw "batch row = $($batch.results[0].status)/$($batch.results[0].code), expected a rejected transition"
+    }
+    # And the move that is legal still lands, with the count to prove it.
+    $batchInvestigating = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/incidents/batch-transition" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" `
+        -Body "{`"incidentIds`":[`"$incidentId`"],`"status`":`"INVESTIGATING`"}"
+    if ($batchInvestigating.updated -ne 1) {
+        throw "batch acknowledge -> investigating updated $($batchInvestigating.updated), expected 1"
+    }
+    $afterBatch = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/incidents/$incidentId" -WebSession $session
+    if ($afterBatch.status -ne "INVESTIGATING") {
+        throw "batch transition left the incident at $($afterBatch.status)"
+    }
     $reportPath = Join-Path $smokeRoot "incident.zip"
     Invoke-WebRequest -Uri "$apiBase/api/v1/reports/$($incidents.items[0].id)" `
         -WebSession $session -OutFile $reportPath | Out-Null

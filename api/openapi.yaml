@@ -423,12 +423,40 @@ paths:
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          description: 按事件状态精确匹配。
+          schema: { $ref: "#/components/schemas/IncidentStatus" }
+        - name: severity
+          in: query
+          schema: { $ref: "#/components/schemas/Severity" }
+        - name: assetId
+          in: query
+          description: 按资产精确匹配。
+          schema: { type: string, format: uuid }
+        - name: ownerId
+          in: query
+          description: 按负责人精确匹配。未指派的事件不会被任何 ownerId 命中。
+          schema: { type: string, format: uuid }
+        - name: keyword
+          in: query
+          description: 在标题中做不分大小写的子串匹配。`%` 等 LIKE 元字符按字面处理。
+          schema: { type: string }
+        - name: from
+          in: query
+          description: 闭区间下界，比较 last_seen_at（列表的排序键）。
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: 闭区间上界。早于 from 会被拒绝。
+          schema: { type: string, format: date-time }
       responses:
         "200":
           description: 事件列表
           content:
             application/json:
               schema: { $ref: "#/components/schemas/IncidentList" }
+        "400": { $ref: "#/components/responses/Error" }
   /incidents/{id}:
     get:
       operationId: getIncident
@@ -502,6 +530,36 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Incident" }
+  /incidents/batch-transition:
+    post:
+      operationId: batchTransitionIncidents
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [incidentIds, status]
+              properties:
+                incidentIds:
+                  type: array
+                  maxItems: 200
+                  items: { type: string, format: uuid }
+                status: { $ref: "#/components/schemas/IncidentStatus" }
+                ownerId: { type: string, format: uuid }
+                resolution: { type: string }
+      responses:
+        "200":
+          description: |
+            逐行结果。行的结果彼此独立：被拒的行不会回滚已成功的行，因为状态机
+            决定了「一部分能流转」是常态而不是错误，一个笼统的错误码无法告诉
+            调用方哪些行动了。
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IncidentBatchResult" }
+        "400": { $ref: "#/components/responses/Error" }
   /evidence:
     get:
       operationId: listEvidence
@@ -1215,6 +1273,23 @@ components:
     IncidentStatus:
       type: string
       enum: [OPEN, ACKNOWLEDGED, INVESTIGATING, RESOLVED, CLOSED, FALSE_POSITIVE]
+    IncidentBatchResult:
+      type: object
+      required: [requested, updated, results]
+      properties:
+        requested: { type: integer }
+        updated: { type: integer }
+        results:
+          type: array
+          items:
+            type: object
+            required: [index, incidentId, status]
+            properties:
+              index: { type: integer }
+              incidentId: { type: string, format: uuid }
+              status: { type: string, enum: [UPDATED, REJECTED] }
+              code: { type: string }
+              message: { type: string }
     Signal:
       type: object
       required: [id, kind, severity, summary, evidenceIds, ruleVersion, fingerprint]

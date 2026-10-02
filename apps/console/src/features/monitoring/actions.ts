@@ -3,6 +3,7 @@ import {
   ApiError,
   addIncidentComment,
   approveBaseline,
+  batchTransitionIncidents,
   cancelJob,
   changeOwnPassword as changeOwnPasswordRequest,
   createAlertChannel,
@@ -86,6 +87,36 @@ export function useMonitoringActions() {
     await transitionIncident(incident.id, status, resolution, ownerId);
     await consoleStore.refresh();
     ElMessage.success("事件状态已更新");
+  }
+
+  // batchIncident mirrors changeIncident for a selection: the resolution prompt
+  // happens once, because one batch carries one resolution, and the per-row
+  // result is reported rather than thrown. Rows are independent -- a page that
+  // mixes states cannot fully succeed -- so a rejection is an outcome to show,
+  // not an error to fail the whole call with.
+  async function batchIncident(ids: string[], status: Incident["status"]) {
+    let resolution = "";
+    if (status === "RESOLVED" || status === "FALSE_POSITIVE" || status === "CLOSED") {
+      try {
+        const result = await ElMessageBox.prompt("请填写处置说明（应用于本次选中的全部事件）", "批量处置", {
+          inputPlaceholder: "例如：确认为同一轮误报，统一关闭",
+          inputValidator: (value) => value.trim().length >= 4 || "至少填写 4 个字符",
+        });
+        resolution = result.value;
+      } catch {
+        return;
+      }
+    }
+    const result = await batchTransitionIncidents(ids, status, resolution);
+    await consoleStore.refresh();
+    const rejected = result.results.filter((row) => row.status === "REJECTED");
+    if (rejected.length === 0) {
+      ElMessage.success(`已处置 ${result.updated} 个事件`);
+      return;
+    }
+    // Naming the first rejection is what makes a partial batch actionable: the
+    // operator cannot see which rows were skipped from a bare count.
+    ElMessage.warning(`已处置 ${result.updated} 个，${rejected.length} 个未变更：${rejected[0]?.message ?? "状态不允许该流转"}`);
   }
 
   async function retireBaseline(id: string) {
@@ -276,6 +307,7 @@ export function useMonitoringActions() {
     startDetection,
     reviewBaseline,
     changeIncident,
+    batchIncident,
     commentOnIncident,
     savePolicy,
     retireBaseline,

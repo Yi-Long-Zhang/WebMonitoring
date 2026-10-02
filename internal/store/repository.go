@@ -168,7 +168,7 @@ type Repository interface {
 	UpsertIncident(ctx context.Context, incident domain.Incident) (domain.Incident, IncidentUpsertOutcome, error)
 	UpdateIncident(ctx context.Context, incident domain.Incident) error
 	GetIncident(ctx context.Context, tenantID, id string) (domain.Incident, error)
-	ListIncidents(ctx context.Context, tenantID string, opts ListOptions) ([]domain.Incident, string, error)
+	ListIncidents(ctx context.Context, tenantID string, filter IncidentFilter, opts ListOptions) ([]domain.Incident, string, error)
 	// IncidentStatusCounts returns, in one aggregate query, how many incidents
 	// are open, how many of those are high or critical, and how many of those
 	// are critical. Dashboard and metrics read the same numbers without

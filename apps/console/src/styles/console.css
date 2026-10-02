@@ -64,6 +64,8 @@ button, input { font: inherit; }
 .audit-filters .filter-select { width: 200px; }
 .audit-filters .filter-select.narrow { width: 130px; }
 .audit-filters .filter-range { width: 380px; }
+.batch-bar { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid #eef1f5; background: #f7fafc; }
+.batch-bar .batch-count { color: var(--muted, #6b7280); font-size: 13px; }
 .panel-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 22px 24px 17px; }
 .panel-header h2 { margin: 7px 0 0; color: var(--ink); font-size: 17px; letter-spacing: 0; }
 .panel-header .el-button { color: var(--teal); }
