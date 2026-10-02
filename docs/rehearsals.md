@@ -10,6 +10,41 @@
 
 ---
 
+## 阶段一 1.1 事件筛选与批量处置实测 — 2026-10-03
+
+- **脚本**：`scripts/compose-smoke.ps1`（新增断言段「incident filtering and batch
+  transition」）+ `multi-replica-drill.ps1`；另加两层自动化测试。
+- **关键断言**：(1) 每个过滤维度都要有正例与反例——被静默忽略的过滤条件会通过正例
+  而通不过反例，但要两者都在才成立；(2) 批量流转中「该行不能流转」是结果而不是
+  请求错误，调用必须成功而该行返回 REJECTED；(3) 畸形过滤参数是 400 而不是静默
+  返回子集。
+- **结果**（2026-10-03，全部符合）：
+  - 跨存储测试 `TestIncidentFilterAgreesAcrossStores`：15 组过滤（状态/风险/资产/
+    负责人/关键字/半开与闭合时间区间/组合/`%` 按字面处理）在 memory 与 postgres
+    两个实现上返回**同一集合**；`TestIncidentFilterKeepsTenantBoundary` 证明新增
+    谓词没有挤掉租户谓词。
+  - API 测试：9 种畸形过滤（未知状态、小写状态、未知风险、非 uuid 的 assetId/
+    ownerId、非 RFC3339 的时间、倒置区间）全部 400 `INVALID_FILTER`；筛选在
+    **翻页后依然生效**（第二页不会漏出被排除的行）。
+  - 批量端点测试：混合状态一次提交 4 条（2 条可流转、1 条已误报、1 条不存在）
+    → `requested=4 updated=2`，逐行给出 `UPDATED` / `REJECTED+INVALID_INCIDENT_TRANSITION`
+    / `REJECTED+INCIDENT_NOT_FOUND`；空列表、未知状态、跨租户 owner 各自 400；
+    超过上限 400 `BATCH_TOO_LARGE`（不截断执行）。
+  - smoke：以事件**自身**的状态/风险/资产过滤都能取回它，另一个状态取不回；
+    关键字无匹配返回空；3 种畸形过滤返回 400 `INVALID_FILTER`；批量重复施加当前
+    状态 → `requested=1 updated=0` 且该行 `REJECTED/INVALID_INCIDENT_TRANSITION`；
+    批量 ACKNOWLEDGED→INVESTIGATING → `updated=1` 且事件状态确实变为 INVESTIGATING。
+  - 控制台 E2E 通过：新增的选择列会改变列索引，E2E 的标题单元格定位已从按索引改为
+    按结构（`td:has(strong) strong`），否则该列只在有操作权限时渲染，按索引读会随
+    角色错位。
+- **合并前整体回归**（2026-10-03，`codex/incident-filtering` @ `3a4ac0b`）：
+  `compose-smoke.ps1` 通过（退出码 0，含控制台 Playwright E2E）；
+  `multi-replica-drill.ps1` 通过（退出码 0）。
+- **未覆盖**：前端筛选栏与批量按钮只有 E2E 中的间接覆盖（E2E 走的是既有路径），
+  没有专门针对筛选栏交互的用例。
+
+---
+
 ## 0.9 监测自身失效告警实测 — 2026-10-03
 
 - **脚本**：手工实测，运行中的主 Compose 栈（分支 `codex/monitoring-health` 代码）

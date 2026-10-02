@@ -337,17 +337,27 @@ try {
     }
 
     # --- incident filtering and batch transition ----------------------------
-    # The smoke run holds exactly one incident so far, which is enough to prove
-    # both halves that a filter cannot fake: a matching filter still returns it,
-    # and a non-matching one returns nothing. A filter that was silently dropped
-    # would pass the first check and fail the second.
-    $openOnly = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/incidents?status=OPEN" -WebSession $session
-    if (@($openOnly.items | Where-Object id -eq $incidentId).Count -ne 1) {
-        throw "status=OPEN did not return the open incident"
+    # Each dimension is checked with a positive and a negative case: a filter the
+    # server silently ignored would pass the positive one and fail the negative
+    # one, but only if both are present. The current incident is re-read first so
+    # the expectations follow the state the walk left it in rather than assuming
+    # a status this script set three steps ago.
+    $current = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/incidents/$incidentId" -WebSession $session
+    $otherStatus = if ($current.status -eq "FALSE_POSITIVE") { "OPEN" } else { "FALSE_POSITIVE" }
+    $filterChecks = @(
+        @{ Query = "status=$($current.status)"; Reason = "the incident's own status" },
+        @{ Query = "severity=$($current.severity)"; Reason = "the incident's own severity" },
+        @{ Query = "assetId=$($asset.id)"; Reason = "the incident's own asset" }
+    )
+    foreach ($check in $filterChecks) {
+        $filtered = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/incidents?$($check.Query)" -WebSession $session
+        if (@($filtered.items | Where-Object id -eq $incidentId).Count -ne 1) {
+            throw "filter $($check.Query) ($($check.Reason)) did not return the incident"
+        }
     }
-    $dismissedOnly = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/incidents?status=FALSE_POSITIVE" -WebSession $session
-    if (@($dismissedOnly.items).Count -ne 0) {
-        throw "status=FALSE_POSITIVE returned $(@($dismissedOnly.items).Count) incidents, expected none"
+    $excluded = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/incidents?status=$otherStatus" -WebSession $session
+    if (@($excluded.items | Where-Object id -eq $incidentId).Count -ne 0) {
+        throw "status=$otherStatus returned an incident that is $($current.status)"
     }
     $keywordMiss = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/incidents?keyword=no-such-title-fragment" -WebSession $session
     if (@($keywordMiss.items).Count -ne 0) {
@@ -366,11 +376,14 @@ try {
     # A batch over one incident that is already ACKNOWLEDGED: the row must be
     # rejected per row rather than failing the call, because "some rows cannot
     # move" is the normal case for a state-dependent transition.
+    # The incident is already ACKNOWLEDGED, so asking for ACKNOWLEDGED again is an
+    # illegal transition: the row has to come back REJECTED while the call itself
+    # succeeds, because "this row cannot move" is an outcome, not a request error.
     $batch = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/incidents/batch-transition" `
         -WebSession $session -Headers $csrf -ContentType "application/json" `
-        -Body "{`"incidentIds`":[`"$incidentId`"],`"status`":`"ACKNOWLEDGED`"}"
+        -Body "{`"incidentIds`":[`"$incidentId`"],`"status`":`"$($current.status)`"}"
     if ($batch.requested -ne 1 -or $batch.updated -ne 0) {
-        throw "batch re-acknowledging = requested $($batch.requested) updated $($batch.updated), expected 1/0"
+        throw "batch re-applying the current status = requested $($batch.requested) updated $($batch.updated), expected 1/0"
     }
     if ($batch.results[0].status -ne "REJECTED" -or $batch.results[0].code -ne "INVALID_INCIDENT_TRANSITION") {
         throw "batch row = $($batch.results[0].status)/$($batch.results[0].code), expected a rejected transition"
