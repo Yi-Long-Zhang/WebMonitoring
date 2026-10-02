@@ -587,6 +587,41 @@ docker compose -f deployments/compose/docker-compose.yml exec -T postgres `
 
 ---
 
+## 密钥轮换（`ALERT_SECRET_KEYS`）
+
+**Q：轮换的步骤是什么？**
+
+告警渠道的 URL/签名密钥与登录态检测的凭据由同一份密钥材料封装，轮换分三步，
+中间不能跳：
+
+1. **抬高版本**：把 `ALERT_SECRET_KEYS` 从 `v1:<旧>` 改成 `v1:<旧>,v2:<新>`，
+   重启 `api` 与 `http-worker`。最高版本用于新写入，旧版本保留，存量密文仍可读。
+2. **重封装存量**：先跑 `rewrap --dry-run` 看它将要改动什么，再跑 `rewrap`。
+   它遍历**所有租户**，把旧版本密文重新封装为新版本。
+3. **丢弃旧密钥**：确认第 2 步的输出里**渠道与政策都被改写了**，才把
+   `ALERT_SECRET_KEYS` 收缩为 `v2:<新>`。
+
+**Q：怎么判断重封装真的做了事？**
+
+看 `rewrap finished` 那行 JSON 的四个计数：
+
+```json
+{"msg":"rewrap finished","primaryVersion":2,"channelsScanned":3,"channelsRewrapped":3,"policiesScanned":2,"policiesRewrapped":2,"alreadyCurrent":0,"failures":0}
+```
+
+`channelsRewrapped` 与 `policiesRewrapped` 必须覆盖你实际拥有的条数。
+**「扫描了 N 条、改写了 0 条」不是好消息**：它意味着这一趟把每一行都当成了
+已经是最新版本而原样放行，旧密钥一删这些行就再也解不开。留存的旧密钥只有在
+两个改写计数都对得上之后才可以删。
+
+**Q：跑完之后告警渠道读不出来怎么办？**
+
+**立即把旧密钥加回 `ALERT_SECRET_KEYS` 并重启**——`api`、`http-worker` 与
+`rewrap` 三方都用同一份材料，加回去即可恢复读取。然后按上一问核对计数：改写
+为 0 说明这一趟没有生效，重跑 `rewrap --dry-run` 会指出还有哪些行停留在旧版本。
+
+---
+
 ## 保留期维护
 
 默认证据保留 90 天、审计保留 365 天、**检测任务保留 30 天**（`JOB_RETENTION_DAYS`）。

@@ -1301,22 +1301,23 @@ func (p *PostgresRepository) GetAlertChannel(ctx context.Context, tenantID, id s
 // new ciphertext. It exists for the key-rotation pass, and is separate from
 // UpdateAlertChannel so a rotation cannot reach any other column: url and
 // secret_ciphertext are the only fields a rotation is allowed to change.
+//
+// Unlike CreateAlertChannel and UpdateAlertChannel it does not seal anything:
+// the caller hands it the already re-wrapped ciphertext, matching RewrapPolicy.
 func (p *PostgresRepository) RewrapAlertChannel(ctx context.Context, channel domain.AlertChannel) error {
-	encryptedURL, err := p.secrets.Encrypt(channel.URL, channelAssociatedData(channel.TenantID, channel.ID, "url"))
-	if err != nil {
-		return err
-	}
-	encryptedSecret, err := p.secrets.Encrypt(channel.Secret, channelAssociatedData(channel.TenantID, channel.ID, "secret"))
-	if err != nil {
-		return err
-	}
+	// The values are written as given: they are already ciphertext, produced by
+	// the rotation pass's own keyring, exactly as RewrapPolicy is handed a
+	// policy whose credential fields are already re-sealed. Encrypting here as
+	// well sealed them twice, and the deployment then read back the inner
+	// ciphertext as if it were the URL.
+	//
 	// updated_at is deliberately not touched. The row's content did not change,
 	// only the key that sealed it, and moving the timestamp would make a rotation
 	// look like an edit in the channel list.
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE alert_channels SET url=$3, secret_ciphertext=NULLIF($4,'')
 		WHERE tenant_id=$1 AND id=$2`,
-		channel.TenantID, channel.ID, encryptedURL, encryptedSecret,
+		channel.TenantID, channel.ID, channel.URL, channel.Secret,
 	)
 	if err != nil {
 		return normalizePostgresError(err)
@@ -1368,14 +1369,22 @@ func (p *PostgresRepository) DeleteAlertChannel(ctx context.Context, tenantID, i
 }
 
 func (p *PostgresRepository) ListAlertChannels(ctx context.Context, tenantID string) ([]domain.AlertChannel, error) {
-	return p.listAlertChannels(ctx, tenantID, false)
+	return p.listAlertChannels(ctx, tenantID, false, true)
 }
 
 func (p *PostgresRepository) ListAlertChannelsWithSecrets(ctx context.Context, tenantID string) ([]domain.AlertChannel, error) {
-	return p.listAlertChannels(ctx, tenantID, true)
+	return p.listAlertChannels(ctx, tenantID, true, true)
 }
 
-func (p *PostgresRepository) listAlertChannels(ctx context.Context, tenantID string, includeSecret bool) ([]domain.AlertChannel, error) {
+func (p *PostgresRepository) ListAlertChannelsEncrypted(ctx context.Context, tenantID string) ([]domain.AlertChannel, error) {
+	return p.listAlertChannels(ctx, tenantID, true, false)
+}
+
+// listAlertChannels reads the channel rows. decrypt selects whether the two
+// encrypted columns are opened: the API and the dispatcher need plaintext, while
+// the rotation pass needs the stored ciphertext -- re-sealing an already
+// decrypted value sees no version prefix and reports the row as current.
+func (p *PostgresRepository) listAlertChannels(ctx context.Context, tenantID string, includeSecret, decrypt bool) ([]domain.AlertChannel, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id,tenant_id,name,channel_type,url,recipients,COALESCE(secret_ciphertext,''),enabled,created_at,updated_at
 		FROM alert_channels WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
@@ -1392,6 +1401,14 @@ func (p *PostgresRepository) listAlertChannels(ctx context.Context, tenantID str
 			&item.Enabled, &item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
 			return nil, normalizePostgresError(err)
+		}
+		if !decrypt {
+			item.URL = encryptedURL
+			if includeSecret {
+				item.Secret = encryptedSecret
+			}
+			result = append(result, item)
+			continue
 		}
 		item.URL, err = decryptChannelField(p.secrets, encryptedURL, channelAssociatedData(item.TenantID, item.ID, "url"))
 		if err != nil {

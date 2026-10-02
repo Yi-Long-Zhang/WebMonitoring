@@ -60,7 +60,11 @@ func (s Stats) Rewrapped() bool {
 type Enumerator interface {
 	ListTenants(ctx context.Context, opts store.ListOptions) ([]domain.Tenant, string, error)
 	ListAssets(ctx context.Context, tenantID string, opts store.ListOptions) ([]domain.Asset, string, error)
-	ListAlertChannelsWithSecrets(ctx context.Context, tenantID string) ([]domain.AlertChannel, error)
+	// ListAlertChannelsEncrypted, not ListAlertChannelsWithSecrets: the pass has
+	// to see the stored ciphertext. Re-sealing a decrypted value would find no
+	// version prefix, report the row as already current, and leave every channel
+	// sealed under the key the operator is about to retire.
+	ListAlertChannelsEncrypted(ctx context.Context, tenantID string) ([]domain.AlertChannel, error)
 	GetPolicy(ctx context.Context, tenantID, assetID string) (domain.MonitorPolicy, error)
 }
 
@@ -119,7 +123,7 @@ func (r *Runner) Run(ctx context.Context, dryRun bool) (Stats, error) {
 }
 
 func (r *Runner) rewrapTenant(ctx context.Context, tenant domain.Tenant, dryRun bool, stats *Stats) {
-	channels, err := r.target.ListAlertChannelsWithSecrets(ctx, tenant.ID)
+	channels, err := r.target.ListAlertChannelsEncrypted(ctx, tenant.ID)
 	if err != nil {
 		stats.Failures = append(stats.Failures, fmt.Sprintf("tenant %s: list alert channels: %v", tenant.ID, err))
 		return

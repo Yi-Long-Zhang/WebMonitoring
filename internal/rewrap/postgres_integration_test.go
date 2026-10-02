@@ -3,10 +3,13 @@ package rewrap
 import (
 	"context"
 	"encoding/base64"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"webmonitoring/internal/domain"
 	"webmonitoring/internal/identity"
@@ -27,6 +30,47 @@ func v2KeyMaterial() string {
 	return "v2:" + base64.StdEncoding.EncodeToString(raw)
 }
 
+// rewrapTestDatabase returns a DSN for a database of this test's own, created
+// empty and dropped afterwards.
+//
+// The pass walks every tenant in whatever database it is handed. Run against
+// the shared integration database -- which is one database for every package,
+// as the CI service container is -- it re-sealed the other packages' rows with
+// this file's key material, and internal/store's ciphertext test then failed
+// with "secret was encrypted with key version v2, which is not configured": a
+// key that exists only here. A pass with this blast radius needs its own
+// database, not a shared one.
+func rewrapTestDatabase(t *testing.T, dsn string) string {
+	t.Helper()
+	ctx := context.Background()
+	name := "rewrap_" + strings.ReplaceAll(identity.New(), "-", "")
+	admin, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect to create the test database: %v", err)
+	}
+	defer func() { _ = admin.Close(ctx) }()
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		t.Fatalf("create the test database: %v", err)
+	}
+	t.Cleanup(func() {
+		conn, err := pgx.Connect(context.Background(), dsn)
+		if err != nil {
+			t.Logf("could not reconnect to drop the test database %s: %v", name, err)
+			return
+		}
+		defer func() { _ = conn.Close(context.Background()) }()
+		if _, err := conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); err != nil {
+			t.Logf("could not drop the test database %s: %v", name, err)
+		}
+	})
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse the test DSN: %v", err)
+	}
+	parsed.Path = "/" + name
+	return parsed.String()
+}
+
 // TestRewrapAgainstPostgres is the case the unit tests cannot reach: the store
 // derives the associated data itself, so a pass that agreed with the fake but not
 // with channelAssociatedData would look correct in every unit test and would
@@ -41,6 +85,7 @@ func TestRewrapAgainstPostgres(t *testing.T) {
 	if dsn == "" {
 		t.Skip("POSTGRES_TEST_DSN is not configured")
 	}
+	dsn = rewrapTestDatabase(t, dsn)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 

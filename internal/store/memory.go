@@ -1115,6 +1115,13 @@ func (m *MemoryRepository) ListAlertChannels(ctx context.Context, tenantID strin
 	return result, nil
 }
 
+// ListAlertChannelsEncrypted is the rotation pass's read. The in-memory store
+// keeps whatever it was handed, so this is the same accessor as the dispatcher's
+// -- the distinction only exists where the store decrypts on read.
+func (m *MemoryRepository) ListAlertChannelsEncrypted(ctx context.Context, tenantID string) ([]domain.AlertChannel, error) {
+	return m.ListAlertChannelsWithSecrets(ctx, tenantID)
+}
+
 func (m *MemoryRepository) ListAlertChannelsWithSecrets(ctx context.Context, tenantID string) ([]domain.AlertChannel, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

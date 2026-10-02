@@ -10,6 +10,62 @@
 
 ---
 
+## 密钥轮换渠道重封装缺陷与 pgx 安全升级实测 — 2026-10-03
+
+- **脚本**：一次性 postgres:17-alpine 与 redis:8-alpine 容器（宿主端口 55432 /
+  56379，用后删除），`POSTGRES_TEST_DSN` / `REDIS_TEST_ADDR` 指向它们跑集成测试；
+  govulncheck@v1.8.0 本地实跑。
+- **关键断言**：(1) pgx 升级后 `govulncheck` 退出码为 0；(2) 真实 Postgres 下
+  集成测试全绿且**可重复**；(3) 密钥轮换的重封装必须真正改写告警渠道，而不只是
+  政策。
+
+### 1. 既存缺陷：Postgres 集成测试从未跑通
+
+真实 Postgres 下 5 处失败，全部为既存（用 pgx v5.7.6 对照复现一致），修 4 处
+测试侧缺陷后 `internal/store` 全绿：
+
+| 缺陷 | 根因 |
+| --- | --- |
+| 指纹非法 UTF-8 | `'a'+byte(64)=0xa1`，写进 `char(64)` 列 |
+| 时间断言恒不等 | fixture 用纳秒精度，`timestamptz` 只存微秒，`.Equal()` 必然不等 |
+| 资产缺 owner | `assets.owner_id` 是 NOT NULL，测试没建 owner 用户 |
+| 无效断言 | 断言 `GetPolicy` 在 v2-only keyring 下报错——但 `GetPolicy` 只做 JSON 反序列化、从不解密，该断言恒不成立 |
+
+### 2. 真实缺陷：密钥轮换静默跳过所有告警渠道
+
+- **现象**（修复前实测）：rewrap 报
+  `{"channelsScanned":3,"channelsRewrapped":0,"policiesScanned":3,"policiesRewrapped":3,"alreadyCurrent":3}`
+  ——政策全改写，渠道一条未动却计入 `alreadyCurrent`。
+- **根因（两层）**：
+  1. `ListAlertChannelsWithSecrets` 被语义相反的两个调用方共用：派发器要明文、
+     轮换要密文；Postgres 实现无条件解密（内存实现返回原样存储值，两者已分叉），
+     于是 `reseal` 看到无版本前缀的值、当作旧明文原样放行。
+  2. `RewrapAlertChannel` 又加了一次密（`RewrapPolicy` 是原样存储），修好第 1 层
+     后行内变成「密文的密文」，读回时把内层密文当成了 URL。
+- **修法**：新增 `ListAlertChannelsEncrypted`（返回存储密文）供轮换读取，接口 +
+  两个实现 + 运行器同步；`RewrapAlertChannel` 改为原样存储（与 `RewrapPolicy`
+  一致，runner 交来的已是封装好的密文）。operations.md 新增「密钥轮换」小节，
+  写明四计数判据与读不出来的回退步骤。
+- **实测**：修复后同一集成测试通过——渠道被改写为 `v2:` 且 v2-only keyring 读回
+  原文；`channelsRewrapped ≥ 1` 与 `policiesRewrapped ≥ 1` 同时成立。
+- **连带修复**：该测试原先在共享库里运行，而重封装按设计遍历所有租户，会用本
+  测试的密钥材料重封装其他包的渠道（`internal/store` 的密文测试因此报
+  「key version v2 is not configured」）。改为每次创建专属数据库并在清理时删除；
+  连续两次全量跑均全绿。
+
+### 3. pgx 安全升级
+
+- `govulncheck` 报出可达漏洞 **GO-2026-5004**（pgx/v5 占位符混淆 SQL 注入，调用链
+  `TryAcquire → pgxpool.Conn.QueryRow → sanitize.SanitizeSQL`）。
+- 升级 `jackc/pgx/v5` v5.7.6 → v5.11.0（修复版本 v5.9.2）后扫描归零，退出码 0；
+  CI 的 govulncheck 步骤由 `continue-on-error` 改为阻断。
+- 全量单测 + 真实 Postgres/Redis 集成测试通过。
+
+- **未覆盖**：真实部署上跑一遍完整轮换（本项在一次性容器与专属测试库上验证）；
+  CI 的 govulncheck/dependabot 步骤本身（推送后由 GitHub Actions 验证）。
+
+---
+
 ## 0.8 可观测性与 /metrics 鉴权实测 — 2026-10-03
 
 - **脚本**：手工实测，运行中的主 Compose 栈（分支 `codex/observability` 代码，

@@ -58,7 +58,7 @@ func (f *fakeTarget) ListAssets(_ context.Context, tenantID string, _ store.List
 	return f.assets[tenantID], "", nil
 }
 
-func (f *fakeTarget) ListAlertChannelsWithSecrets(_ context.Context, tenantID string) ([]domain.AlertChannel, error) {
+func (f *fakeTarget) ListAlertChannelsEncrypted(_ context.Context, tenantID string) ([]domain.AlertChannel, error) {
 	result := make([]domain.AlertChannel, 0)
 	for _, channel := range f.channels {
 		if channel.TenantID == tenantID {

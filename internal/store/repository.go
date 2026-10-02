@@ -192,9 +192,26 @@ type Repository interface {
 	// It is the key-rotation write: unlike UpdateAlertChannel it cannot touch a
 	// name or a recipient list, so a rotation pass has no way to alter a row's
 	// meaning while re-sealing it.
+	//
+	// It stores the values it is given, which are already re-wrapped ciphertext
+	// from the pass's own keyring -- the same contract as RewrapPolicy. It must
+	// not seal them again: doing so left the row holding ciphertext and made the
+	// next read hand the ciphertext to the dispatcher as if it were the URL.
 	RewrapAlertChannel(ctx context.Context, channel domain.AlertChannel) error
 	ListAlertChannels(ctx context.Context, tenantID string) ([]domain.AlertChannel, error)
+	// ListAlertChannelsWithSecrets is the dispatcher's read: the URL and secret
+	// are decrypted, because sending an alert needs both in the clear.
 	ListAlertChannelsWithSecrets(ctx context.Context, tenantID string) ([]domain.AlertChannel, error)
+	// ListAlertChannelsEncrypted returns the two encrypted columns exactly as
+	// stored -- version-prefixed ciphertext, not plaintext.
+	//
+	// It exists for the key-rotation pass, and the distinction is load-bearing:
+	// re-sealing a value that has already been decrypted sees no version prefix,
+	// treats it as plaintext from before encryption, and reports the row as
+	// already current. A rotation that read through the decrypting accessor
+	// therefore rewrapped every policy and no channel at all, and the deployment
+	// only found out when the retired key was dropped and alert delivery failed.
+	ListAlertChannelsEncrypted(ctx context.Context, tenantID string) ([]domain.AlertChannel, error)
 	CreateAlertDelivery(ctx context.Context, delivery domain.AlertDelivery) error
 	UpdateAlertDelivery(ctx context.Context, delivery domain.AlertDelivery) error
 	ListAlertDeliveries(ctx context.Context, tenantID, incidentID string, opts ListOptions) ([]domain.AlertDelivery, string, error)
