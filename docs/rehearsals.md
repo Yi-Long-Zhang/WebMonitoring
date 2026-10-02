@@ -10,6 +10,35 @@
 
 ---
 
+## 阶段一 1.4 维护窗口周期化实测 — 2026-10-03
+
+- **脚本**：`compose-smoke.ps1`（新增周期窗口往返断言）+ `multi-replica-drill.ps1`；
+  `internal/detection/maintenance_window_test.go`、`internal/api/policy_schedule_test.go`。
+- **关键断言**：(1) 窗口必须**原样往返**——偏移丢了就是几个小时的错位，星期丢了
+  每周冻结会变成每天冻结；(2) 不匹配的窗口会让资产看起来安静而健康、实际什么都没
+  查，因此非法取值必须拒绝而不是钳制；(3) 缺键不动、显式 null 清空，否则窗口能设
+  不能删。
+- **结果**（2026-10-03，全部符合）：
+  - 单元（14 例）：窗口内/外、起含止不含、星期不匹配、不选星期表示每天、跨午夜
+    两侧都命中、跨午夜归属**开始**的那一天（周三 23:00-01:00 覆盖周四 00:30，但
+    不覆盖周三 00:30）、UTC+8 的周三 02:00 落在 **UTC 周二 18:30**、以及设置了偏移
+    后不再匹配裸 UTC 小时。
+  - API（12 例）：起止相同 / 分钟越界 / 缺 start 或 end / 星期越界 / 偏移越界
+    各 400 `INVALID_POLICY`；往返保留 start/end/offset，星期**排序去重**（多选控件
+    的提交顺序不该影响存储值）；显式 null 清除成功；缺键的无关更新不丢窗口。
+  - smoke：PUT 一个周三 02:00-04:00（UTC+8）窗口后回读，minute 与偏移一致、星期
+    为 [3]；零长度窗口 400 `INVALID_POLICY`。
+- **修法摘要**：`domain.MaintenanceSchedule`（星期/起止分钟/UTC 偏移）+
+  `Contains`；`inMaintenanceWindow` 改为「绝对区间或周期窗口」；策略存 jsonb，
+  **本项无需迁移**。
+- **合并前整体回归**（2026-10-03，`codex/maintenance-window` @ `2c08586`）：
+  `compose-smoke.ps1` 通过（退出码 0，含控制台 Playwright E2E）；
+  `multi-replica-drill.ps1` 通过（退出码 0）。
+- **未覆盖**：调度器在真实周期窗口内的**行为**未单独演练（判定函数由单元测试覆盖，
+  调度器只需调用它）；控制台的周期窗口编辑器只有 E2E 的间接覆盖。
+
+---
+
 ## 阶段一 1.3 指派通知与超时升级实测 — 2026-10-03
 
 - **脚本**：`compose-smoke.ps1`（新增断言段「assignment contact and the escalation
