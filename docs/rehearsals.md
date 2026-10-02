@@ -63,6 +63,21 @@
 
 - **未覆盖**：真实部署上跑一遍完整轮换（本项在一次性容器与专属测试库上验证）；
   CI 的 govulncheck/dependabot 步骤本身（推送后由 GitHub Actions 验证）。
+- **合并前整体回归**（2026-10-03，`codex/rewrap-rotation` @ `7c006be`，含
+  `codex/pgx-security` 与 `codex/observability`）：`compose-smoke.ps1` 通过
+  （`Compose smoke test passed`，退出码 0，含控制台 Playwright E2E）；
+  `multi-replica-drill.ps1` 通过（`Multi-replica drill passed`，退出码 0）。
+  **构建提示**：pgx 升级使 `go mod download` 层缓存失效，而本机 Docker 构建网桥
+  直连 proxy.golang.org 被拒（`connection refused`）。用 BuildKit 预定义的代理
+  参数即可：
+
+  ```powershell
+  docker compose -f deployments/compose/docker-compose.yml build `
+    --build-arg HTTPS_PROXY=http://host.docker.internal:7890 `
+    --build-arg HTTP_PROXY=http://host.docker.internal:7890
+  ```
+
+  这只影响构建取包，不影响运行时；也无需改动 Dockerfile。
 
 ---
 
