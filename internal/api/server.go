@@ -254,6 +254,8 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("GET /api/v1/alert-deliveries", s.listAlertDeliveries)
 	protected.HandleFunc("GET /api/v1/audit-events", s.listAudits)
 	protected.HandleFunc("POST /api/v1/maintenance/retention", s.requireRoles(s.runRetentionMaintenance, domain.RoleAdmin))
+	// The manual form of the escalation sweep the control plane runs on a timer.
+	protected.HandleFunc("POST /api/v1/maintenance/escalation", s.requireRoles(s.escalationMaintenance, domain.RoleAdmin))
 	protected.HandleFunc("GET /api/v1/reports/summary", s.reportSummary)
 	protected.HandleFunc("GET /api/v1/reports/{incidentId}", s.downloadReport)
 	// The printable rendering of the same material. It is a separate path rather
@@ -1179,6 +1181,7 @@ func (s *Server) createUser(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
 	var input struct {
 		Username string      `json:"username"`
+		Email    string      `json:"email"`
 		Password string      `json:"password"`
 		Role     domain.Role `json:"role"`
 	}
@@ -1188,6 +1191,10 @@ func (s *Server) createUser(writer http.ResponseWriter, request *http.Request) {
 	username := strings.TrimSpace(input.Username)
 	if username == "" || len(input.Password) < 12 {
 		writeError(writer, request, http.StatusBadRequest, "INVALID_USER", "用户名或密码不满足要求", nil)
+		return
+	}
+	email, ok := validatedEmail(writer, request, input.Email)
+	if !ok {
 		return
 	}
 	// Tenant admins may only provision operational or auditor accounts; admin and
@@ -1205,7 +1212,7 @@ func (s *Server) createUser(writer http.ResponseWriter, request *http.Request) {
 	now := time.Now().UTC()
 	user := domain.User{
 		ID: identity.New(), TenantID: session.User.TenantID, Username: username,
-		PasswordHash: hash, Role: input.Role, CreatedAt: now,
+		Email: email, PasswordHash: hash, Role: input.Role, CreatedAt: now,
 	}
 	if err := s.repository.CreateUser(request.Context(), user); err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -1234,6 +1241,7 @@ func (s *Server) updateUser(writer http.ResponseWriter, request *http.Request) {
 	wasEnabledAdmin := user.Role == domain.RoleAdmin && !user.Disabled
 	var input struct {
 		Username *string      `json:"username"`
+		Email    *string      `json:"email"`
 		Role     *domain.Role `json:"role"`
 		Disabled *bool        `json:"disabled"`
 	}
@@ -1242,6 +1250,13 @@ func (s *Server) updateUser(writer http.ResponseWriter, request *http.Request) {
 	}
 	if input.Username != nil && strings.TrimSpace(*input.Username) != "" {
 		user.Username = strings.TrimSpace(*input.Username)
+	}
+	if input.Email != nil {
+		email, ok := validatedEmail(writer, request, *input.Email)
+		if !ok {
+			return
+		}
+		user.Email = email
 	}
 	if input.Role != nil {
 		if !validUserRole(*input.Role) {
@@ -1811,6 +1826,7 @@ func (s *Server) batchTransitionIncidents(writer http.ResponseWriter, request *h
 		s.appendAudit(request, session.User, "incident.transition", "incident", incident.ID, "SUCCESS", map[string]any{"status": input.Status, "batch": true})
 		s.broker.Publish("incident.updated", incident)
 		s.detection.NotifyIncident(request.Context(), incident, domain.AlertReasonTransitioned)
+		s.notifyAssignee(request.Context(), before, incident)
 		updated++
 		result.Status = "UPDATED"
 		results = append(results, result)
@@ -1969,6 +1985,7 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 	// the loop they were paged into. It runs after the response is decided, so a
 	// notification failure cannot turn a successful transition into an error.
 	s.detection.NotifyIncident(request.Context(), incident, domain.AlertReasonTransitioned)
+	s.notifyAssignee(request.Context(), before, incident)
 	writeJSON(writer, http.StatusOK, incident)
 }
 
@@ -2631,6 +2648,58 @@ func parseIncidentFilter(request *http.Request) (store.IncidentFilter, error) {
 		return store.IncidentFilter{}, errors.New("to 不能早于 from")
 	}
 	return filter, nil
+}
+
+// notifyAssignee tells whoever an incident was just handed to.
+//
+// It fires only when the owner actually changed: a transition that re-saves the
+// same owner would otherwise page the same person on every status change, which
+// is how a useful notice becomes noise. It never fails the caller -- the
+// assignment is already persisted, and a mail server being down must not turn a
+// recorded handover into an error the operator reads as "the assignment failed".
+func (s *Server) notifyAssignee(ctx context.Context, before, after domain.Incident) {
+	if after.OwnerID == "" || after.OwnerID == before.OwnerID {
+		return
+	}
+	user, err := s.repository.GetUser(ctx, after.TenantID, after.OwnerID)
+	if err != nil {
+		s.logger.Warn("assignment notice could not load the assignee", "incident_id", after.ID, "error", err)
+		return
+	}
+	asset, err := s.repository.GetAsset(ctx, after.TenantID, after.AssetID)
+	if err != nil {
+		s.logger.Warn("assignment notice could not load the asset", "incident_id", after.ID, "error", err)
+		return
+	}
+	s.detection.NotifyAssignment(ctx, user, after, asset)
+}
+
+// validatedEmail normalizes an optional contact address and rejects one it
+// cannot deliver to. It refuses rather than storing a malformed address: the
+// field's only purpose is delivery, and an address that cannot receive is worse
+// than an empty one, because it looks configured. An empty value is allowed and
+// means "do not send this person anything".
+func validatedEmail(writer http.ResponseWriter, request *http.Request, raw string) (string, bool) {
+	email := strings.TrimSpace(raw)
+	if email == "" {
+		return "", true
+	}
+	if len(email) > 254 || strings.ContainsAny(email, " \t\r\n,;") {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_EMAIL", "邮箱格式无效", nil)
+		return "", false
+	}
+	at := strings.LastIndex(email, "@")
+	if at <= 0 || at == len(email)-1 {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_EMAIL", "邮箱格式无效", nil)
+		return "", false
+	}
+	domain := email[at+1:]
+	if !strings.Contains(domain, ".") || strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") ||
+		strings.HasPrefix(domain, "-") {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_EMAIL", "邮箱格式无效", nil)
+		return "", false
+	}
+	return email, true
 }
 
 func parseAuditTime(raw string) (time.Time, error) {

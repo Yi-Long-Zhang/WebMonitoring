@@ -256,6 +256,10 @@ services:
       # Gates /metrics (Authorization: Bearer). Empty keeps it open, which the
       # production gate refuses; set it before exposing the API port.
       METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # The unclaimed-incident escalation sweep. Only the control plane runs it.
+      # Set the interval to 0 to disable the timer; the manual trigger still works.
+      ESCALATION_INTERVAL_MINUTES: ${ESCALATION_INTERVAL_MINUTES:-5}
+      ESCALATION_UNCLAIMED_MINUTES: ${ESCALATION_UNCLAIMED_MINUTES:-30}
       # Only the API serves browser traffic, so only the API reads this. Empty
       # means same-origin, which is the single-host topology's default.
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}

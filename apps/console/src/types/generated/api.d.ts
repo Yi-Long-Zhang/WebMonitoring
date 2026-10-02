@@ -622,6 +622,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/maintenance/escalation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description 手工触发升级扫描：把超过阈值仍无人认领的高危事件报告给租户管理员。
+         *     与定时扫描是同一段逻辑，便于不等到下一个周期就核对它会报出什么。
+         *     返回的 reported 是本次真正上报的条数——「跑了」和「发现了东西」是两个
+         *     不同的答案。每个事件只会被上报一次（扫描会先原子打标再发送）。
+         */
+        post: operations["runEscalationMaintenance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/maintenance/retention": {
         parameters: {
             query?: never;
@@ -876,6 +898,14 @@ export interface components {
             /** Format: uuid */
             tenantId: string;
             username: string;
+            /**
+             * Format: email
+             * @description 指派通知与升级通知的收件地址。可留空——留空即「这个人不收直接通知」，
+             *     部署仍然通过租户的告警渠道工作。格式非法的地址会被拒绝而不是存下来：
+             *     这个字段唯一的用途就是投递，收不到的地址比空值更糟，因为它看起来是
+             *     配好的。
+             */
+            email?: string;
             role: components["schemas"]["Role"];
             disabled: boolean;
             /** Format: date-time */
@@ -2570,6 +2600,34 @@ export interface operations {
             400: components["responses"]["Error"];
         };
     };
+    runEscalationMaintenance: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 本次扫描结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        reported: number;
+                        unclaimedMinutes: number;
+                        /** Format: date-time */
+                        ranAt: string;
+                    };
+                };
+            };
+            403: components["responses"]["Error"];
+        };
+    };
     runRetentionMaintenance: {
         parameters: {
             query?: never;
@@ -3049,6 +3107,8 @@ export interface operations {
             content: {
                 "application/json": {
                     username: string;
+                    /** Format: email */
+                    email?: string;
                     /** Format: password */
                     password: string;
                     role: components["schemas"]["Role"];

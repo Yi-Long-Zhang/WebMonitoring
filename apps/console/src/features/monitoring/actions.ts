@@ -271,7 +271,7 @@ export function useMonitoringActions() {
   // from the form, sent, and the form is cleared by the caller. The server
   // enforces the 12-character minimum; the dialog mirrors it so the operator
   // finds out before the round trip.
-  async function createNewUser(input: { username: string; password: string; role: User["role"] }) {
+  async function createNewUser(input: { username: string; email?: string; password: string; role: User["role"] }) {
     await createUser(input);
     await consoleStore.loadUsers();
     ElMessage.success("用户已创建");
@@ -281,7 +281,7 @@ export function useMonitoringActions() {
   // an untouched role would re-run the LAST_ADMIN check, so flipping a switch
   // could 409 for a reason that has nothing to do with it -- the same reason
   // setTenantDisabled sends only `disabled`.
-  async function saveUser(user: User, input: Partial<Pick<User, "username" | "role" | "disabled">>) {
+  async function saveUser(user: User, input: Partial<Pick<User, "username" | "email" | "role" | "disabled">>) {
     await updateUser(user.id, input);
     await consoleStore.loadUsers();
     ElMessage.success("用户已更新");

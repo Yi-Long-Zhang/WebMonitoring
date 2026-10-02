@@ -190,20 +190,20 @@ func scanTenant(row rowScanner) (domain.Tenant, error) {
 
 func (p *PostgresRepository) CreateUser(ctx context.Context, user domain.User) error {
 	_, err := p.pool.Exec(ctx, `
-		INSERT INTO users (id, tenant_id, username, password_hash, role, disabled, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		user.ID, user.TenantID, user.Username, user.PasswordHash, user.Role, user.Disabled, user.CreatedAt,
+		INSERT INTO users (id, tenant_id, username, email, password_hash, role, disabled, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		user.ID, user.TenantID, user.Username, user.Email, user.PasswordHash, user.Role, user.Disabled, user.CreatedAt,
 	)
 	return normalizePostgresError(err)
 }
 
 const userSelect = `
-	SELECT id, tenant_id, username, password_hash, role, disabled, created_at FROM users`
+	SELECT id, tenant_id, username, email, password_hash, role, disabled, created_at FROM users`
 
 func scanUser(row rowScanner) (domain.User, error) {
 	var user domain.User
 	err := row.Scan(
-		&user.ID, &user.TenantID, &user.Username, &user.PasswordHash, &user.Role, &user.Disabled, &user.CreatedAt,
+		&user.ID, &user.TenantID, &user.Username, &user.Email, &user.PasswordHash, &user.Role, &user.Disabled, &user.CreatedAt,
 	)
 	return user, normalizePostgresError(err)
 }
@@ -238,9 +238,9 @@ func (p *PostgresRepository) ListUsers(ctx context.Context, tenantID string) ([]
 
 func (p *PostgresRepository) UpdateUser(ctx context.Context, user domain.User) error {
 	tag, err := p.pool.Exec(ctx, `
-		UPDATE users SET username=$3, password_hash=$4, role=$5, disabled=$6
+		UPDATE users SET username=$3, email=$4, password_hash=$5, role=$6, disabled=$7
 		WHERE tenant_id=$1 AND id=$2`,
-		user.TenantID, user.ID, user.Username, user.PasswordHash, user.Role, user.Disabled,
+		user.TenantID, user.ID, user.Username, user.Email, user.PasswordHash, user.Role, user.Disabled,
 	)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -986,6 +986,48 @@ func (p *PostgresRepository) IncidentStatusCounts(ctx context.Context, tenantID 
 	return open, highRisk, critical, nil
 }
 
+// ListUnownedHighRiskIncidents feeds the escalation sweep.
+func (p *PostgresRepository) ListUnownedHighRiskIncidents(ctx context.Context, olderThan time.Time, limit int) ([]domain.Incident, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := p.pool.Query(ctx, incidentSelect+`
+		WHERE owner_id IS NULL AND escalated_at IS NULL
+			AND severity IN ('HIGH','CRITICAL')
+			AND status NOT IN ('CLOSED','FALSE_POSITIVE')
+			AND created_at <= $1
+		ORDER BY created_at
+		LIMIT $2`, olderThan, limit)
+	if err != nil {
+		return nil, normalizePostgresError(err)
+	}
+	defer rows.Close()
+	result := make([]domain.Incident, 0)
+	for rows.Next() {
+		item, scanErr := scanIncident(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, normalizePostgresError(err)
+	}
+	return result, nil
+}
+
+// MarkIncidentEscalated stamps the incident only if it is still unstamped, so
+// the replica that wins the race is the one that notifies.
+func (p *PostgresRepository) MarkIncidentEscalated(ctx context.Context, tenantID, id string, at time.Time) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE incidents SET escalated_at=$3
+		WHERE tenant_id=$1 AND id=$2 AND escalated_at IS NULL`, tenantID, id, at)
+	if err != nil {
+		return false, normalizePostgresError(err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // CountOpenIncidents is the platform-wide variant of IncidentStatusCounts:
 // the /metrics scrape carries no tenant context, so the gauges count across
 // every tenant.
@@ -1125,11 +1167,11 @@ func (p *PostgresRepository) UpdateIncident(ctx context.Context, incident domain
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE incidents SET severity=$3,status=$4,title=$5,signals=$6,evidence_ids=$7,
 			occurrence_count=$8,owner_id=NULLIF($9,'')::uuid,resolution=NULLIF($10,''),
-			last_seen_at=$11,acknowledged_at=$12,resolved_at=$13
+			last_seen_at=$11,acknowledged_at=$12,resolved_at=$13,escalated_at=$14
 		WHERE tenant_id=$1 AND id=$2`,
 		incident.TenantID, incident.ID, incident.Severity, incident.Status, incident.Title,
 		signals, evidenceIDs, incident.OccurrenceCount, incident.OwnerID, incident.Resolution,
-		incident.LastSeenAt, incident.AcknowledgedAt, incident.ResolvedAt,
+		incident.LastSeenAt, incident.AcknowledgedAt, incident.ResolvedAt, incident.EscalatedAt,
 	)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -1203,7 +1245,7 @@ func (p *PostgresRepository) ListIncidents(ctx context.Context, tenantID string,
 const incidentSelect = `
 	SELECT id,tenant_id,asset_id,baseline_id,baseline_version,fingerprint,severity,status,title,
 		signals,evidence_ids,occurrence_count,COALESCE(owner_id::text,''),COALESCE(resolution,''),
-		created_at,first_seen_at,last_seen_at,acknowledged_at,resolved_at FROM incidents`
+		created_at,first_seen_at,last_seen_at,acknowledged_at,resolved_at,escalated_at FROM incidents`
 
 func scanIncident(row rowScanner) (domain.Incident, error) {
 	var incident domain.Incident
@@ -1213,7 +1255,7 @@ func scanIncident(row rowScanner) (domain.Incident, error) {
 		&incident.BaselineVersion, &incident.Fingerprint, &incident.Severity, &incident.Status,
 		&incident.Title, &signals, &evidenceIDs, &incident.OccurrenceCount, &incident.OwnerID,
 		&incident.Resolution, &incident.CreatedAt, &incident.FirstSeenAt, &incident.LastSeenAt,
-		&incident.AcknowledgedAt, &incident.ResolvedAt,
+		&incident.AcknowledgedAt, &incident.ResolvedAt, &incident.EscalatedAt,
 	)
 	if err != nil {
 		return incident, normalizePostgresError(err)

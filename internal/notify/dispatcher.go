@@ -663,11 +663,34 @@ func (d *Dispatcher) sendEmail(ctx context.Context, channel domain.AlertChannel,
 // live here rather than in each caller so the configuration checks, the
 // cancellation handling and the header encoding exist once.
 func (d *Dispatcher) sendEmailMessage(ctx context.Context, channel domain.AlertChannel, subject, body string) error {
+	return d.sendEmailTo(ctx, splitRecipients(channel.Recipients), subject, body)
+}
+
+// SendUserNotice emails one person directly instead of fanning out to the
+// tenant's channels.
+//
+// An assignment notice is addressed to whoever was handed the incident, and no
+// channel is scoped to a person: the channels are the tenant's, so sending there
+// would tell everyone and reach the assignee only if they happen to watch the
+// same channel. It reports a missing configuration or address as an error rather
+// than silently doing nothing, so the caller can log that the notice did not go
+// out -- which is the difference between "nobody was told" and "we do not know".
+func (d *Dispatcher) SendUserNotice(ctx context.Context, to, subject, body string) error {
+	recipient := strings.TrimSpace(to)
+	if recipient == "" {
+		return errors.New("no address to notify")
+	}
+	return d.sendEmailTo(ctx, []string{recipient}, subject, body)
+}
+
+// sendEmailTo is the SMTP mechanics, shared by channel delivery and direct
+// notices. The configuration checks, cancellation handling and header encoding
+// live here so both paths behave identically.
+func (d *Dispatcher) sendEmailTo(ctx context.Context, recipients []string, subject, body string) error {
 	cfg := d.smtp
 	if cfg.Host == "" {
 		return errors.New("SMTP is not configured for email notifications")
 	}
-	recipients := splitRecipients(channel.Recipients)
 	if len(recipients) == 0 {
 		return errors.New("email channel has no recipients")
 	}

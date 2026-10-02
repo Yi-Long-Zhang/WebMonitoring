@@ -300,6 +300,29 @@ func main() {
 		logger.Warn("background retention disabled; only the manual endpoint will run it")
 	}
 
+	// The escalation sweep. It runs in the control plane rather than the worker
+	// because it is about the incident queue rather than about detection, and it
+	// is safe to run on every replica: the pass claims each incident before it
+	// notifies, so an overlapping sweep finds nothing left to report.
+	escalationInterval := time.Duration(envInt64("ESCALATION_INTERVAL_MINUTES", 5)) * time.Minute
+	unclaimedFor := time.Duration(envInt64("ESCALATION_UNCLAIMED_MINUTES", 30)) * time.Minute
+	if envInt64("ESCALATION_INTERVAL_MINUTES", 5) > 0 {
+		go func() {
+			ticker := time.NewTicker(escalationInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					server.RunEscalation(ctx, unclaimedFor)
+				}
+			}
+		}()
+	} else {
+		logger.Warn("incident escalation is disabled; unclaimed high-risk incidents will not be reported")
+	}
+
 	address := env("HTTP_ADDR", ":8080")
 	logger.Info("api listening", "address", address)
 	httpServer := &http.Server{

@@ -921,6 +921,48 @@ func (m *MemoryRepository) IncidentStatusCounts(ctx context.Context, tenantID st
 	return open, highRisk, critical, nil
 }
 
+// ListUnownedHighRiskIncidents mirrors the postgres escalation read.
+func (m *MemoryRepository) ListUnownedHighRiskIncidents(ctx context.Context, olderThan time.Time, limit int) ([]domain.Incident, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]domain.Incident, 0)
+	for _, incident := range m.incidents {
+		switch {
+		case incident.OwnerID != "", incident.EscalatedAt != nil,
+			incident.Severity != domain.SeverityHigh && incident.Severity != domain.SeverityCritical,
+			incident.Status == domain.IncidentClosed, incident.Status == domain.IncidentFalsePositive,
+			incident.CreatedAt.After(olderThan):
+			continue
+		}
+		result = append(result, cloneIncident(incident))
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.Before(result[j].CreatedAt) })
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
+// MarkIncidentEscalated mirrors the postgres conditional stamp.
+func (m *MemoryRepository) MarkIncidentEscalated(ctx context.Context, tenantID, id string, at time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := tenantKey(tenantID, id)
+	incident, ok := m.incidents[key]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if incident.EscalatedAt != nil {
+		return false, nil
+	}
+	incident.EscalatedAt = &at
+	m.incidents[key] = incident
+	return true, nil
+}
+
 // CountOpenIncidents mirrors the postgres platform-wide aggregate for the
 // in-memory store.
 func (m *MemoryRepository) CountOpenIncidents(ctx context.Context) (int, int, int, error) {

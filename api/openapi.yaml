@@ -781,6 +781,29 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AuditEventList" }
         "400": { $ref: "#/components/responses/Error" }
+  /maintenance/escalation:
+    post:
+      operationId: runEscalationMaintenance
+      description: |
+        手工触发升级扫描：把超过阈值仍无人认领的高危事件报告给租户管理员。
+        与定时扫描是同一段逻辑，便于不等到下一个周期就核对它会报出什么。
+        返回的 reported 是本次真正上报的条数——「跑了」和「发现了东西」是两个
+        不同的答案。每个事件只会被上报一次（扫描会先原子打标再发送）。
+      parameters:
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200":
+          description: 本次扫描结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reported, unclaimedMinutes, ranAt]
+                properties:
+                  reported: { type: integer }
+                  unclaimedMinutes: { type: integer }
+                  ranAt: { type: string, format: date-time }
+        "403": { $ref: "#/components/responses/Error" }
   /maintenance/retention:
     post:
       operationId: runRetentionMaintenance
@@ -1091,6 +1114,7 @@ paths:
               required: [username, password, role]
               properties:
                 username: { type: string }
+                email: { type: string, format: email }
                 password: { type: string, format: password }
                 role: { $ref: "#/components/schemas/Role" }
       responses:
@@ -1199,6 +1223,14 @@ components:
         id: { type: string, format: uuid }
         tenantId: { type: string, format: uuid }
         username: { type: string }
+        email:
+          type: string
+          format: email
+          description: |
+            指派通知与升级通知的收件地址。可留空——留空即「这个人不收直接通知」，
+            部署仍然通过租户的告警渠道工作。格式非法的地址会被拒绝而不是存下来：
+            这个字段唯一的用途就是投递，收不到的地址比空值更糟，因为它看起来是
+            配好的。
         role: { $ref: "#/components/schemas/Role" }
         disabled: { type: boolean }
         createdAt: { type: string, format: date-time }

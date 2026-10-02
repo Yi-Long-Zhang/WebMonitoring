@@ -174,6 +174,21 @@ type Repository interface {
 	// are critical. Dashboard and metrics read the same numbers without
 	// depending on a page of the incident list.
 	IncidentStatusCounts(ctx context.Context, tenantID string) (open int, highRisk int, critical int, err error)
+	// ListUnownedHighRiskIncidents returns high-risk incidents nobody has taken
+	// and that the escalation pass has not reported yet, oldest first. It is
+	// platform-wide because the pass runs once per installation rather than once
+	// per tenant, and bounded because a sweep that has fallen behind must not
+	// pull the whole table into memory to catch up.
+	ListUnownedHighRiskIncidents(ctx context.Context, olderThan time.Time, limit int) ([]domain.Incident, error)
+	// MarkIncidentEscalated stamps one incident as reported and reports whether
+	// this call is the one that stamped it.
+	//
+	// It is a narrow, conditional write rather than an UpdateIncident of a row
+	// read a moment earlier: two replicas sweep on their own timers, and writing
+	// back a stale row would silently undo whatever happened to the incident in
+	// between -- an operator acknowledging it, most of all.
+	MarkIncidentEscalated(ctx context.Context, tenantID, id string, at time.Time) (bool, error)
+
 	// CountOpenIncidents is the platform-wide form of IncidentStatusCounts for
 	// /metrics: a scrape carries no tenant context, so the gauges must count
 	// across every tenant.

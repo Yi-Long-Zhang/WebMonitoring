@@ -103,9 +103,13 @@ type Tenant struct {
 }
 
 type User struct {
-	ID           string    `json:"id"`
-	TenantID     string    `json:"tenantId"`
-	Username     string    `json:"username"`
+	ID       string `json:"id"`
+	TenantID string `json:"tenantId"`
+	Username string `json:"username"`
+	// Email is where a notice about an incident assigned to this person goes.
+	// Optional: a deployment that delivers only through its alert channels
+	// leaves it empty, and then assignment notices are simply not sent.
+	Email        string    `json:"email,omitempty"`
 	PasswordHash string    `json:"-"`
 	Role         Role      `json:"role"`
 	Disabled     bool      `json:"disabled"`
@@ -287,6 +291,11 @@ type Incident struct {
 	LastSeenAt      time.Time      `json:"lastSeenAt"`
 	AcknowledgedAt  *time.Time     `json:"acknowledgedAt,omitempty"`
 	ResolvedAt      *time.Time     `json:"resolvedAt,omitempty"`
+	// EscalatedAt records that the escalation pass has already reported this
+	// incident for having no owner. It is what keeps the pass from repeating
+	// itself on every sweep, and it survives a restart -- an in-memory marker
+	// would not, and every deploy would re-notify everything open.
+	EscalatedAt *time.Time `json:"escalatedAt,omitempty"`
 	// JobID is the detection job that produced this round. It is input only:
 	// the store records it on the timeline entry and never writes it to the
 	// incident row, so it stays out of the JSON contract.

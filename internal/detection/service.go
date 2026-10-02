@@ -566,6 +566,57 @@ func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code str
 	return nil
 }
 
+// NotifyAssignment tells the person an incident has just been assigned to.
+//
+// Best effort and never fatal: the assignment is already persisted by the time
+// this runs, and a mail server that is down must not turn a recorded handover
+// into an error the operator sees as "the assignment failed". What it must not
+// do is fail silently, so every reason it could not send is logged.
+func (s *Service) NotifyAssignment(ctx context.Context, user domain.User, incident domain.Incident, asset domain.Asset) {
+	if s.notifier == nil {
+		return
+	}
+	if strings.TrimSpace(user.Email) == "" {
+		s.logger.Info("assignee has no address; the assignment notice was not sent",
+			"incident_id", incident.ID, "user_id", user.ID)
+		return
+	}
+	subject := "网页监测事件已指派给你：" + incident.Title
+	body := fmt.Sprintf(
+		"事件：%s\n风险等级：%s\n资产：%s\n网址：%s\n状态：%s\n事件 ID：%s\n",
+		incident.Title, incident.Severity, asset.Name, asset.URL, incident.Status, incident.ID,
+	)
+	if err := s.notifier.SendUserNotice(ctx, user.Email, subject, body); err != nil {
+		s.logger.Warn("assignment notice could not be delivered",
+			"incident_id", incident.ID, "user_id", user.ID, "error", err)
+	}
+}
+
+// NotifyEscalation tells an administrator that a high-risk incident has gone
+// unclaimed past the threshold.
+//
+// Same contract as NotifyAssignment: best effort, never fatal, and never silent
+// -- the incident is already recorded, so a mail failure must not look like an
+// escalation failure, but an operator has to be able to find out it happened.
+func (s *Service) NotifyEscalation(ctx context.Context, user domain.User, incident domain.Incident, asset domain.Asset, unclaimedFor time.Duration) {
+	if s.notifier == nil {
+		return
+	}
+	if strings.TrimSpace(user.Email) == "" {
+		return
+	}
+	subject := "网页监测高危事件无人认领：" + incident.Title
+	body := fmt.Sprintf(
+		"事件：%s\n风险等级：%s\n资产：%s\n网址：%s\n状态：%s\n已等待：%s\n事件 ID：%s\n",
+		incident.Title, incident.Severity, asset.Name, asset.URL, incident.Status,
+		unclaimedFor.Round(time.Minute).String(), incident.ID,
+	)
+	if err := s.notifier.SendUserNotice(ctx, user.Email, subject, body); err != nil {
+		s.logger.Warn("escalation notice could not be delivered",
+			"incident_id", incident.ID, "user_id", user.ID, "error", err)
+	}
+}
+
 // detectionFailureThreshold is how many checks in a row may fail before the
 // installation says so out loud. Below it a spike is noise; above it, the
 // console's silence has stopped being evidence that the asset is fine.
@@ -586,8 +637,10 @@ const detectionFailureThreshold = 3
 // for a single asset are serialized by the active-job uniqueness index, so
 // exactly one worker evaluates each step of the run.
 func (s *Service) reportFailureStreak(ctx context.Context, job domain.DetectionJob) {
-	// The API process constructs the service without a notifier because it never
-	// runs a check; deliveries happen in the worker, which has one.
+	// Defensive: the embedded single-process mode and some tests construct the
+	// service without a notifier. Both deployed processes have one -- the worker
+	// delivers its alerts through it, and the control plane uses it for the
+	// notices an operator action triggers.
 	if s.notifier == nil {
 		return
 	}

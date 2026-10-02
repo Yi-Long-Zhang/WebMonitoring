@@ -60,8 +60,8 @@ const siteForm = ref<{ name: string; domain: string }>({ name: "", domain: "" })
 const tenantForm = ref<{ name: string; slug: string; adminUsername: string; adminPassword: string }>({
   name: "", slug: "", adminUsername: "admin", adminPassword: "",
 });
-const userForm = ref<{ username: string; password: string; role: User["role"]; disabled: boolean }>({
-  username: "", password: "", role: "OPERATOR", disabled: false,
+const userForm = ref<{ username: string; email: string; password: string; role: User["role"]; disabled: boolean }>({
+  username: "", email: "", password: "", role: "OPERATOR", disabled: false,
 });
 const passwordForm = ref<{ password: string; confirm: string }>({ password: "", confirm: "" });
 // The tenant seeded by the initial migration (internal/domain.DefaultTenantID).
@@ -319,8 +319,8 @@ async function exportAssetList() {
 }
 async function onImported() { showImportDialog.value = false; await data.reloadAssets(); }
 
-function openUserCreate() { editingUser.value = undefined; userForm.value = { username: "", password: "", role: "OPERATOR", disabled: false }; showUserDialog.value = true; }
-function openUserEdit(user: User) { editingUser.value = user; userForm.value = { username: user.username, password: "", role: user.role, disabled: user.disabled }; showUserDialog.value = true; }
+function openUserCreate() { editingUser.value = undefined; userForm.value = { username: "", email: "", password: "", role: "OPERATOR", disabled: false }; showUserDialog.value = true; }
+function openUserEdit(user: User) { editingUser.value = user; userForm.value = { username: user.username, email: user.email ?? "", password: "", role: user.role, disabled: user.disabled }; showUserDialog.value = true; }
 function openPasswordReset(user: User) { passwordUser.value = user; passwordForm.value = { password: "", confirm: "" }; showPasswordDialog.value = true; }
 
 async function submitUser() {
@@ -329,18 +329,21 @@ async function submitUser() {
     if (editingUser.value) {
       // Only what changed, so an untouched role cannot re-trigger the server's
       // LAST_ADMIN check on a rename or a disable.
-      const patch: Partial<Pick<User, "username" | "role" | "disabled">> = {};
+      const patch: Partial<Pick<User, "username" | "email" | "role" | "disabled">> = {};
       if (form.username !== editingUser.value.username) patch.username = form.username;
+      // Sent even when emptied: clearing an address is how an operator stops the
+      // direct notices for someone, and an omitted field would leave it in place.
+      if (form.email !== (editingUser.value.email ?? "")) patch.email = form.email;
       if (form.role !== editingUser.value.role) patch.role = form.role;
       if (form.disabled !== editingUser.value.disabled) patch.disabled = form.disabled;
       if (Object.keys(patch).length === 0) { showUserDialog.value = false; return; }
       await actions.saveUser(editingUser.value, patch);
     } else {
-      await actions.createNewUser({ username: form.username, password: form.password, role: form.role });
+      await actions.createNewUser({ username: form.username, email: form.email || undefined, password: form.password, role: form.role });
     }
     // The password is dropped with the form rather than left in the ref after
     // the write, so it does not outlive the request in memory.
-    userForm.value = { username: "", password: "", role: "OPERATOR", disabled: false };
+    userForm.value = { username: "", email: "", password: "", role: "OPERATOR", disabled: false };
     showUserDialog.value = false;
   } catch (error) { reportError(error, "保存用户失败"); }
 }
@@ -440,6 +443,9 @@ onUnmounted(() => eventStream?.close());
     <el-dialog v-model="showUserDialog" :title="editingUser ? '编辑用户' : '新增用户'" width="520px">
       <el-form label-position="top">
         <el-form-item label="用户名"><el-input v-model="userForm.username" autocomplete="off" /></el-form-item>
+        <el-form-item label="邮箱">
+          <el-input v-model="userForm.email" autocomplete="off" placeholder="可选；指派与升级通知发往这里" />
+        </el-form-item>
         <!-- The create handler only accepts OPERATOR and AUDITOR; an ADMIN or
              SUPER_ADMIN account is provisioned by tenant bootstrap, not here.
              Edit offers ADMIN too, because promoting an existing OPERATOR is a

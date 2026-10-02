@@ -450,14 +450,14 @@ export function getUsers() {
   return request<ListResponse<User>>("/users");
 }
 
-export function createUser(input: { username: string; password: string; role: User["role"] }) {
+export function createUser(input: { username: string; email?: string; password: string; role: User["role"] }) {
   return request<User>("/users", {
     method: "POST",
     body: JSON.stringify(input),
   });
 }
 
-export function updateUser(id: string, input: Partial<Pick<User, "username" | "role" | "disabled">>) {
+export function updateUser(id: string, input: Partial<Pick<User, "username" | "email" | "role" | "disabled">>) {
   return request<User>(`/users/${id}`, {
     method: "PATCH",
     body: JSON.stringify(input),

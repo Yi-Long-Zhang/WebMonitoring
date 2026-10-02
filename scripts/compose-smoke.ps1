@@ -487,6 +487,40 @@ try {
         throw "keyset pagination returned duplicate assets"
     }
 
+    # --- assignment contact and the escalation trigger ----------------------
+    # A person an incident is assigned to is only reachable if their address is
+    # on file, so the field has to round-trip; an address that cannot receive is
+    # refused at the point it is entered rather than stored looking configured.
+    $contactUser = "smoke-contact-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
+    $created = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/users" `
+        -WebSession $session -Headers $csrf -ContentType "application/json" `
+        -Body "{`"username`":`"$contactUser`",`"email`":`"$contactUser@example.com`",`"password`":`"smoke-contact-password`",`"role`":`"OPERATOR`"}"
+    if ($created.email -ne "$contactUser@example.com") {
+        throw "the created user's address came back as '$($created.email)'"
+    }
+    $listed = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/users" -WebSession $session
+    if (@($listed.items | Where-Object id -eq $created.id).Count -ne 1) {
+        throw "the created user is missing from the list"
+    }
+    $stored = $listed.items | Where-Object id -eq $created.id | Select-Object -First 1
+    if ($stored.email -ne "$contactUser@example.com") {
+        throw "the listed user's address came back as '$($stored.email)'"
+    }
+    foreach ($bad in @("not-an-address", "no-at-sign.example.com", "trailing@")) {
+        $rejected = Invoke-ApiExpectError -Method Post -Uri "$apiBase/api/v1/users" -WebSession $session -Headers $csrf `
+            -Body "{`"username`":`"smoke-bad-$([guid]::NewGuid().ToString('N').Substring(0,6))`",`"email`":`"$bad`",`"password`":`"smoke-bad-password`",`"role`":`"OPERATOR`"}"
+        if ($rejected.Status -ne 400 -or $rejected.Code -ne "INVALID_EMAIL") {
+            throw "address '$bad' returned $($rejected.Status)/$($rejected.Code), expected 400/INVALID_EMAIL"
+        }
+    }
+    # The manual form of the sweep the control plane runs on a timer. Its shape is
+    # the assertion here: how many it found depends on what the run left behind.
+    $escalation = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/maintenance/escalation" `
+        -WebSession $session -Headers $csrf -ContentType "application/json"
+    if ($null -eq $escalation.reported -or $null -eq $escalation.unclaimedMinutes) {
+        throw "the escalation trigger did not report what it did: $($escalation | ConvertTo-Json -Compress)"
+    }
+
     # --- P0-1 login lockout -------------------------------------------------
     # A random suffix keeps a re-run over a reused data root from colliding with
     # the account a previous run locked.
