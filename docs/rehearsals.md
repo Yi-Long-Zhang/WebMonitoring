@@ -49,6 +49,10 @@
   翻转；迁移 000017 为自检读建两个部分索引。
 - **未覆盖**：**熔断/恢复通知只做了单元验证，未在实机栈上跑通**（需要事件告警投递
   失败到阈值，本次未构造）；`/metrics` 的新指标未在真实 Prometheus 上抓取。
+- **合并前整体回归**（2026-10-03，`codex/monitoring-health` @ `7fe7586`）：
+  `compose-smoke.ps1` 通过（`Compose smoke test passed`，退出码 0，含控制台
+  Playwright E2E）；`multi-replica-drill.ps1` 通过（`Multi-replica drill
+  passed`，退出码 0）。合并后 main 快进到 `7fe7586` 所在提交。
 
 ---
 
