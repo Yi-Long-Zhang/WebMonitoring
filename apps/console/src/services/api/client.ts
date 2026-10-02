@@ -134,6 +134,17 @@ export function exportAssets(format: "json" | "csv" = "csv"): Promise<Blob> {
   return request<Blob>(`/assets/export?format=${format}`, { responseType: "blob" });
 }
 
+// The incident and audit exports take the same filter their listings take, and
+// return a blob for the same reason the asset export does: the server owns the
+// CSV writing, so escaping has one implementation.
+export function exportIncidents(params: IncidentFilterParams = {}, format: "json" | "csv" = "csv"): Promise<Blob> {
+  return request<Blob>(`/incidents/export${listQuery({ ...params, format })}`, { responseType: "blob" });
+}
+
+export function exportAuditEvents(params: AuditFilterParams = {}, format: "json" | "csv" = "csv"): Promise<Blob> {
+  return request<Blob>(`/audit-events/export${listQuery({ ...params, format })}`, { responseType: "blob" });
+}
+
 export function updateAsset(id: string, input: Partial<Pick<Asset, "name" | "ownerId" | "siteId" | "enabled">>) {
   return request<Asset>(`/assets/${id}`, {
     method: "PATCH",

@@ -19,7 +19,8 @@ import PolicyDialog from "../monitoring/PolicyDialog.vue";
 import AssetImportDialog from "../monitoring/AssetImportDialog.vue";
 import BaselineSnapshotDrawer from "../monitoring/BaselineSnapshotDrawer.vue";
 import { useMonitoringActions } from "../../features/monitoring/actions";
-import { ApiError, exportAssets, getBaseline } from "../../services/api/client";
+import { ApiError, exportAssets, exportAuditEvents, exportIncidents, getBaseline } from "../../services/api/client";
+import type { AuditFilterParams, IncidentFilterParams } from "../../services/api/client";
 import { saveBlob } from "../../services/download";
 import { roleLabel as roleLabelFor } from "../../app/permissions";
 import { channelNeeds } from "../../app/channels";
@@ -321,6 +322,16 @@ async function exportAssetList() {
     saveBlob(blob, `assets-${stamp}.csv`);
   } catch (error) { reportError(error, "导出失败"); }
 }
+async function exportIncidentList(params: IncidentFilterParams) {
+  try {
+    saveBlob(await exportIncidents(params, "csv"), `incidents-${new Date().toISOString().slice(0, 10)}.csv`);
+  } catch (error) { reportError(error, "导出失败"); }
+}
+async function exportAuditList(params: AuditFilterParams) {
+  try {
+    saveBlob(await exportAuditEvents(params, "csv"), `audit-events-${new Date().toISOString().slice(0, 10)}.csv`);
+  } catch (error) { reportError(error, "导出失败"); }
+}
 async function onImported() { showImportDialog.value = false; await data.reloadAssets(); }
 
 function openUserCreate() { editingUser.value = undefined; userForm.value = { username: "", email: "", password: "", role: "OPERATOR", disabled: false }; showUserDialog.value = true; }
@@ -396,7 +407,7 @@ onUnmounted(() => eventStream?.close());
       <AssetsPage v-else-if="activeView === 'assets'" :assets="data.assets" :policies="data.policies" :can-operate="session.canOperate" :can-admin="session.canAdmin" :has-more="data.hasMore('assets')" :loading-more="data.isLoadingMore('assets')" @load-more="data.loadMore('assets')" @create="showAssetDialog = true" @verify="verify" @toggle="toggle" @detect="detect" @policy="editPolicy" @import="showImportDialog = true" @export="exportAssetList" />
       <SitesPage v-else-if="activeView === 'sites'" :sites="data.sites" :can-admin="session.canAdmin" :has-more="data.hasMore('sites')" :loading-more="data.isLoadingMore('sites')" @load-more="data.loadMore('sites')" @create="openSiteCreate" @edit="openSiteEdit" @remove="removeSite" />
       <BaselinesPage v-else-if="activeView === 'baselines'" :baselines="data.baselines" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('baselines')" :loading-more="data.isLoadingMore('baselines')" @load-more="data.loadMore('baselines')" @review="review" @retire="retireBaseline" @preview="openBaselinePreview" />
-      <IncidentsPage v-else-if="activeView === 'incidents'" :incidents="data.incidents" :evidence="data.evidence" :deliveries="data.alertDeliveries" :asset-map="assetMap" :can-operate="session.canOperate" :timeline-key="timelineKey" :users="data.users" :on-comment="comment" :has-more="data.hasMore('incidents')" :loading-more="data.isLoadingMore('incidents')" @load-more="data.loadMore('incidents')" @transition="transition" @batch-transition="batchTransition" @filter="data.applyIncidentFilters" />
+      <IncidentsPage v-else-if="activeView === 'incidents'" :incidents="data.incidents" :evidence="data.evidence" :deliveries="data.alertDeliveries" :asset-map="assetMap" :can-operate="session.canOperate" :timeline-key="timelineKey" :users="data.users" :on-comment="comment" :has-more="data.hasMore('incidents')" :loading-more="data.isLoadingMore('incidents')" :can-admin="session.canAdmin" @load-more="data.loadMore('incidents')" @transition="transition" @batch-transition="batchTransition" @filter="data.applyIncidentFilters" @export="exportIncidentList" />
       <JobsPage v-else-if="activeView === 'jobs'" :jobs="data.jobs" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('jobs')" :loading-more="data.isLoadingMore('jobs')" @load-more="data.loadMore('jobs')" @cancel="cancelDetectionJob" />
       <EvidencePage v-else-if="activeView === 'evidence'" :evidence="data.evidence" :assets="data.assets" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('evidence')" :loading-more="data.isLoadingMore('evidence')" @load-more="data.loadMore('evidence')" />
       <ChannelsPage v-else-if="activeView === 'channels'" :channels="data.alertChannels" :can-admin="session.canAdmin" @create="openChannelCreate" @edit="openChannelEdit" @remove="deletingChannel = $event" @test="testChannel" />
@@ -405,7 +416,7 @@ onUnmounted(() => eventStream?.close());
       <!-- Explicit rather than a v-else fallback: with v-else any view key that
            matched nothing above would render the audit page, which is how an
            unknown hash segment used to reach the screen silently. -->
-      <AuditsPage v-else-if="activeView === 'audits'" :audits="data.audits" :has-more="data.hasMore('audits')" :loading-more="data.isLoadingMore('audits')" @load-more="data.loadMore('audits')" @filter="data.applyAuditFilters" />
+      <AuditsPage v-else-if="activeView === 'audits'" :audits="data.audits" :has-more="data.hasMore('audits')" :loading-more="data.isLoadingMore('audits')" @load-more="data.loadMore('audits')" @filter="data.applyAuditFilters" @export="exportAuditList" />
     </main>
     <el-dialog v-model="showAssetDialog" title="登记监测资产" width="520px">
       <el-form label-position="top">

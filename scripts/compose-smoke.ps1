@@ -672,6 +672,29 @@ try {
         throw "the version endpoint returned an incomplete identity: $($build | ConvertTo-Json -Compress)"
     }
 
+    # --- exports -------------------------------------------------------------
+    # An export is a file someone hands to a customer, so the filter has to be
+    # the listing's filter exactly: a caller who exported a subset they did not
+    # ask for has no way to notice.
+    $incidentCSV = Invoke-WebRequest -Method Get -UseBasicParsing -Uri "$apiBase/api/v1/incidents/export?format=csv&status=INVESTIGATING" -WebSession $session
+    if ($incidentCSV.StatusCode -ne 200 -or [string]$incidentCSV.Headers["Content-Type"] -notlike "text/csv*") {
+        throw "the incident export served $($incidentCSV.StatusCode)/$([string]$incidentCSV.Headers['Content-Type'])"
+    }
+    if ($incidentCSV.Content -notlike "*severity*" -or $incidentCSV.Content -notlike "*$incidentId*") {
+        throw "the incident export is missing its header or the filtered row"
+    }
+    if ($incidentCSV.Content -like "*FALSE_POSITIVE*") {
+        throw "the incident export ignored the status filter"
+    }
+    $auditCSV = Invoke-WebRequest -Method Get -UseBasicParsing -Uri "$apiBase/api/v1/audit-events/export?format=csv&action=incident.transition" -WebSession $session
+    if ($auditCSV.StatusCode -ne 200 -or $auditCSV.Content -notlike "*action*") {
+        throw "the audit export served $($auditCSV.StatusCode)"
+    }
+    $badFormat = Invoke-ApiExpectError -Method Get -Uri "$apiBase/api/v1/incidents/export?format=xlsx" -WebSession $session
+    if ($badFormat.Status -ne 400 -or $badFormat.Code -ne "INVALID_FORMAT") {
+        throw "an unknown export format returned $($badFormat.Status)/$($badFormat.Code)"
+    }
+
     $authenticatedTitle = Get-SnapshotTitle $session $csrf $loginAsset.id
     if ($authenticatedTitle -ne "Smoke protected console") {
         throw "authenticated browser check saw '$authenticatedTitle', expected the protected page"

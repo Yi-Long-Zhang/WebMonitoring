@@ -239,6 +239,7 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("POST /api/v1/detection-jobs", s.requireRoles(s.createJob, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("POST /api/v1/detection-jobs/{id}/cancel", s.requireRoles(s.cancelJob, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/incidents", s.listIncidents)
+	protected.HandleFunc("GET /api/v1/incidents/export", s.requireRoles(s.exportIncidents, domain.RoleAdmin, domain.RoleOperator))
 	protected.HandleFunc("GET /api/v1/incidents/{id}", s.getIncident)
 	// Readable by every authenticated role, like getIncident: an auditor who can see
 	// an incident but not how it was handled cannot audit it.
@@ -259,6 +260,7 @@ func (s *Server) routes() http.Handler {
 	protected.HandleFunc("POST /api/v1/alert-channels/{id}/test", s.requireRoles(s.testAlertChannel, domain.RoleAdmin))
 	protected.HandleFunc("GET /api/v1/alert-deliveries", s.listAlertDeliveries)
 	protected.HandleFunc("GET /api/v1/audit-events", s.listAudits)
+	protected.HandleFunc("GET /api/v1/audit-events/export", s.requireRoles(s.exportAudits, domain.RoleAdmin))
 	protected.HandleFunc("POST /api/v1/maintenance/retention", s.requireRoles(s.runRetentionMaintenance, domain.RoleAdmin))
 	// The manual form of the escalation sweep the control plane runs on a timer.
 	protected.HandleFunc("POST /api/v1/maintenance/escalation", s.requireRoles(s.escalationMaintenance, domain.RoleAdmin))

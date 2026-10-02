@@ -5,7 +5,7 @@ import type { AuditFilterParams } from "../services/api/client";
 import type { AuditEvent } from "../types/domain";
 
 defineProps<{ audits: AuditEvent[]; hasMore: boolean; loadingMore: boolean }>();
-const emit = defineEmits<{ loadMore: []; filter: [params: AuditFilterParams] }>();
+const emit = defineEmits<{ loadMore: []; filter: [params: AuditFilterParams]; export: [params: AuditFilterParams] }>();
 
 // The action vocabulary is open: every handler writes its own, and
 // `baseline.*` is built dynamically from the target status. This list is a
@@ -39,17 +39,23 @@ const result = ref("");
 // is configured to always emit the exact format the contract expects.
 const range = ref<[string, string] | undefined>();
 
-function apply() {
+// currentFilterParams is what the trail is filtered by right now, shared by the
+// query button and the export so the two cannot disagree about the filter.
+function currentFilterParams(): AuditFilterParams {
   // Empty values are sent as absent rather than as empty strings: the store
   // spreads these over the page parameters, and listQuery drops the empties.
-  emit("filter", {
+  return {
     actorId: actorId.value.trim() || undefined,
     action: action.value || undefined,
     resourceType: resourceType.value || undefined,
     result: result.value || undefined,
     from: range.value?.[0] || undefined,
     to: range.value?.[1] || undefined,
-  });
+  };
+}
+
+function apply() {
+  emit("filter", currentFilterParams());
 }
 
 function clear() {
@@ -88,6 +94,7 @@ function formatTime(value: string) { return new Date(value).toLocaleString("zh-C
       />
       <el-button type="primary" @click="apply">查询</el-button>
       <el-button @click="clear">重置</el-button>
+      <el-button @click="emit('export', currentFilterParams())">导出 CSV</el-button>
     </section>
     <section class="panel">
       <el-table :data="audits" empty-text="暂无审计记录">

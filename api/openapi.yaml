@@ -472,6 +472,46 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/IncidentList" }
         "400": { $ref: "#/components/responses/Error" }
+  /incidents/export:
+    get:
+      operationId: exportIncidents
+      description: |
+        按与列表**同一套**过滤条件导出全部安全事件（含逐条状态与处置说明）。
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, csv], default: json }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/IncidentStatus" }
+        - name: severity
+          in: query
+          schema: { $ref: "#/components/schemas/Severity" }
+        - name: assetId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: ownerId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: keyword
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: JSON 或 CSV 附件
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IncidentList" }
+            text/csv:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
   /incidents/{id}:
     get:
       operationId: getIncident
@@ -758,6 +798,54 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ReportSummary" }
         "400": { $ref: "#/components/responses/Error" }
+  /audit-events/export:
+    get:
+      operationId: exportAuditEvents
+      description: |
+        按与列表**同一套**过滤条件导出全部审计记录。导出是一份会被交到别人手上的
+        文件，因此调用方以为导出了某个子集而实际不是，比在屏幕上多滚动几行严重
+        得多——过滤器与列表共用同一个解析器。
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, csv], default: json }
+        - name: actorId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: action
+          in: query
+          schema: { type: string }
+        - name: resourceType
+          in: query
+          schema: { type: string }
+        - name: resourceId
+          in: query
+          schema: { type: string }
+        - name: result
+          in: query
+          schema: { type: string, enum: [SUCCESS, FAILED, PARTIAL] }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: JSON 或 CSV 附件
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AuditEvent" }
+            text/csv:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
   /audit-events:
     get:
       operationId: listAuditEvents

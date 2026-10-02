@@ -389,6 +389,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/incidents/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 按与列表**同一套**过滤条件导出全部安全事件（含逐条状态与处置说明）。 */
+        get: operations["exportIncidents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/incidents/{id}": {
         parameters: {
             query?: never;
@@ -619,6 +636,27 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getReportSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audit-events/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description 按与列表**同一套**过滤条件导出全部审计记录。导出是一份会被交到别人手上的
+         *     文件，因此调用方以为导出了某个子集而实际不是，比在屏幕上多滚动几行严重
+         *     得多——过滤器与列表共用同一个解析器。
+         */
+        get: operations["exportAuditEvents"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2203,6 +2241,38 @@ export interface operations {
             400: components["responses"]["Error"];
         };
     };
+    exportIncidents: {
+        parameters: {
+            query?: {
+                format?: "json" | "csv";
+                status?: components["schemas"]["IncidentStatus"];
+                severity?: components["schemas"]["Severity"];
+                assetId?: string;
+                ownerId?: string;
+                keyword?: string;
+                from?: string;
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description JSON 或 CSV 附件 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentList"];
+                    "text/csv": string;
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+        };
+    };
     getIncident: {
         parameters: {
             query?: never;
@@ -2630,6 +2700,40 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
+        };
+    };
+    exportAuditEvents: {
+        parameters: {
+            query?: {
+                format?: "json" | "csv";
+                actorId?: string;
+                action?: string;
+                resourceType?: string;
+                resourceId?: string;
+                result?: "SUCCESS" | "FAILED" | "PARTIAL";
+                from?: string;
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description JSON 或 CSV 附件 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["AuditEvent"][];
+                    };
+                    "text/csv": string;
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
         };
     };
     listAuditEvents: {

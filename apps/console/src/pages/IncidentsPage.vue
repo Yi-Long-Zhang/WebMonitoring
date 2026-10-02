@@ -12,6 +12,8 @@ type Props = {
   deliveries: AlertDelivery[];
   users: User[];
   canOperate: boolean;
+  // Export carries the filter and the whole result, so it is an admin action.
+  canAdmin: boolean;
   // Owned by the parent, which bumps it once a write has actually landed. Doing
   // it here on click would fire a reload that can reach the API before the
   // entry it is meant to show exists.
@@ -29,6 +31,7 @@ const emit = defineEmits<{
   transition: [incident: Incident, status: Incident["status"], ownerId: string];
   batchTransition: [ids: string[], status: Incident["status"]];
   filter: [params: IncidentFilterParams];
+  export: [params: IncidentFilterParams];
   loadMore: [];
 }>();
 
@@ -43,14 +46,21 @@ const filterKeyword = ref("");
 // operator picked is never rejected for its formatting.
 const filterRange = ref<[string, string] | undefined>();
 
-function applyFilters() {
-  emit("filter", {
+// currentFilterParams is what the listing is filtered by right now, shared by the
+// query button and the export so the two can never disagree about what "the
+// current filter" is.
+function currentFilterParams(): IncidentFilterParams {
+  return {
     status: filterStatus.value || undefined,
     severity: filterSeverity.value || undefined,
     keyword: filterKeyword.value.trim() || undefined,
     from: filterRange.value?.[0] || undefined,
     to: filterRange.value?.[1] || undefined,
-  });
+  };
+}
+
+function applyFilters() {
+  emit("filter", currentFilterParams());
 }
 
 function clearFilters() {
@@ -151,6 +161,9 @@ async function submitComment() {
       />
       <el-button type="primary" @click="applyFilters">查询</el-button>
       <el-button @click="clearFilters">重置</el-button>
+      <!-- Exports what the filter selects, not the page on screen: the request
+           goes to the export endpoint with the same parameters the listing uses. -->
+      <el-button :disabled="!canAdmin" @click="emit('export', currentFilterParams())">导出 CSV</el-button>
     </section>
     <section class="panel">
       <div v-if="canOperate && selectedIds.length > 0" class="batch-bar">
