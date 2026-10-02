@@ -10,6 +10,31 @@
 
 ---
 
+## 阶段一 1.6 审计与事件清单导出实测 — 2026-10-03
+
+- **脚本**：`compose-smoke.ps1`（新增断言段「exports」）+
+  `multi-replica-drill.ps1`；`internal/api/export_test.go`。
+- **关键断言**：(1) 导出的过滤条件必须与列表**完全一致**——文件是要交到别人手上的，
+  调用方无法像在屏幕上那样一眼看出多给了或少给了；(2) 未知格式 400 而不是按默认
+  格式给一份。
+- **结果**（2026-10-03，全部符合）：
+  - 单元：事件导出按 `status=FALSE_POSITIVE` 只导出该行（表头 + 1 行），Content-Type
+    与 Content-Disposition 正确；审计导出按 `action=asset.create` 过滤且 `details`
+    以 JSON 原样进入单元格（`"rows":3`）；`format=xlsx` / `format=pdf` 各 400；
+    不带 format 时返回 JSON 且条数与列表一致。
+  - smoke：事件导出 CSV 含表头与该事件、且**不含**被过滤掉的 FALSE_POSITIVE；审计
+    导出可下；`format=xlsx` 400 `INVALID_FORMAT`。
+- **修法摘要**：`GET /incidents/export` 与 `GET /audit-events/export`（`format=json|csv`，
+  默认 JSON），复用列表的过滤解析器，绕过 keyset 分页，各记一条审计；控制台在事件页
+  与审计页各加「导出 CSV」，导出的是当前过滤选中的全部。
+- **合并前整体回归**（2026-10-03，`codex/data-export` @ `6ad836b`）：
+  `compose-smoke.ps1` 通过（退出码 0，含控制台 Playwright E2E）；
+  `multi-replica-drill.ps1` 通过（退出码 0）。
+- **未覆盖**：导出在**大数据量**下的表现未实测（当前按过滤条件全量读入内存再写出，
+  与既有资产导出一致；十万级记录时的内存占用未知）。
+
+---
+
 ## 阶段一 1.5 版本与构建标识实测 — 2026-10-03
 
 - **脚本**：`compose-smoke.ps1`（新增断言段「build identity」）+
