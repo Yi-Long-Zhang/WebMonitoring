@@ -19,6 +19,8 @@
   (2) manifest 带 `redisSnapshot` 字段且 `redis/dump.rdb` 真实存在并参与
   SHA-256 校验；(3) 恢复脚本 dry-run 对幸存备份校验通过（不执行恢复）。
 - **结果**（2026-10-02，退出码 0）：
+  - 合并前整体回归（2026-10-02）：`compose-smoke.ps1` 通过（退出码 0）；
+    `multi-replica-drill.ps1` 通过（duplicate groups 0、退出码 0）。
   - 周期 1 产出 `20261002-001630`，周期 2 产出 `20261002-001646`，轮转日志
     `Retention: kept 1 of 2 backups (KeepBackups=1)`，断言确认旧目录被删、
     新目录幸存。
