@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$OutputRoot = ".data-backups",
     # Backup a stack started under a different Compose project (for example the
     # one left running by compose-smoke.ps1 -KeepRunning).

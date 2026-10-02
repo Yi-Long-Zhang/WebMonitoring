@@ -1,4 +1,4 @@
-# Registers (or updates) a daily scheduled task that runs the Compose backup
+﻿# Registers (or updates) a daily scheduled task that runs the Compose backup
 # against the deployment in this repository. Run from the repository root:
 #
 #   powershell -ExecutionPolicy Bypass -File deployments/scheduling/register-windows-task.ps1

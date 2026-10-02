@@ -1,4 +1,4 @@
-# Rehearsal for scheduled backup operation: run two backup cycles against the
+﻿# Rehearsal for scheduled backup operation: run two backup cycles against the
 # running stack with retention set to one, prove the older cycle is pruned, and
 # prove the surviving backup passes the restore script's checksum verification.
 # Nothing destructive happens here: the restore half is a dry run.

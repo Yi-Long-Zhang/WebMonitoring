@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Reload the TLS edge after the certificate files have been renewed.
 

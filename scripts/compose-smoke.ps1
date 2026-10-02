@@ -409,7 +409,7 @@ try {
     # rendered for a person. What is asserted here is what a browser needs (an
     # inline HTML response whose style block the page's own CSP will accept) and
     # what the report must not do (inline the captured page).
-    $reportHTML = Invoke-WebRequest -Uri "$apiBase/api/v1/reports/$incidentId/html" -WebSession $session
+    $reportHTML = Invoke-WebRequest -Uri "$apiBase/api/v1/reports/$incidentId/html" -WebSession $session -UseBasicParsing
     if ($reportHTML.StatusCode -ne 200) {
         throw "the incident report returned $($reportHTML.StatusCode)"
     }
@@ -424,7 +424,7 @@ try {
             throw "the incident report does not mention $needle"
         }
     }
-    $summaryHTML = Invoke-WebRequest -Uri "$apiBase/api/v1/reports/summary/html" -WebSession $session
+    $summaryHTML = Invoke-WebRequest -Uri "$apiBase/api/v1/reports/summary/html" -WebSession $session -UseBasicParsing
     if ($summaryHTML.StatusCode -ne 200 -or [string]$summaryHTML.Headers["Content-Type"] -notlike "text/html*") {
         throw "the summary report served $($summaryHTML.StatusCode)/$([string]$summaryHTML.Headers['Content-Type'])"
     }
