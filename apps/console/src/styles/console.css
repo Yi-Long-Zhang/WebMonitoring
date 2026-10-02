@@ -85,6 +85,7 @@ button, input { font: inherit; }
 .evidence-link { margin-left: 12px; color: var(--teal); font-size: 12px; text-decoration: none; }
 .evidence-link.no-margin { margin-left: 0; }
 .report-link { color: var(--teal); font-size: 12px; text-decoration: none; }
+.panel-header-aside { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .asset-filter { width: 220px; }
 .el-table { --el-table-header-bg-color: #fafbfd; --el-table-border-color: #edf0f4; --el-table-row-hover-bg-color: #f7fbfb; }
 .el-table th.el-table__cell { color: #8190a3; font-size: 11px; font-weight: 700; }

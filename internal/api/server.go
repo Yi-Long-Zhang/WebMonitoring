@@ -31,6 +31,7 @@ import (
 	"webmonitoring/internal/ratelimit"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
+	"webmonitoring/internal/version"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -210,6 +211,10 @@ func (s *Server) routes() http.Handler {
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /api/v1/auth/session", s.session)
 	protected.HandleFunc("DELETE /api/v1/auth/session", s.logout)
+	// Behind the session gate: the build identity is troubleshooting material,
+	// and handing an unauthenticated caller the exact version of a deployment is
+	// how an attacker picks which known issue to try. An operator has a session.
+	protected.HandleFunc("GET /api/v1/version", s.versionInfo)
 	protected.HandleFunc("GET /api/v1/dashboard", s.dashboard)
 	protected.HandleFunc("GET /api/v1/assets", s.listAssets)
 	protected.HandleFunc("POST /api/v1/assets", s.requireRoles(s.createAsset, domain.RoleAdmin, domain.RoleOperator))
@@ -283,6 +288,13 @@ func (s *Server) routes() http.Handler {
 
 	root.Handle("/api/v1/", s.authenticate(s.rateLimit(s.csrf(protected))))
 	return s.trace(root)
+}
+
+// versionInfo reports the build identity of the running control plane. It reads
+// no repository state, so it answers during an incident even when the database
+// is the thing that is broken -- which is exactly when someone asks it.
+func (s *Server) versionInfo(writer http.ResponseWriter, _ *http.Request) {
+	writeJSON(writer, http.StatusOK, version.Current())
 }
 
 func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {

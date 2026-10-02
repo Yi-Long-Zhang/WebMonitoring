@@ -64,6 +64,20 @@ paths:
         - $ref: "#/components/parameters/CSRFToken"
       responses:
         "204": { description: 已退出 }
+  /version:
+    get:
+      operationId: getVersion
+      description: |
+        控制面的构建标识。需要登录：它排障时有用，而未认证地把部署的确切版本
+        交出去，等于让攻击者替你挑已知问题。它不读任何仓储状态，因此数据库正是
+        出问题的那一环时它依然答得上来——而那时恰恰是有人要问它的时候。
+      responses:
+        "200":
+          description: 构建标识
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VersionInfo" }
+        "401": { $ref: "#/components/responses/Error" }
   /dashboard:
     get:
       operationId: getDashboard
@@ -1599,6 +1613,14 @@ components:
         startMinute: { type: integer, minimum: 0, maximum: 1440 }
         endMinute: { type: integer, minimum: 0, maximum: 1440 }
         utcOffsetMinutes: { type: integer, minimum: -720, maximum: 840, default: 0 }
+    VersionInfo:
+      type: object
+      required: [version, commit, buildTime, goVersion]
+      properties:
+        version: { type: string }
+        commit: { type: string }
+        buildTime: { type: string }
+        goVersion: { type: string }
     PolicyList:
       type: object
       required: [items, nextCursor]

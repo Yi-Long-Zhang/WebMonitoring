@@ -659,6 +659,19 @@ try {
         throw "a zero-length maintenance window returned $($zeroWindow.Status)/$($zeroWindow.Code)"
     }
 
+    # --- build identity ------------------------------------------------------
+    # The first question of any incident is which version is actually running.
+    # It is behind the session gate, so the anonymous call has to be refused --
+    # otherwise the endpoint hands a probe the deployment's exact version.
+    $anonymousVersion = Invoke-ApiExpectError -Method Get -Uri "$apiBase/api/v1/version"
+    if ($anonymousVersion.Status -ne 401) {
+        throw "the version endpoint answered an unauthenticated caller with $($anonymousVersion.Status)"
+    }
+    $build = Invoke-RestMethod -Method Get -Uri "$apiBase/api/v1/version" -WebSession $session
+    if (-not $build.version -or -not $build.goVersion) {
+        throw "the version endpoint returned an incomplete identity: $($build | ConvertTo-Json -Compress)"
+    }
+
     $authenticatedTitle = Get-SnapshotTitle $session $csrf $loginAsset.id
     if ($authenticatedTitle -ne "Smoke protected console") {
         throw "authenticated browser check saw '$authenticatedTitle', expected the protected page"

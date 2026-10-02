@@ -237,6 +237,19 @@ export type IncidentBatchResult = {
   results: IncidentBatchRow[];
 };
 
+// VersionInfo is the build identity of the running control plane. It is behind
+// the session gate, so the console shows it rather than a public endpoint.
+export type VersionInfo = {
+  version: string;
+  commit: string;
+  buildTime: string;
+  goVersion: string;
+};
+
+export function getVersion() {
+  return request<VersionInfo>("/version");
+}
+
 export function getIncidents(params: IncidentFilterParams = {}) {
   return request<ListResponse<Incident>>(`/incidents${listQuery(params)}`);
 }

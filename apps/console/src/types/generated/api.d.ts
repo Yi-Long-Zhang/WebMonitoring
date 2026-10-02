@@ -68,6 +68,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description 控制面的构建标识。需要登录：它排障时有用，而未认证地把部署的确切版本
+         *     交出去，等于让攻击者替你挑已知问题。它不读任何仓储状态，因此数据库正是
+         *     出问题的那一环时它依然答得上来——而那时恰恰是有人要问它的时候。
+         */
+        get: operations["getVersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/dashboard": {
         parameters: {
             query?: never;
@@ -1207,6 +1228,12 @@ export interface components {
             /** @default 0 */
             utcOffsetMinutes: number;
         };
+        VersionInfo: {
+            version: string;
+            commit: string;
+            buildTime: string;
+            goVersion: string;
+        };
         PolicyList: {
             items: components["schemas"]["Policy"][];
             nextCursor: string;
@@ -1560,6 +1587,27 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    getVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 构建标识 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionInfo"];
+                };
+            };
+            401: components["responses"]["Error"];
         };
     };
     getDashboard: {

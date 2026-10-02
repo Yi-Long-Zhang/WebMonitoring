@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import EChart from "../components/monitoring/EChart.vue";
 import { detectionGaugeOption, severityPieOption, trendOption, type TrendPoint } from "../features/monitoring/charts";
+import type { VersionInfo } from "../services/api/client";
 import type { Asset, Dashboard, Incident } from "../types/domain";
 
 type ReportSummary = {
@@ -18,6 +19,7 @@ type ReportSummary = {
 const props = defineProps<{
   dashboard?: Dashboard;
   reportSummary?: ReportSummary;
+  version?: VersionInfo;
   assets: Asset[];
   incidents: Incident[];
   assetMap: Map<string, Asset>;
@@ -62,7 +64,15 @@ function statusType(status: string) {
         <div><span class="section-kicker">OPERATIONS METRICS</span><h2>运行质量</h2></div>
         <!-- A printable rendering of the same numbers, not a second computation:
              it is served by the endpoint that produced this page's summary. -->
-        <a class="report-link" href="/api/v1/reports/summary/html" target="_blank" rel="noopener">打印汇总报告</a>
+        <div class="panel-header-aside">
+          <a class="report-link" href="/api/v1/reports/summary/html" target="_blank" rel="noopener">打印汇总报告</a>
+          <!-- The build identity, for the first question of any incident: "which
+               version is actually running". Hidden until it loads rather than
+               shown blank. -->
+          <small v-if="version" class="muted" :title="`构建时间：${version.buildTime}｜Go ${version.goVersion}`">
+            版本 {{ version.version }}<template v-if="version.commit !== 'unknown'">（{{ version.commit.slice(0, 8) }}）</template>
+          </small>
+        </div>
       </div>
       <div class="metric-row"><div><span>检测成功率</span><strong>{{ successRate }}%</strong></div><div><span>MTTD</span><strong>{{ formatDuration(reportSummary?.mttdSeconds) }}</strong></div><div><span>MTTA</span><strong>{{ formatDuration(reportSummary?.mttaSeconds) }}</strong></div><div><span>MTTR</span><strong>{{ formatDuration(reportSummary?.mttrSeconds) }}</strong></div><div><span>告警事件</span><strong>{{ reportSummary?.incidents ?? 0 }}</strong></div></div>
     </section>

@@ -85,6 +85,10 @@ const viewTitle = computed(() => ({
 
 async function refresh() {
   try { await data.refresh(); } catch (error) { ElMessage.error(error instanceof Error ? error.message : "加载失败"); }
+  // Not inside the try: the version is decoration, and a control plane that
+  // cannot answer for it must not make the console report "加载失败" over data
+  // that did load.
+  await data.loadVersion();
 }
 function reportError(error: unknown, fallback: string) { ElMessage.error(error instanceof Error ? error.message : fallback); }
 async function createAsset() {
@@ -388,7 +392,7 @@ onUnmounted(() => eventStream?.close());
     <Sidebar :active-view="activeView" :username="session.user.username" :role="session.user.role" :role-label="roleLabel" :candidate-count="data.baselines.filter((item) => item.status === 'CANDIDATE').length" :open-incident-count="data.dashboard?.openIncidents || 0" @navigate="navigate" @sign-out="signOut" />
     <main class="main-content">
       <Topbar :title="viewTitle" :loading="data.loading" :username="session.user.username" :role-label="roleLabel" @refresh="refresh" @change-password="submitOwnPasswordChange" />
-      <OverviewPage v-if="activeView === 'overview'" :dashboard="data.dashboard" :report-summary="data.reportSummary" :assets="data.assets" :incidents="data.incidents" :asset-map="assetMap" @navigate="navigate" />
+      <OverviewPage v-if="activeView === 'overview'" :dashboard="data.dashboard" :report-summary="data.reportSummary" :version="data.version" :assets="data.assets" :incidents="data.incidents" :asset-map="assetMap" @navigate="navigate" />
       <AssetsPage v-else-if="activeView === 'assets'" :assets="data.assets" :policies="data.policies" :can-operate="session.canOperate" :can-admin="session.canAdmin" :has-more="data.hasMore('assets')" :loading-more="data.isLoadingMore('assets')" @load-more="data.loadMore('assets')" @create="showAssetDialog = true" @verify="verify" @toggle="toggle" @detect="detect" @policy="editPolicy" @import="showImportDialog = true" @export="exportAssetList" />
       <SitesPage v-else-if="activeView === 'sites'" :sites="data.sites" :can-admin="session.canAdmin" :has-more="data.hasMore('sites')" :loading-more="data.isLoadingMore('sites')" @load-more="data.loadMore('sites')" @create="openSiteCreate" @edit="openSiteEdit" @remove="removeSite" />
       <BaselinesPage v-else-if="activeView === 'baselines'" :baselines="data.baselines" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('baselines')" :loading-more="data.isLoadingMore('baselines')" @load-more="data.loadMore('baselines')" @review="review" @retire="retireBaseline" @preview="openBaselinePreview" />

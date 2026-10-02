@@ -15,9 +15,10 @@ import {
   getReportSummary,
   getSites,
   getTenants,
+  getVersion,
   getUsers,
 } from "../services/api/client";
-import type { AuditFilterParams, IncidentFilterParams, PageParams } from "../services/api/client";
+import type { AuditFilterParams, IncidentFilterParams, PageParams, VersionInfo } from "../services/api/client";
 // The element types of the paged lists are inferred from the client function
 // signatures (getAssets returns ListResponse<Asset>), so only the types used
 // explicitly below are imported here.
@@ -98,6 +99,19 @@ export const useConsoleStore = defineStore("console", () => {
   // The audit list is the only one the operator can narrow, so it is the only
   // one whose query the store has to remember: refresh() re-fetches it on every
   // SSE event and must keep the filter the operator chose.
+  // Loaded once per session: it cannot change while the tab is open, short of a
+  // deploy that would restart the API anyway.
+  const version = ref<VersionInfo>();
+  async function loadVersion() {
+    if (version.value) return;
+    try {
+      version.value = await getVersion();
+    } catch {
+      // A control plane too old to have the endpoint just shows nothing, which
+      // is the honest answer rather than an error banner over a working console.
+    }
+  }
+
   const auditFilters = ref<AuditFilterParams>({});
   const audits = paged((params: PageParams) => getAuditEvents({ ...params, ...auditFilters.value }));
   const tenants = paged(getTenants);
@@ -220,6 +234,8 @@ export const useConsoleStore = defineStore("console", () => {
     applyAuditFilters,
     applyIncidentFilters,
     incidentFilters,
+    version,
+    loadVersion,
     reloadAssets,
     reloadAudits,
   };

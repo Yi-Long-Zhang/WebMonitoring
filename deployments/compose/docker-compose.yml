@@ -242,6 +242,12 @@ services:
     build:
       context: ../..
       dockerfile: apps/api/Dockerfile
+      # Stamped into the binary the version endpoint reports. Unset is honest:
+      # the image then says "dev", not a version it is not.
+      args:
+        VERSION: ${APP_VERSION:-dev}
+        COMMIT: ${APP_COMMIT:-unknown}
+        BUILD_TIME: ${APP_BUILD_TIME:-unknown}
       network: ${BUILD_NETWORK:-default}
     environment:
       APP_ENV: ${APP_ENV:-development}
