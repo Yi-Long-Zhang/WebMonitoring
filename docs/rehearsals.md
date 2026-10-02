@@ -10,6 +10,47 @@
 
 ---
 
+## 阶段一 1.2 打印就绪报告实测 — 2026-10-03
+
+- **脚本**：`compose-smoke.ps1`（新增断言段「print-ready reports」）+
+  `multi-replica-drill.ps1`；`internal/api/report_html_test.go`；另在实机栈上取回
+  生成物逐项核对渲染结果。
+- **关键断言**：(1) 响应是 inline 的 HTML 且带按响应生成 nonce 的 style-src
+  （脚本仍然禁止）；(2) 攻击者可控的标题必须**转义而不是丢弃**；(3) 证据只列出、
+  不内嵌；(4) 汇总与 JSON 形态共用同一段聚合，对同一区间不可能给出不同数字。
+- **结果**（2026-10-03）：
+  - 单测：`<script>alert(1)</script>` 作标题 → 报告中不含未转义片段、含
+    `&lt;script&gt;`；CSP 含 `style-src 'nonce-`、含 `default-src 'none'` 且无
+    `unsafe-inline`；`Content-Disposition: inline`；未知事件 404；汇总的反向区间
+    仍是 400（与 JSON 形态同源）。
+  - smoke：两个报告端点 200/`text/html`，正文含标题、事件 ID、证据清单与处置时间线，
+    **样式块内含 `@media print`**（见下）；汇总渲染出标题。
+  - 实机核对（人工步骤，本次确有收获）：取回报告后逐项检查渲染结果，发现两个缺陷，
+    均已修复并补上能拦住它们的断言：
+    1. **html/template 把样式表重写掉了**：`<style>` 是 CSS 上下文，`{{ .Styles }}`
+       经上下文转义后由 1.3 KB 变成 8 字节，报告完全没有样式。改用 `template.CSS`
+       标注。此前测试只断言响应头里的 nonce、没断言样式内容非空，所以全绿——smoke
+       现已补上内容检查。
+    2. **汇总的每日趋势表每格都是 `<nil>`**：我把 buildTrend 的键猜成
+       `day`/`total`/`CRITICAL`，实际是 `date`/`total` 与小写等级。已按实际键渲染，
+       并加了「正文不得出现 `<nil>`」与「趋势表必须带计数」的断言。
+  - 修复后实机复验：样式 1304 字节且含 `@media print`、四个板块齐全、`<nil>` 计数 0、
+    趋势表 30 行且末行计数正确。
+- **修法摘要**：新增 `GET /reports/{incidentId}/html` 与 `GET /reports/summary/html`；
+  汇总聚合抽成 `summarizeReport` 供两个入口共用，请求级失败改为返回值
+  （`reportRequestFailure`）；报告用 `html/template` 渲染，全部动态字段转义。
+- **合并前整体回归**（2026-10-03，`codex/report-html` @ `a9eb67c`）：
+  `compose-smoke.ps1` 通过（退出码 0，含控制台 Playwright E2E）；
+  `multi-replica-drill.ps1` 通过（退出码 0）。
+- **顺带修复**：`compose-smoke.ps1` 在这次改动中因缺少 UTF-8 BOM 而解析失败（中文
+  进入语法位置后 PowerShell 5.1 按 ANSI 读会拆错位），同隐患存在于另外 5 个 `.ps1`。
+  已为全部脚本补 BOM 并逐个做 PSParser 解析校验。
+- **未覆盖**：**没有人在真实浏览器里把它打印成 PDF 看过**——本次核对是取回 HTML 后
+  检查结构与文本（样式字节数、`@media print`、四个板块、无 `<nil>`）。打印分页效果
+  与中文字体表现仍需人工确认。
+
+---
+
 ## 阶段一 1.1 事件筛选与批量处置实测 — 2026-10-03
 
 - **脚本**：`scripts/compose-smoke.ps1`（新增断言段「incident filtering and batch
