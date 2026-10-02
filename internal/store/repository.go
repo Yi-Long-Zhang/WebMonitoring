@@ -129,6 +129,11 @@ type Repository interface {
 	// QUEUED and RUNNING rows are never touched: a stale RUNNING row is crash
 	// recovery state for ClaimJob, and a QUEUED row is work not yet started.
 	DeleteJobsBefore(ctx context.Context, tenantID string, before time.Time) (int, error)
+	// DetectionHealth reports when a check last succeeded, and how the checks
+	// that finished since `since` went. It backs the self-health metrics: an
+	// installation whose checks all fail looks exactly like one with nothing to
+	// report unless something states the difference.
+	DetectionHealth(ctx context.Context, since time.Time) (DetectionHealth, error)
 
 	CreateEvidence(ctx context.Context, evidence domain.Evidence) error
 	GetEvidence(ctx context.Context, tenantID, id string) (domain.Evidence, error)
@@ -229,4 +234,21 @@ type JobActivity struct {
 	Mode            string
 	LatestCreatedAt time.Time
 	HasActive       bool
+}
+
+// DetectionHealth is the installation's own detection liveness, read for the
+// self-health output. It is platform-wide on purpose: the question it answers is
+// "is this installation still monitoring anything at all", which no single
+// tenant's view can answer.
+//
+// A nil LastSucceededAt means no check has ever succeeded -- the state that also
+// holds on a fresh install, so callers must not read it as an outage on its own.
+type DetectionHealth struct {
+	// LastSucceededAt is the finish time of the most recent successful check,
+	// unbounded by the window (a stale install has to be able to report when it
+	// last worked, not just that it did not work recently).
+	LastSucceededAt *time.Time
+	// Succeeded and Failed count checks that finished within the window.
+	Succeeded int
+	Failed    int
 }

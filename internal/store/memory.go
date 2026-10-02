@@ -729,6 +729,31 @@ func (m *MemoryRepository) JobSchedulingState(ctx context.Context, tenantID stri
 	return result, nil
 }
 
+// DetectionHealth mirrors the postgres liveness read for the in-memory store.
+func (m *MemoryRepository) DetectionHealth(ctx context.Context, since time.Time) (DetectionHealth, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var health DetectionHealth
+	for _, job := range m.jobs {
+		if job.Status == domain.JobSucceeded && job.FinishedAt != nil {
+			if health.LastSucceededAt == nil || job.FinishedAt.After(*health.LastSucceededAt) {
+				at := *job.FinishedAt
+				health.LastSucceededAt = &at
+			}
+		}
+		if job.FinishedAt == nil || job.FinishedAt.Before(since) {
+			continue
+		}
+		switch job.Status {
+		case domain.JobSucceeded:
+			health.Succeeded++
+		case domain.JobFailed, domain.JobTimedOut:
+			health.Failed++
+		}
+	}
+	return health, nil
+}
+
 // DeleteJobsBefore mirrors the postgres retention delete: terminal rows only,
 // so QUEUED work and RUNNING crash-recovery state survive the sweep.
 func (m *MemoryRepository) DeleteJobsBefore(ctx context.Context, tenantID string, before time.Time) (int, error) {

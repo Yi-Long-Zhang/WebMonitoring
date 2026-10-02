@@ -486,6 +486,27 @@ destructive`，说明有待应用的破坏性迁移而确认变量未设——�
 完整的只读诊断命令（curl/docker compose 示例）单源在
 [runbooks/README.md](runbooks/README.md) 的「通用只读诊断入口」。
 
+**Q：怎么知道「检测本身」还活着？**
+
+监测类产品最危险的状态是：目标挂了、检测节点故障、全部检测都在失败——而控制台
+上**没有任何事件**，与「一切正常」看起来完全一样。有两个指标专门用来区分这两者：
+
+```powershell
+Invoke-RestMethod http://localhost:8080/metrics -Headers @{ Authorization = "Bearer $env:METRICS_TOKEN" } |
+  Select-String 'last_successful_detection|detection_checks_last_hour'
+# webmonitoring_last_successful_detection_timestamp_seconds 1759500000
+# webmonitoring_detection_checks_last_hour{result="succeeded"} 1180
+# webmonitoring_detection_checks_last_hour{result="failed"} 12
+```
+
+- `webmonitoring_last_successful_detection_timestamp_seconds` 是**最近一次成功
+  检测的完成时刻**（Unix 秒，不设时间窗——安装停了三天，要能说出它最后是什么时候
+  还正常的）。健康时该值随检测推进；**它停止前进就是有人该被叫醒的信号**，
+  哪怕控制台上一条事件都没有。
+- `webmonitoring_detection_checks_last_hour{result}` 是最近一小时的完成数与失败数，
+  失败率直接从这两个数算。累计计数器（`webmonitoring_detection_jobs_total`）在
+  检测完全停止时对 `rate()` 呈现为 0，也就是「健康」；这两个数不会。
+
 **Q：队列的重试参数怎么调？**
 
 默认任务领取租约为 5 分钟，pending 重领最短空闲时间为 120 秒。**不要把

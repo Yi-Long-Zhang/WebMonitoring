@@ -231,6 +231,26 @@ func main() {
 		registry.Set("webmonitoring_high_risk_incidents", float64(highRisk), nil)
 		registry.Set("webmonitoring_critical_incidents", float64(critical), nil)
 	})
+	// The installation's own liveness, read at scrape time like the gauges above.
+	// A detection tier that has stopped working looks exactly like one with
+	// nothing to report, so the two numbers that tell them apart are published
+	// here: when a check last succeeded, and how the last hour went. The
+	// cumulative counters cannot answer the first question at all, and a rate
+	// over them goes to zero -- not to "unknown" -- when checks stop.
+	server.Metrics().OnCollect(func(registry *metrics.Registry) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		health, err := repository.DetectionHealth(ctx, time.Now().UTC().Add(-time.Hour))
+		if err != nil {
+			logger.Warn("collect detection health failed; keeping previous values", "error", err)
+			return
+		}
+		if health.LastSucceededAt != nil {
+			registry.Set("webmonitoring_last_successful_detection_timestamp_seconds", float64(health.LastSucceededAt.Unix()), nil)
+		}
+		registry.Set("webmonitoring_detection_checks_last_hour", float64(health.Succeeded), map[string]string{"result": "succeeded"})
+		registry.Set("webmonitoring_detection_checks_last_hour", float64(health.Failed), map[string]string{"result": "failed"})
+	})
 	server.SetMetricsToken(env("METRICS_TOKEN", ""))
 	server.SetReadiness(func(checkContext context.Context) map[string]error {
 		failures := make(map[string]error)

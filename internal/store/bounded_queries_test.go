@@ -258,3 +258,60 @@ func TestJobSchedulingStateIsTenantScoped(t *testing.T) {
 		})
 	}
 }
+
+// DetectionHealth backs the self-health metrics, so it must agree across stores
+// and must answer both halves of the question: when a check last succeeded
+// (unbounded by the window), and how the checks inside the window went.
+//
+// The read is platform-wide, so it sees every other test's rows in the shared
+// integration database; the assertions are deltas for that reason.
+func TestDetectionHealthAgreesAcrossStores(t *testing.T) {
+	for name, repository := range testRepositories(t) {
+		t.Run(name, func(t *testing.T) {
+			since := time.Now().UTC().Truncate(time.Microsecond)
+			before, err := repository.DetectionHealth(context.Background(), since)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tenantID, assetID := seedJobFixture(t, repository)
+			create := func(status domain.JobStatus, finishedAt *time.Time) {
+				t.Helper()
+				if err := repository.CreateJob(context.Background(), domain.DetectionJob{
+					ID: identity.New(), TenantID: tenantID, AssetID: assetID, Mode: "HTTP",
+					Status: status, PolicyVersion: 1, MaxAttempts: 3,
+					CreatedAt: finishedAt.Add(-time.Minute), FinishedAt: finishedAt,
+				}); err != nil {
+					t.Fatalf("create %s job: %v", status, err)
+				}
+			}
+			// Two inside the window (one success, one failure), and one success
+			// that finished long before it: the windowed counts must skip the
+			// last one while the "last succeeded" timestamp still sees it.
+			longAgo := since.Add(-72 * time.Hour)
+			recentSuccess := since.Add(time.Minute)
+			create(domain.JobFailed, &recentSuccess)
+			create(domain.JobSucceeded, &recentSuccess)
+			create(domain.JobSucceeded, &longAgo)
+
+			after, err := repository.DetectionHealth(context.Background(), since)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Succeeded-before.Succeeded != 1 {
+				t.Fatalf("windowed succeeded grew by %d, want 1", after.Succeeded-before.Succeeded)
+			}
+			if after.Failed-before.Failed != 1 {
+				t.Fatalf("windowed failed grew by %d, want 1", after.Failed-before.Failed)
+			}
+			if after.LastSucceededAt == nil {
+				t.Fatal("no last-success timestamp after a successful check")
+			}
+			if !after.LastSucceededAt.After(since) {
+				t.Fatalf("last success = %v, want the recent one (the maximum must not be bounded by the window)", after.LastSucceededAt)
+			}
+			if before.LastSucceededAt != nil && !after.LastSucceededAt.After(*before.LastSucceededAt) && !after.LastSucceededAt.Equal(*before.LastSucceededAt) {
+				t.Fatalf("last success moved backwards: %v -> %v", before.LastSucceededAt, after.LastSucceededAt)
+			}
+		})
+	}
+}

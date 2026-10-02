@@ -781,6 +781,26 @@ func (p *PostgresRepository) DeleteJobsBefore(ctx context.Context, tenantID stri
 	return int(tag.RowsAffected()), nil
 }
 
+// DetectionHealth is the platform-wide liveness read behind the self-health
+// metrics. The maximum is deliberately unbounded by the window: an install that
+// stopped monitoring yesterday has to be able to say when it last worked, and a
+// windowed maximum would report "never" for exactly the case worth reporting.
+// The partial index in migration 000017 keeps both halves off a sequential scan.
+func (p *PostgresRepository) DetectionHealth(ctx context.Context, since time.Time) (DetectionHealth, error) {
+	var health DetectionHealth
+	err := p.pool.QueryRow(ctx, `
+		SELECT
+			(SELECT max(finished_at) FROM detection_jobs WHERE status='SUCCEEDED'),
+			count(*) FILTER (WHERE status='SUCCEEDED'),
+			count(*) FILTER (WHERE status IN ('FAILED','TIMED_OUT'))
+		FROM detection_jobs WHERE finished_at >= $1`, since).Scan(
+		&health.LastSucceededAt, &health.Succeeded, &health.Failed)
+	if err != nil {
+		return DetectionHealth{}, normalizePostgresError(err)
+	}
+	return health, nil
+}
+
 const jobSelect = `
 	SELECT id,tenant_id,asset_id,mode,status,policy_version,COALESCE(baseline_version,0),
 		COALESCE(error_code,''),COALESCE(error_message,''),retry_count,max_attempts,created_at,started_at,finished_at
