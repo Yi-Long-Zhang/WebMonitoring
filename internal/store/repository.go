@@ -134,6 +134,16 @@ type Repository interface {
 	// installation whose checks all fail looks exactly like one with nothing to
 	// report unless something states the difference.
 	DetectionHealth(ctx context.Context, since time.Time) (DetectionHealth, error)
+	// ConsecutiveFailedChecks returns the length of the trailing run of failed
+	// checks for one (asset, mode): how many of the newest terminal checks
+	// failed before the first success, counting at most `window` of them.
+	//
+	// It is derived from the job rows rather than kept as a counter. A counter
+	// would be a second copy of the job table's own state, and it would have to
+	// be reconciled on every replica restart, cancel and reap; the trailing run
+	// is the definition, and detection_jobs_schedule_idx already orders the rows
+	// the way this reads them.
+	ConsecutiveFailedChecks(ctx context.Context, tenantID, assetID, mode string, window int) (int, error)
 
 	CreateEvidence(ctx context.Context, evidence domain.Evidence) error
 	GetEvidence(ctx context.Context, tenantID, id string) (domain.Evidence, error)

@@ -632,3 +632,68 @@ func TestSendTestStillEnforcesTheSSRFGuard(t *testing.T) {
 		t.Fatal("a test send reached a link-local address")
 	}
 }
+
+// SendOperationalNotice carries a message that has no incident behind it. Three
+// things have to hold, and each is a way the notice could quietly fail: every
+// enabled channel gets it, the channel named as the subject does not, and no
+// delivery row is written -- alert_deliveries.incident_id is NOT NULL, so a row
+// for a notice would either be impossible or a phantom incident.
+func TestSendOperationalNoticeSkipsSubjectChannelAndWritesNoDelivery(t *testing.T) {
+	var subject, other atomic.Int32
+	subjectServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		subject.Add(1)
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer subjectServer.Close()
+	otherServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		other.Add(1)
+		var payload struct {
+			Event string `json:"event"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode notice payload: %v", err)
+		}
+		if payload.Event != "monitoring.detection_failed" {
+			t.Errorf("event = %q, want the notice event", payload.Event)
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer otherServer.Close()
+
+	repository := store.NewMemoryRepository()
+	guard := security.NewURLGuard(true)
+	for _, server := range []*httptest.Server{subjectServer, otherServer} {
+		port := server.Listener.Addr().(*net.TCPAddr).Port
+		guard.AllowedPorts[strconv.Itoa(port)] = struct{}{}
+	}
+	channels := []domain.AlertChannel{
+		{ID: "subject", TenantID: "tenant", Type: "WEBHOOK", URL: subjectServer.URL, Enabled: true, CreatedAt: time.Now().UTC()},
+		{ID: "other", TenantID: "tenant", Type: "WEBHOOK", URL: otherServer.URL, Enabled: true, CreatedAt: time.Now().UTC()},
+		{ID: "off", TenantID: "tenant", Type: "WEBHOOK", URL: otherServer.URL, Enabled: false, CreatedAt: time.Now().UTC()},
+	}
+	for _, channel := range channels {
+		if err := repository.CreateAlertChannel(context.Background(), channel); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dispatcher := NewDispatcher(repository, guard)
+
+	failures := dispatcher.SendOperationalNotice(t.Context(), "tenant", "monitoring.detection_failed",
+		"监测失效：连续检测失败", "资产：site\n连续失败：3 次", "subject")
+	if len(failures) != 0 {
+		t.Fatalf("notice delivery failed: %v", failures)
+	}
+	if subject.Load() != 0 {
+		t.Fatal("the excluded channel was sent the notice about itself")
+	}
+	if other.Load() != 1 {
+		t.Fatalf("other channel received %d notices, want 1 (the disabled channel must be skipped)", other.Load())
+	}
+	deliveries, _, err := repository.ListAlertDeliveries(context.Background(), "tenant", "", store.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 0 {
+		t.Fatalf("notice wrote %d delivery rows; alert deliveries are incident-scoped", len(deliveries))
+	}
+}

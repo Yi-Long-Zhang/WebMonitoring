@@ -801,6 +801,43 @@ func (p *PostgresRepository) DetectionHealth(ctx context.Context, since time.Tim
 	return health, nil
 }
 
+// ConsecutiveFailedChecks counts the trailing run of failures for one
+// (asset, mode). Cancelled checks are left out of the scan entirely rather than
+// treated as a break: an operator cancelling a job says nothing about whether
+// the asset can be monitored, so it must neither extend the run nor end it.
+// detection_jobs_schedule_idx (tenant_id, asset_id, mode, created_at DESC) is
+// the exact ordering this reads in.
+func (p *PostgresRepository) ConsecutiveFailedChecks(ctx context.Context, tenantID, assetID, mode string, window int) (int, error) {
+	if window <= 0 {
+		return 0, nil
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT status FROM detection_jobs
+		WHERE tenant_id=$1 AND asset_id=$2 AND mode=$3
+			AND status IN ('SUCCEEDED','FAILED','TIMED_OUT')
+		ORDER BY created_at DESC
+		LIMIT $4`, tenantID, assetID, mode, window)
+	if err != nil {
+		return 0, normalizePostgresError(err)
+	}
+	defer rows.Close()
+	streak := 0
+	for rows.Next() {
+		var status domain.JobStatus
+		if err := rows.Scan(&status); err != nil {
+			return 0, err
+		}
+		if status == domain.JobSucceeded {
+			break
+		}
+		streak++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, normalizePostgresError(err)
+	}
+	return streak, nil
+}
+
 const jobSelect = `
 	SELECT id,tenant_id,asset_id,mode,status,policy_version,COALESCE(baseline_version,0),
 		COALESCE(error_code,''),COALESCE(error_message,''),retry_count,max_attempts,created_at,started_at,finished_at

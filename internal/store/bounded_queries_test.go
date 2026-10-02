@@ -315,3 +315,57 @@ func TestDetectionHealthAgreesAcrossStores(t *testing.T) {
 		})
 	}
 }
+
+// ConsecutiveFailedChecks backs the "monitoring has gone quiet" notice. It must
+// agree across stores on the two cases that are easy to get wrong: a success
+// ends the run, and a cancelled check neither extends it nor ends it -- an
+// operator cancelling a job says nothing about whether the asset can be checked.
+func TestConsecutiveFailedChecksAgreesAcrossStores(t *testing.T) {
+	for name, repository := range testRepositories(t) {
+		t.Run(name, func(t *testing.T) {
+			tenantID, assetID := seedJobFixture(t, repository)
+			created := time.Now().UTC().Truncate(time.Microsecond)
+			// Newest first this reads: FAILED, CANCELLED, FAILED, FAILED, SUCCEEDED.
+			outcomes := []domain.JobStatus{
+				domain.JobFailed, domain.JobCancelled, domain.JobFailed, domain.JobFailed, domain.JobSucceeded,
+			}
+			for index, status := range outcomes {
+				at := created.Add(-time.Duration(index) * time.Minute)
+				job := domain.DetectionJob{
+					ID: identity.New(), TenantID: tenantID, AssetID: assetID, Mode: "HTTP",
+					Status: status, PolicyVersion: 1, MaxAttempts: 3, CreatedAt: at, FinishedAt: &at,
+				}
+				if err := repository.CreateJob(context.Background(), job); err != nil {
+					t.Fatalf("create %s job: %v", status, err)
+				}
+			}
+
+			streak, err := repository.ConsecutiveFailedChecks(context.Background(), tenantID, assetID, "HTTP", 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if streak != 3 {
+				t.Fatalf("streak = %d, want 3 (three failures, with the cancelled check walked past and the older success ending the run)", streak)
+			}
+
+			windowed, err := repository.ConsecutiveFailedChecks(context.Background(), tenantID, assetID, "HTTP", 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if windowed != 2 {
+				t.Fatalf("windowed streak = %d, want 2 (the window caps the read)", windowed)
+			}
+
+			// A pair with no history is a zero, not an error: every asset starts
+			// there, and the caller must not read it as a failure.
+			uncheckedAsset := identity.New()
+			empty, err := repository.ConsecutiveFailedChecks(context.Background(), tenantID, uncheckedAsset, "BROWSER", 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if empty != 0 {
+				t.Fatalf("streak for a pair with no checks = %d, want 0", empty)
+			}
+		})
+	}
+}

@@ -562,7 +562,71 @@ func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code str
 			s.metrics.Inc("webmonitoring_evidence_writes_total", map[string]string{"status": "failed"})
 		}
 	}
+	s.reportFailureStreak(ctx, job)
 	return nil
+}
+
+// detectionFailureThreshold is how many checks in a row may fail before the
+// installation says so out loud. Below it a spike is noise; above it, the
+// console's silence has stopped being evidence that the asset is fine.
+const detectionFailureThreshold = 3
+
+// reportFailureStreak raises an operational notice once an asset's checks have
+// been failing long enough that "no incidents" no longer means "no problem".
+//
+// This is the failure the platform is least able to notice about itself: when
+// detection breaks, nothing is recorded, and an operator looking at an empty
+// incident list sees the same thing whether every page is intact or nothing has
+// been fetched for a week.
+//
+// The rule is stateless on purpose. The notice fires when the trailing run of
+// failures reaches the threshold, and again at every multiple of it (3, 6, 9,
+// ...) -- so there is no "already alerted" flag to persist, no way for a restart
+// to lose one, and no way for two replicas to send the same one twice: checks
+// for a single asset are serialized by the active-job uniqueness index, so
+// exactly one worker evaluates each step of the run.
+func (s *Service) reportFailureStreak(ctx context.Context, job domain.DetectionJob) {
+	// The API process constructs the service without a notifier because it never
+	// runs a check; deliveries happen in the worker, which has one.
+	if s.notifier == nil {
+		return
+	}
+	streak, err := s.repository.ConsecutiveFailedChecks(ctx, job.TenantID, job.AssetID, job.Mode, detectionFailureThreshold*2)
+	if err != nil {
+		s.logger.Warn("could not read the detection failure streak", "job_id", job.ID, "error", err)
+		return
+	}
+	if streak < detectionFailureThreshold || streak%detectionFailureThreshold != 0 {
+		return
+	}
+	asset, err := s.repository.GetAsset(ctx, job.TenantID, job.AssetID)
+	if err != nil {
+		s.logger.Warn("could not load the asset behind a failure streak", "job_id", job.ID, "error", err)
+		return
+	}
+	headline := "监测失效：连续检测失败"
+	detail := fmt.Sprintf(
+		"资产：%s\n模式：%s\n连续失败：%d 次\n最近错误码：%s\n此时控制台不会有任何事件——这正是需要有人看一眼的信号。",
+		asset.Name, job.Mode, streak, job.ErrorCode,
+	)
+	if failures := s.notifier.SendOperationalNotice(ctx, job.TenantID, "monitoring.detection_failed", headline, detail, ""); len(failures) > 0 {
+		s.logger.Warn("monitoring failure notice could not be delivered", "asset_id", job.AssetID, "failures", len(failures))
+	}
+	// The audit row is the durable half: the notice is best-effort, but the
+	// audit log keeps the fact that the installation noticed.
+	if err := s.repository.AppendAudit(ctx, domain.AuditEvent{
+		ID: identity.New(), TenantID: job.TenantID, Action: "monitoring.detection_failed",
+		ResourceType: "asset", ResourceID: job.AssetID, Result: "FAILED",
+		TraceID: "detection", Details: map[string]any{
+			"mode": job.Mode, "consecutiveFailures": streak, "errorCode": job.ErrorCode,
+		},
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		s.logger.Warn("could not record the monitoring failure audit", "asset_id", job.AssetID, "error", err)
+	}
+	if s.metrics != nil {
+		s.metrics.Inc("webmonitoring_detection_failure_notices_total", map[string]string{"mode": job.Mode})
+	}
 }
 
 // jobCancelled reports whether the persisted job has been cancelled since it

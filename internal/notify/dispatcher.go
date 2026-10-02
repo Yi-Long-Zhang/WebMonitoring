@@ -406,10 +406,23 @@ func (d *Dispatcher) sendForChannel(
 	if channel.Type == "EMAIL" {
 		return d.sendEmail(ctx, channel, incident, asset, reason)
 	}
+	body, err := json.Marshal(buildAlertPayload(channel.Type, incident, asset, reason))
+	if err != nil {
+		return err
+	}
+	return d.postJSON(ctx, channel, body)
+}
+
+// postJSON delivers one already-rendered payload to a channel's endpoint.
+//
+// Every HTTP sender goes through here rather than repeating it, because this is
+// where the SSRF guard, the DingTalk signature and the webhook HMAC live: a
+// second copy would be a second place for a mistyped or hostile URL to reach the
+// network, and a second place to forget to sign.
+func (d *Dispatcher) postJSON(ctx context.Context, channel domain.AlertChannel, body []byte) error {
 	if _, _, err := d.guard.Validate(ctx, channel.URL); err != nil {
 		return fmt.Errorf("unsafe notification target: %w", err)
 	}
-	body, _ := json.Marshal(buildAlertPayload(channel.Type, incident, asset, reason))
 	target := channel.URL
 	if channel.Type == "DINGTALK" && channel.Secret != "" {
 		target = signDingTalkURL(channel.URL, channel.Secret)
@@ -438,6 +451,66 @@ func (d *Dispatcher) sendForChannel(
 		return fmt.Errorf("notification endpoint returned %d", response.StatusCode)
 	}
 	return nil
+}
+
+// SendOperationalNotice delivers a platform-level message -- an asset whose
+// checks keep failing, a channel whose breaker just opened -- to every enabled
+// channel of a tenant.
+//
+// It deliberately does not go through SendIncident. Alert deliveries are keyed
+// to an incident (alert_deliveries.incident_id is NOT NULL and references
+// incidents), and a monitoring outage is not a tamper event: inventing an
+// incident for it would put a row in the incident table that no evidence
+// supports, which is the one thing this platform must not do. For the same
+// reason there is no delivery row and no retry ladder here, exactly as in
+// SendTest -- and for a further reason of its own: the condition being reported
+// persists, so the caller raises the notice again on the next threshold
+// crossing, which is a retry that cannot be lost with a queue.
+//
+// Unlike SendTest it does consult the gate, because this is an automatic
+// message and stopping automatic messages is what the breaker is for. It does
+// not feed its outcome back, and there are two reasons: the breaker's threshold
+// is calibrated in incident alerts, which is the traffic it exists to bound; and
+// a notice that moved the breaker could raise the breaker's own transition
+// notice, which would be able to move it again.
+//
+// excludeChannelID skips a single channel, for the notice whose subject is that
+// channel: a channel whose breaker just opened is the one channel that cannot
+// carry the news.
+func (d *Dispatcher) SendOperationalNotice(ctx context.Context, tenantID, event, headline, detail, excludeChannelID string) []error {
+	failures := make([]error, 0)
+	channels, err := d.repository.ListAlertChannelsWithSecrets(ctx, tenantID)
+	if err != nil {
+		return []error{fmt.Errorf("load alert channels: %w", err)}
+	}
+	for _, channel := range channels {
+		if !channel.Enabled || channel.ID == excludeChannelID {
+			continue
+		}
+		if decision := d.gate.Allow(ctx, channel.ID); !decision.Allowed {
+			d.recordRefusal(channel.Type, decision.Reason)
+			failures = append(failures, refusalError(channel.ID, decision))
+			continue
+		}
+		var sendErr error
+		if channel.Type == "EMAIL" {
+			sendErr = d.sendEmailMessage(ctx, channel, headline, detail)
+		} else {
+			body, marshalErr := json.Marshal(buildNoticePayload(channel.Type, event, headline, detail))
+			if marshalErr != nil {
+				failures = append(failures, fmt.Errorf("channel %s notice payload: %w", channel.ID, marshalErr))
+				continue
+			}
+			sendErr = d.postJSON(ctx, channel, body)
+		}
+		if sendErr != nil {
+			d.record(channel.Type, "FAILED")
+			failures = append(failures, fmt.Errorf("channel %s: %w", channel.ID, sendErr))
+			continue
+		}
+		d.record(channel.Type, "DELIVERED")
+	}
+	return failures
 }
 
 // alertHeadline renders a reason as the first line of a notification. It is the
@@ -517,6 +590,18 @@ func signDingTalkURL(target, secret string) string {
 }
 
 func (d *Dispatcher) sendEmail(ctx context.Context, channel domain.AlertChannel, incident domain.Incident, asset domain.Asset, reason string) error {
+	return d.sendEmailMessage(ctx, channel,
+		alertHeadline(reason)+"："+incident.Title,
+		fmt.Sprintf(
+			"资产：%s\n风险等级：%s\n状态：%s\n事件：%s\n事件 ID：%s\n",
+			asset.Name, incident.Severity, incident.Status, incident.Title, incident.ID,
+		))
+}
+
+// sendEmailMessage delivers one already-rendered message. The SMTP mechanics
+// live here rather than in each caller so the configuration checks, the
+// cancellation handling and the header encoding exist once.
+func (d *Dispatcher) sendEmailMessage(ctx context.Context, channel domain.AlertChannel, subject, body string) error {
 	cfg := d.smtp
 	if cfg.Host == "" {
 		return errors.New("SMTP is not configured for email notifications")
@@ -529,7 +614,7 @@ func (d *Dispatcher) sendEmail(ctx context.Context, channel domain.AlertChannel,
 	if from == "" {
 		from = cfg.Username
 	}
-	message := buildEmailMessage(from, recipients, incident, asset, reason)
+	message := buildEmailMessage(from, recipients, subject, body)
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	var auth smtp.Auth
 	if cfg.Username != "" {
@@ -556,12 +641,7 @@ func splitRecipients(raw string) []string {
 	return result
 }
 
-func buildEmailMessage(from string, recipients []string, incident domain.Incident, asset domain.Asset, reason string) []byte {
-	subject := alertHeadline(reason) + "：" + incident.Title
-	body := fmt.Sprintf(
-		"资产：%s\n风险等级：%s\n状态：%s\n事件：%s\n事件 ID：%s\n",
-		asset.Name, incident.Severity, incident.Status, incident.Title, incident.ID,
-	)
+func buildEmailMessage(from string, recipients []string, subject, body string) []byte {
 	var header bytes.Buffer
 	fmt.Fprintf(&header, "From: %s\r\n", from)
 	fmt.Fprintf(&header, "To: %s\r\n", strings.Join(recipients, ", "))
@@ -570,4 +650,36 @@ func buildEmailMessage(from string, recipients []string, incident domain.Inciden
 	header.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
 	header.WriteString("\r\n")
 	return append(header.Bytes(), []byte(body)...)
+}
+
+// buildNoticePayload renders a platform-level notice for one channel type. The
+// webhook shape carries `event` so a receiver can route it without parsing
+// Chinese prose, and carries no incidentId: there is no incident, and emitting a
+// placeholder would invite a receiver to treat it as one.
+func buildNoticePayload(channelType, event, headline, detail string) any {
+	content := fmt.Sprintf("**%s**\n>%s", headline, strings.ReplaceAll(detail, "\n", "\n>"))
+	switch channelType {
+	case "WECHAT_WORK":
+		return map[string]any{
+			"msgtype":  "markdown",
+			"markdown": map[string]string{"content": content},
+		}
+	case "DINGTALK":
+		return map[string]any{
+			"msgtype": "markdown",
+			"markdown": map[string]string{
+				"title": headline,
+				"text":  content,
+			},
+		}
+	default:
+		return map[string]any{
+			"event": event,
+			"data": map[string]any{
+				"headline": headline,
+				"detail":   detail,
+				"at":       time.Now().UTC(),
+			},
+		}
+	}
 }

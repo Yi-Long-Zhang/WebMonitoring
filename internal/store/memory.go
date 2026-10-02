@@ -754,6 +754,34 @@ func (m *MemoryRepository) DetectionHealth(ctx context.Context, since time.Time)
 	return health, nil
 }
 
+// ConsecutiveFailedChecks mirrors the postgres trailing-run read.
+func (m *MemoryRepository) ConsecutiveFailedChecks(ctx context.Context, tenantID, assetID, mode string, window int) (int, error) {
+	if window <= 0 {
+		return 0, nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	outcomes := make([]domain.DetectionJob, 0)
+	for _, job := range m.jobs {
+		if job.TenantID != tenantID || job.AssetID != assetID || job.Mode != mode {
+			continue
+		}
+		switch job.Status {
+		case domain.JobSucceeded, domain.JobFailed, domain.JobTimedOut:
+			outcomes = append(outcomes, job)
+		}
+	}
+	sort.Slice(outcomes, func(i, j int) bool { return outcomes[i].CreatedAt.After(outcomes[j].CreatedAt) })
+	streak := 0
+	for _, job := range outcomes {
+		if streak >= window || job.Status == domain.JobSucceeded {
+			break
+		}
+		streak++
+	}
+	return streak, nil
+}
+
 // DeleteJobsBefore mirrors the postgres retention delete: terminal rows only,
 // so QUEUED work and RUNNING crash-recovery state survive the sweep.
 func (m *MemoryRepository) DeleteJobsBefore(ctx context.Context, tenantID string, before time.Time) (int, error) {
