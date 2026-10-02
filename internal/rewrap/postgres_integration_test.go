@@ -69,9 +69,20 @@ func TestRewrapAgainstPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build v1 keyring: %v", err)
 	}
+	// assets.owner_id is NOT NULL and references users(id), so the fixture has to
+	// bring an owner of its own. The username carries the fresh asset id so a
+	// re-run in a shared integration database does not collide on
+	// (tenant_id, username).
+	owner := domain.User{
+		ID: identity.New(), TenantID: tenantID, Username: "rewrap-owner-" + assetID,
+		PasswordHash: "integration-test-hash", Role: domain.RoleAdmin, CreatedAt: time.Now().UTC(),
+	}
+	if err := writer.CreateUser(context.Background(), owner); err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
 	if err := writer.CreateAsset(context.Background(), domain.Asset{
 		ID: assetID, TenantID: tenantID, Name: "rewrap integration", URL: "https://rewrap-" + assetID + ".example",
-		Type: domain.AssetOfficial, VerificationStatus: domain.VerificationPending,
+		Type: domain.AssetOfficial, OwnerID: owner.ID, VerificationStatus: domain.VerificationPending,
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("create asset: %v", err)
@@ -102,18 +113,29 @@ func TestRewrapAgainstPostgres(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create policy: %v", err)
 	}
-	// A v2-only repository cannot read a v1-sealed row: Keyring.Decrypt refuses a
+	// A v2-only keyring cannot open a v1-sealed value: Keyring.Decrypt refuses a
 	// version it does not hold. Asserting the fixture is genuinely un-rotated is
 	// what stops a pass that did nothing from passing this test.
+	//
+	// The two row types are checked differently because they are read
+	// differently. GetAlertChannel decrypts in the store and fails loudly on a
+	// key it lacks, so reopening the row is the assertion. GetPolicy does not
+	// decrypt at all -- it returns the stored JSON verbatim and the detection
+	// checker decrypts the credentials later -- so the policy guard has to open
+	// the sealed value the fixture wrote directly.
+	v2Keys, err := security.NewKeyring(v2OnlyMaterial)
+	if err != nil {
+		t.Fatalf("build v2-only keyring: %v", err)
+	}
+	if _, err := v2Keys.Decrypt(sealedUsername, auth); err == nil {
+		t.Fatal("the fixture credentials were already sealed under v2; the test proves nothing")
+	}
 	v2Reader, err := store.NewPostgresRepository(ctx, dsn, v2OnlyMaterial, store.DefaultPoolConfig())
 	if err != nil {
 		t.Fatalf("open v2-only repository: %v", err)
 	}
 	if _, err := v2Reader.GetAlertChannel(context.Background(), tenantID, channelID); err == nil {
 		t.Fatal("the fixture channel was already readable with v2 only; the test proves nothing")
-	}
-	if _, err := v2Reader.GetPolicy(context.Background(), tenantID, assetID); err == nil {
-		t.Fatal("the fixture policy was already readable with v2 only; the test proves nothing")
 	}
 	v2Reader.Close()
 	writer.Close()

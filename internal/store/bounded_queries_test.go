@@ -16,7 +16,11 @@ import (
 // lifecycle.
 func seedBoundedFixture(t *testing.T, repository Repository) boundedFixture {
 	t.Helper()
-	now := time.Now().UTC()
+	// Truncated to microseconds because PostgreSQL stores timestamptz at
+	// microsecond resolution: a nanosecond-precision expectation would never
+	// compare equal to the value that comes back, and the tests below assert
+	// exact times rather than orderings.
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	suffix := identity.New()
 	tenant := domain.Tenant{ID: identity.New(), Slug: "bounded-" + suffix, Name: "bounded", CreatedAt: now}
 	if err := repository.CreateTenant(context.Background(), tenant); err != nil {
@@ -81,14 +85,18 @@ func seedBoundedFixture(t *testing.T, repository Repository) boundedFixture {
 	createJob(verifiedOne.ID, "HTTP", domain.JobFailed, old)
 	oldRunning := createJob(verifiedTwo.ID, "HTTP", domain.JobRunning, old)
 
+	// Fingerprints land in a char(64) column, so each one must be exactly 64
+	// printable characters -- and differ per (severity, status) so every call
+	// inserts its own row rather than colliding on the active-fingerprint index.
 	newIncident := func(severity domain.Severity, status domain.IncidentStatus) {
-		fingerprint := make([]byte, 64)
-		for index := range fingerprint {
-			fingerprint[index] = 'a' + byte(len(fingerprint))
+		tag := string(severity) + "-" + string(status)
+		base := make([]byte, 64-len(tag))
+		for index := range base {
+			base[index] = 'a' + byte(index%26)
 		}
 		incident := domain.Incident{
 			ID: identity.New(), TenantID: tenant.ID, AssetID: verifiedOne.ID,
-			BaselineID: baseline.ID, BaselineVersion: 1, Fingerprint: string(fingerprint) + string(severity) + string(status),
+			BaselineID: baseline.ID, BaselineVersion: 1, Fingerprint: string(base) + tag,
 			Severity: severity, Status: status, Title: "changed", CreatedAt: now,
 			FirstSeenAt: now, LastSeenAt: now,
 		}
