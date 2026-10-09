@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onErrorCaptured, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import ErrorBanner from "./components/system/ErrorBanner.vue";
 import FatalErrorPage from "./components/system/FatalErrorPage.vue";
 import { appFailure, messageOf, type AppFailure } from "./app/errors";
 import { useSessionStore } from "./stores/session";
 
 const router = useRouter();
+const route = useRoute();
 const session = useSessionStore();
 
 // A render-time error inside the routed view lands here. Returning false stops
@@ -41,7 +42,15 @@ onMounted(async () => {
   // restore() returns false for "no session" as well as for "the API could not
   // be reached"; the store records the second case so it reaches the operator
   // instead of leaving them on a login form that rejects a correct password.
-  if (await session.restore()) await router.replace("/");
+  //
+  // The redirect is only away from the login page. Replacing the location with
+  // "/" unconditionally (as this did) cancelled every deep link on a full page
+  // load -- /#/incidents landed on the overview -- which is the contract the
+  // router comment and the console smoke's deep-link walk both state, and it
+  // downloaded the overview's ECharts chunk for a view that was never shown.
+  // A segment the console does not know is still normalized away, by
+  // ConsoleLayout's syncFromRoute.
+  if ((await session.restore()) && route.path === "/login") await router.replace("/");
 });
 </script>
 

@@ -1,20 +1,24 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
 import Sidebar from "./Sidebar.vue";
 import Topbar from "./Topbar.vue";
-import OverviewPage from "../../pages/OverviewPage.vue";
-import AssetsPage from "../../pages/AssetsPage.vue";
-import SitesPage from "../../pages/SitesPage.vue";
-import BaselinesPage from "../../pages/BaselinesPage.vue";
-import IncidentsPage from "../../pages/IncidentsPage.vue";
-import JobsPage from "../../pages/JobsPage.vue";
-import EvidencePage from "../../pages/EvidencePage.vue";
-import ChannelsPage from "../../pages/ChannelsPage.vue";
-import AuditsPage from "../../pages/AuditsPage.vue";
-import TenantsPage from "../../pages/TenantsPage.vue";
-import UsersPage from "../../pages/UsersPage.vue";
+// The views are loaded on demand. This component imports all twelve of them,
+// and ConsolePage imports this one, so static imports put every page -- plus
+// ECharts, which only the overview uses -- in the chunk the first signed-in
+// paint waits for, whether or not the operator ever opens that view.
+const OverviewPage = defineAsyncComponent(() => import("../../pages/OverviewPage.vue"));
+const AssetsPage = defineAsyncComponent(() => import("../../pages/AssetsPage.vue"));
+const SitesPage = defineAsyncComponent(() => import("../../pages/SitesPage.vue"));
+const BaselinesPage = defineAsyncComponent(() => import("../../pages/BaselinesPage.vue"));
+const IncidentsPage = defineAsyncComponent(() => import("../../pages/IncidentsPage.vue"));
+const JobsPage = defineAsyncComponent(() => import("../../pages/JobsPage.vue"));
+const EvidencePage = defineAsyncComponent(() => import("../../pages/EvidencePage.vue"));
+const ChannelsPage = defineAsyncComponent(() => import("../../pages/ChannelsPage.vue"));
+const AuditsPage = defineAsyncComponent(() => import("../../pages/AuditsPage.vue"));
+const TenantsPage = defineAsyncComponent(() => import("../../pages/TenantsPage.vue"));
+const UsersPage = defineAsyncComponent(() => import("../../pages/UsersPage.vue"));
 import PolicyDialog from "../monitoring/PolicyDialog.vue";
 import AssetImportDialog from "../monitoring/AssetImportDialog.vue";
 import BaselineSnapshotDrawer from "../monitoring/BaselineSnapshotDrawer.vue";
@@ -36,7 +40,13 @@ const route = useRoute();
 const session = useSessionStore();
 const data = useConsoleStore();
 const actions = useMonitoringActions();
-const activeView = ref<View>("overview");
+// Seeded from the hash rather than defaulted to the overview: the views are
+// async components, so a default of "overview" that is corrected a moment later
+// downloads the overview's chunk -- ECharts, 1.1 MB -- on every deep link,
+// which is exactly the cost the split exists to avoid. The route is already
+// resolved when this component first renders (the router-view only renders it
+// after the initial navigation), so the segment is readable here.
+const activeView = ref<View>(isView(route.params.view) ? route.params.view : "overview");
 const showAssetDialog = ref(false);
 const showImportDialog = ref(false);
 const showChannelDialog = ref(false);
