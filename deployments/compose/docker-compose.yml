@@ -413,6 +413,11 @@ services:
       context: ../..
       dockerfile: apps/console/Dockerfile
       network: ${BUILD_NETWORK:-default}
+      args:
+        # Off by default: nginx publishes dist as-is, so generating source maps
+        # would ship them to anyone who can open the console. Interpolated from
+        # this file's environment/.env, the same way GOPROXY is for the Go images.
+        CONSOLE_SOURCEMAP: ${CONSOLE_SOURCEMAP:-}
     depends_on:
       api: { condition: service_healthy }
     ports:

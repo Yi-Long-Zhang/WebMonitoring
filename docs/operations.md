@@ -398,6 +398,19 @@ docker compose -f deployments/compose/docker-compose.yml build
 `BUILD_NETWORK` 默认是 `default`，即 compose 原本的行为；**只有显式设置才会改变
 构建网络**。
 
+**Q：生产构建的报错堆栈看不懂怎么办？**
+
+控制台的 source map **默认不生成**：nginx 直接发布 `dist/` 目录，生成即等于把映射文件
+公开给任何能打开控制台的人（一度是 12 MB）。需要可读堆栈时按需打开：
+
+```powershell
+$env:CONSOLE_SOURCEMAP = "true"
+docker compose -f deployments/compose/docker-compose.yml build console
+```
+
+它只在**构建期**生效（`apps/console/vite.config.ts`），部署后没有再打开的开关；
+开发服务器有自己的 map，不受影响。
+
 **Q：构建阶段取不到 proxy.golang.org 怎么办？**
 
 那是**取不到**而不是慢，换网络也没用（实测容器直连 `proxy.golang.org` 报 EOF，
