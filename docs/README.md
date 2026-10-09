@@ -41,6 +41,7 @@
 | 出故障了怎么办 | [runbooks/](runbooks/README.md) |
 | 备份恢复到底验过没有 | [backup-restore-rehearsal.md](backup-restore-rehearsal.md) |
 | 哪些功能真的实测过、结果如何 | [rehearsals.md](rehearsals.md)（全部实测的唯一事实来源） |
+| 硬化的条目还剩哪些没做 | [roadmap.md](roadmap.md)（路线图清单与当前状态） |
 
 **Q：我想评估这个项目（安全评审 / 技术选型），看哪些？**
 
@@ -169,8 +170,9 @@ CI 的 backend 任务通过服务容器设置这两个变量（`.github/workflow
 
 ## 已经实测过什么？
 
-截至 2026-10-03，以下演练全部实测通过（脚本、关键断言、结果与专项档案见
-验收总账 [rehearsals.md](rehearsals.md)）：
+以下是压测与演练这类「大件」；路线图**每一项**的实测记录见验收总账
+[rehearsals.md](rehearsals.md)（最近一次 2026-10-09，阶段二的 2.0–2.4），
+条目与剩余量的索引见 [roadmap.md](roadmap.md)。
 
 - **多副本（HA）**（2026-09-20）：`--scale api=2 --scale http-worker=3`，
   40 资产 40 任务、0 重复分组。
