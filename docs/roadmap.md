@@ -40,7 +40,7 @@
 | 2 | 2.3 | 前端工程质量 | 已实现 · 已记账 · 已在 main | `274462a`…`673c2a7`，merge `27fe872`；总账 2.3 |
 | 2 | 2.4 | openapi ↔ 路由漂移门禁 | 已实现 · 已记账 · 已在 main | `1981df1`、`d0fe847`、`7a7e929`，merge `c59e0bf`；总账 2.4 |
 | 2 | 2.5 | 内存态有界化 | **规划中**（路线图已判定低优先，可不排期） | 见「阶段 2 剩余量」 |
-| 2 | 2.6 | 依赖升级与供应链 | **部分实现**（机制已就位、安全敏感依赖已升；其余未升） | 见「阶段 2 剩余量」 |
+| 2 | 2.6 | 依赖升级与供应链 | 已实现 · 已记账 · **未合并** | `d54e9d1`、`0a68297`、`80c25dc`、`d5308bf`、`f798def`；总账 2.6 |
 | 2 | 2.7 | 结构治理（拆 `server.go`、拆 `Process`） | **规划中**（可选，收益是维护速度而非正确性） | 见「阶段 2 剩余量」 |
 
 另外两件不在路线图条目里、但属于「已交付」的事实：0.1 与 0.10 的总账小节是**主题式
@@ -57,18 +57,25 @@
 判据是**单机 Compose 下这三条路径不可达**（`REDIS_ADDR` 非空时一律走 Redis 实现，
 `deployments/compose/docker-compose.yml` 恒设它）。
 
-### 2.6 依赖升级与供应链 — 机制已就位，升级未做完
+### 2.6 依赖升级与供应链 — 已完成（TypeScript 停在 6.0.3，7 被工具链阻塞）
 
-- **已就位**（属于 0.8 与 2.0 的产物，不是 2.6 自己的成果）：`.github/dependabot.yml`
-  （gomod / npm / github-actions，月度）；CI 里**阻断式**的 `govulncheck`
-  （`.github/workflows/ci.yml`，锁 `v1.8.0`）。
-- **Go 侧已升**（同样来自 2.0 的安全修复）：`jackc/pgx/v5 v5.11.0`、`x/crypto v0.57.0`、
-  `x/net v0.60.0`。
-- **未升**：`redis/go-redis/v9 v9.12.1`、`minio/minio-go/v7 v7.0.95`、
-  `andybalholm/cascadia v1.3.3`；前端四个大版本都在原地——`vite 7`、`vitest 3`、
-  `vue-router 4`、`typescript 5.9`。
-- 升级要求：分批、各自独立提交、每批过完整门禁；前端大版本逐个升（`vite`/`vitest` 一起、
-  `typescript` 单独、`vue-router` 单独）。
+升级后的状态：`go list -m -u all` 的**直接**依赖已无待升项；前端四个大版本已升到能升的
+最新。详见总账「阶段二 2.6」。
+
+- **已就位**（属于 0.8 与 2.0 的产物）：`.github/dependabot.yml`（gomod / npm /
+  github-actions，月度）；CI 里**阻断式**的 `govulncheck`（锁 `v1.8.0`）。
+- **本轮升的**：Go 侧 `redis v9.23.0`、`minio-go v7.3.0`、`cascadia v1.3.5`、OTel 全家
+  `v1.47.0`；前端 `vite 8.3.4`（Rolldown）、`vitest 5.0.3`、`vue-router 5.4.0`、
+  `typescript 6.0.3`（+ `vue-tsc 3.3.12`）。
+- **TypeScript 7 升不了，有两道独立阻塞**（都已取证，见总账 2.6 第 2(c) 节）：
+  vue-tsc（最新 3.3.12）在 TS 7 下**连启动都不行**（TS 7 移除了程序化 Compiler API，
+  `./lib/tsc` 不再导出），而 `typescript-eslint` 的 peer 上限是 `<6.1.0`。
+  等这两条工具链支持原生编译器后再升。
+- **刻意留给 dependabot 的**：其余 patch/minor（element-plus、vue、eslint 等）——月度批次
+  就是既有节奏。
+- **需要单独一项**：`playwright` 1.63 → 1.64 与 browser-worker 的镜像标签
+  `mcr.microsoft.com/playwright:v1.63.0-noble` 耦合，要连 Dockerfile 一起升，否则会出现
+  「包是 1.64、浏览器是 1.63」的静默错配。
 
 ### 2.7 结构治理 — 未做（可选）
 

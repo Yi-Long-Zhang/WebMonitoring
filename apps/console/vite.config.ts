@@ -52,10 +52,24 @@ export default defineConfig({
     // the image). Set CONSOLE_SOURCEMAP=true for a build whose stack traces
     // need to be readable; the dev server has its own maps either way.
     sourcemap: process.env.CONSOLE_SOURCEMAP === "true",
-    rollupOptions: {
+    // Vite 8 builds with Rolldown, so this is `rolldownOptions` (the old
+    // `rollupOptions` name is an alias that warns) and the object form of
+    // `manualChunks` is gone -- `manualChunks is not a function` is what the
+    // migration actually fails with, not a warning.
+    //
+    // What the removed object form, `{ vue: ["vue", "@tanstack/vue-query"] }`,
+    // did: those packages and their dependencies formed one stable chunk, so
+    // changing application code did not invalidate the vendor bundle.
+    // `codeSplitting.groups` is the replacement. The pattern is anchored on the
+    // package directory, so `vue-router` (a separate dependency, and one the
+    // old config also left out) is not swept in, while the scoped @vue/* and
+    // @tanstack/* packages that come with them are.
+    rolldownOptions: {
       output: {
-        manualChunks: {
-          vue: ["vue", "@tanstack/vue-query"],
+        codeSplitting: {
+          groups: [
+            { name: "vue", test: /node_modules[\\/](vue|@vue|@tanstack)[\\/]/ },
+          ],
         },
       },
     },
