@@ -9,7 +9,7 @@ GO      ?= go
 PS      ?= powershell
 COMPOSE := docker compose -f deployments/compose/docker-compose.yml
 
-.PHONY: help fmt vet test lint typecheck build compose-up compose-down compose-smoke migrate-up release-check
+.PHONY: help fmt vet test test-integration lint typecheck build compose-up compose-down compose-smoke migrate-up release-check
 
 help: ## 列出可用目标
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -21,8 +21,11 @@ fmt: ## 校验 Go 源码格式（gofmt -l）
 vet: ## 运行 go vet
 	$(GO) vet ./...
 
-test: ## 运行 Go 测试（含配置了集成 DSN 的用例）
+test: ## 运行 Go 测试（集成用例在未设 DSN 时会跳过）
 	$(GO) test ./...
+
+test-integration: ## 起一次性 Postgres/Redis 跑集成测试（需要 Docker；未启动会明确报错）
+	$(PS) -File scripts/integration-test.ps1
 
 lint: ## Go（golangci-lint）与前端（pnpm lint）
 	golangci-lint run

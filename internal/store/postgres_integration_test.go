@@ -15,6 +15,9 @@ import (
 func TestPostgresMigrationJobClaimAndRestartRecovery(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN"))
 	if dsn == "" {
+		if requireServices() {
+			t.Fatal("POSTGRES_TEST_DSN is not configured although this run declared the services mandatory")
+		}
 		t.Skip("POSTGRES_TEST_DSN is not configured")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -122,6 +125,9 @@ func TestPostgresMigrationJobClaimAndRestartRecovery(t *testing.T) {
 func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN"))
 	if dsn == "" {
+		if requireServices() {
+			t.Fatal("POSTGRES_TEST_DSN is not configured although this run declared the services mandatory")
+		}
 		t.Skip("POSTGRES_TEST_DSN is not configured")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -220,6 +226,9 @@ func TestPostgresSitesEnforceTenantScoping(t *testing.T) {
 func TestPostgresKeysetPaginationWalksEveryRowOnce(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN"))
 	if dsn == "" {
+		if requireServices() {
+			t.Fatal("POSTGRES_TEST_DSN is not configured although this run declared the services mandatory")
+		}
 		t.Skip("POSTGRES_TEST_DSN is not configured")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -353,6 +362,9 @@ const testAlertSecretKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 func TestAlertChannelUpdateKeepsCiphertextReadable(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN"))
 	if dsn == "" {
+		if requireServices() {
+			t.Fatal("POSTGRES_TEST_DSN is not configured although this run declared the services mandatory")
+		}
 		t.Skip("POSTGRES_TEST_DSN is not configured")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

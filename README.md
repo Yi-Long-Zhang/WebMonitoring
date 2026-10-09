@@ -259,6 +259,10 @@ go build ./...
 go vet ./...
 go test ./...
 
+# 集成用例（真实 PostgreSQL/Redis）在 `go test ./...` 里默认 skip。
+# 这一条在一次性容器上跑它们——本地改 SQL 后拿得到反馈，不用等 CI：
+make test-integration
+
 corepack pnpm typecheck
 corepack pnpm lint
 corepack pnpm test

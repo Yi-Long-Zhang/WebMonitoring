@@ -72,6 +72,7 @@
 
 有 `make` 的环境（Linux/macOS/CI/WSL）日常入口是仓库根的 Makefile：
 `make help` 列出全部目标，`make fmt vet test` 是提交前门禁，
+`make test-integration` 在一次性容器上跑集成用例，
 `make compose-up` / `make compose-smoke` 起栈与验收。Windows 原生环境没有
 `make` 时，直接跑 README.md 验证一节列出的底层命令，效果相同。
 
@@ -80,8 +81,21 @@
 集成测试靠环境变量门控：未设置 `POSTGRES_TEST_DSN` 和 `REDIS_TEST_ADDR` 时，
 `internal/store`、`internal/rewrap`、`internal/jobqueue` 里针对真实
 PostgreSQL/Redis 的用例会全部 skip。**本地全绿 ≠ 集成用例跑过。**要覆盖
-持久化与队列路径，先启动依赖（或复用 Compose 栈），再带上这两个变量重跑。
-CI 的 backend 任务通过服务容器设置了它们（`.github/workflows/ci.yml`）。
+持久化与队列路径：
+
+```powershell
+make test-integration          # 或者：.\scripts\integration-test.ps1
+```
+
+它起两个一次性容器（`postgres:17-alpine`、`redis:8-alpine`，与 CI 服务容器同
+版本）、用**临时回环端口**（因此不会与本机已有的 Postgres 或 smoke 栈相撞）、
+把 DSN 指过去、跑完删掉。不复用 Compose 栈是有意的：栈里的 postgres/redis
+不发布主机端口，且 rewrap 的用例会 `CREATE DATABASE`，指向运维在用的库是那个
+文件自己警告过的爆炸半径。Docker 没启动时它会在两秒内报错并说明怎么办。
+
+运行器会设置 `WEBMONITORING_TEST_REQUIRE_SERVICES=1`，让上述 skip 变成**失败**
+——否则一个没能把 DSN 传下去的运行器会全 skip 然后退出 0，看起来是绿的。
+CI 的 backend 任务通过服务容器设置这两个变量（`.github/workflows/ci.yml`）。
 
 ---
 

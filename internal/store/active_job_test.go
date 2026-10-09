@@ -23,6 +23,11 @@ func testRepositories(t *testing.T) map[string]Repository {
 	repositories := map[string]Repository{"memory": NewMemoryRepository()}
 	if dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN")); dsn != "" {
 		repositories["postgres"] = newMigratedPostgresRepository(t, dsn)
+	} else if requireServices() {
+		// This gate does not skip -- it silently returns only the memory store,
+		// so a run that lost the DSN would exercise half of every cross-store
+		// test and pass.
+		t.Fatal("POSTGRES_TEST_DSN is not configured although this run declared the services mandatory; the postgres leg of every cross-store test would be silently omitted")
 	}
 	return repositories
 }

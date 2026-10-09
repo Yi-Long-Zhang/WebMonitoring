@@ -18,6 +18,9 @@ func TestRedisAcknowledgementReclaimAndDeadLetter(t *testing.T) {
 	// what the queue sees in a deployment with requirepass set.
 	address := os.Getenv("REDIS_TEST_ADDR")
 	if address == "" {
+		if requireServices() {
+			t.Fatal("REDIS_TEST_ADDR is not configured although this run declared the services mandatory")
+		}
 		t.Skip("REDIS_TEST_ADDR is not configured")
 	}
 	ctx := context.Background()
@@ -150,4 +153,13 @@ func pendingCount(t *testing.T, ctx context.Context, client *redis.Client, strea
 		t.Fatal(err)
 	}
 	return result.Count
+}
+
+// requireServices reports whether this run declared the integration services
+// mandatory. The runner sets WEBMONITORING_TEST_REQUIRE_SERVICES, because the
+// failure it guards against is the quiet one: a runner that failed to pass the
+// DSNs down would skip every integration test and still exit 0, which is the one
+// outcome a gate must never call green.
+func requireServices() bool {
+	return os.Getenv("WEBMONITORING_TEST_REQUIRE_SERVICES") != ""
 }

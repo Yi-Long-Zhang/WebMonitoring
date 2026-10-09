@@ -30,6 +30,15 @@ func v2KeyMaterial() string {
 	return "v2:" + base64.StdEncoding.EncodeToString(raw)
 }
 
+// requireServices reports whether this run declared the integration services
+// mandatory. The runner sets WEBMONITORING_TEST_REQUIRE_SERVICES, because the
+// failure it guards against is the quiet one: a runner that failed to pass the
+// DSN down would skip this test and still exit 0, which is the one outcome a
+// gate must never call green.
+func requireServices() bool {
+	return os.Getenv("WEBMONITORING_TEST_REQUIRE_SERVICES") != ""
+}
+
 // rewrapTestDatabase returns a DSN for a database of this test's own, created
 // empty and dropped afterwards.
 //
@@ -83,6 +92,9 @@ func rewrapTestDatabase(t *testing.T, dsn string) string {
 func TestRewrapAgainstPostgres(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN"))
 	if dsn == "" {
+		if requireServices() {
+			t.Fatal("POSTGRES_TEST_DSN is not configured although this run declared the services mandatory")
+		}
 		t.Skip("POSTGRES_TEST_DSN is not configured")
 	}
 	dsn = rewrapTestDatabase(t, dsn)

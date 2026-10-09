@@ -36,9 +36,21 @@ func postgresTestDSN(t *testing.T) string {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN"))
 	if dsn == "" {
+		if requireServices() {
+			t.Fatal("POSTGRES_TEST_DSN is not configured although this run declared the services mandatory; the integration tests would all skip and the run would still look green")
+		}
 		t.Skip("POSTGRES_TEST_DSN is not configured")
 	}
 	return dsn
+}
+
+// requireServices reports whether this run declared the integration services
+// mandatory. The runner sets WEBMONITORING_TEST_REQUIRE_SERVICES, because the
+// failure it guards against is the quiet one: a runner that failed to pass the
+// DSNs down would skip every integration test and still exit 0, which is the one
+// outcome a gate must never call green.
+func requireServices() bool {
+	return os.Getenv("WEBMONITORING_TEST_REQUIRE_SERVICES") != ""
 }
 
 // Two replicas must not sweep retention at the same time. The advisory lock is
