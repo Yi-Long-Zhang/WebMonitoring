@@ -10,6 +10,41 @@
 
 ---
 
+## 阶段二 2.0 工具链与可达依赖安全修复实测 — 2026-10-09
+
+- **脚本**：`govulncheck` 本地实跑、`docker build` 探针、`compose-smoke.ps1`、
+  `multi-replica-drill.ps1`；一次性 Postgres/Redis 容器跑集成测试。
+- **关键断言**：(1) 扫描必须归零；(2) 修复必须落到**部署物**上，而不只是本机；
+  (3) 构建要能在取不到 `proxy.golang.org` 的网络里跑通。
+- **结果**（2026-10-09）：
+  - 修复前：`govulncheck ./...` 退出码 **3**，11 个可达漏洞全在标准库（修复于
+    go1.27.2，本机 1.27.1），其中两个是 `html/template` 的上下文转义错判
+    （GO-2026-6599、GO-2026-6600），而打印就绪报告正是靠它转义攻击者可控文本；
+    另有 5 个 http2 漏洞**同时经 `golang.org/x/net@v0.58.0` 可达**。
+  - 修复后：退出码 **0**（可达 0、imported 包 0；仅剩 `x/crypto/openpgp` 一条
+    模块级告警，该包未被导入）。x/net v0.60.0、x/crypto v0.57.0、grpc v1.83.2、
+    compress v1.18.7。
+  - **容器侧缺口（本次实测发现）**：官方 `golang` 镜像设了 `GOTOOLCHAIN=local`，
+    会让 `go.mod` 的 `toolchain` 指令在镜像构建里**静默失效**——探针实测容器内
+    `go version` 为 **1.27.1**；而 `govulncheck` 扫的是源码与模块图，不会发现
+    部署物仍带病。四个 Go 镜像加 `ENV GOTOOLCHAIN=auto` 后，容器内实测 **1.27.2**。
+  - 构建网络：容器直连 `proxy.golang.org` 报 EOF（`goproxy.cn` 正常），故新增
+    默认不生效的 `GOPROXY` 构建参数（四个镜像 + compose）。用
+    `--build-arg GOPROXY=https://goproxy.cn,direct` 实测构建通过。
+  - 全量单测 + 真实 Postgres/Redis 集成测试：全绿。
+- **合并前整体回归**（`codex/security-toolchain` @ `fd5aa83`）：
+  - `compose-smoke.ps1`：**通过**（退出码 0）。第一次失败在控制台镜像的
+    `corepack` 下载 pnpm（`SocketError: other side closed`，等了 155 秒），重跑即过
+    ——网络抖动，与本改动无关。
+  - `multi-replica-drill.ps1`：**三次两绿**。第一次 **0/40 且 wall clock 243.2s**，
+    恰为其 `-TimeoutSeconds` 默认值 240；第二、三次 40/40（221.9s / 25.6s）。
+    数据库实测显示任务本身毫秒级完成（排队 7.2s、执行 0.1s、零重试），
+    **耗时波动在调度器排队阶段**；同一现象在改动之前已出现（1.6 那次 191.4s）。
+- **未覆盖**：`APP_VERSION` 等构建参数仍未实测注入真实版本号（沿用默认 `dev`）；
+  首次构建需下载工具链，受限网络下必须先配好 `GOPROXY`。
+
+---
+
 ## 阶段一 1.6 审计与事件清单导出实测 — 2026-10-03
 
 - **脚本**：`compose-smoke.ps1`（新增断言段「exports」）+
