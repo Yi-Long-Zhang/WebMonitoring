@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { createRouter, createMemoryHistory, type Router } from "vue-router";
-import { defineComponent, h } from "vue";
+import { defineComponent, h, ref, watch } from "vue";
 import App from "./App.vue";
 import { appFailure } from "./app/errors";
 
@@ -92,6 +92,32 @@ describe("App error boundary", () => {
 
     expect(wrapper.find(".fatal-error").exists()).toBe(false);
     expect(wrapper.find(".recovered").exists()).toBe(true);
+  });
+
+  // The reproduction that found this: the policy dialog's watcher threw on two
+  // lists the API returns as null, and the whole console was replaced by the
+  // error page -- the operator lost the screen behind a broken dialog. A
+  // non-render failure must cost the operator a banner, not the page.
+  it("keeps the view when a child's watcher throws", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    const WatcherBoom = defineComponent({
+      name: "WatcherBoom",
+      setup() {
+        const flag = ref(false);
+        watch(flag, () => {
+          throw new Error("监视器炸了");
+        });
+        flag.value = true;
+        return () => h("div", { class: "watcher-view" }, "仍在使用中的页面");
+      },
+    });
+    const wrapper = await mountApp(routerFor(WatcherBoom));
+    await flushPromises();
+
+    expect(wrapper.find(".fatal-error").exists()).toBe(false);
+    expect(wrapper.find(".watcher-view").exists()).toBe(true);
+    expect(wrapper.find(".error-banner").exists()).toBe(true);
+    expect(wrapper.text()).toContain("监视器炸了");
   });
 
   it("shows a banner and keeps the view for a failure no component owns", async () => {

@@ -24,6 +24,7 @@ export default tseslint.config(
         ResizeObserver: "readonly",
         URL: "readonly",
         clearInterval: "readonly",
+        console: "readonly",
         navigator: "readonly",
         setInterval: "readonly",
         window: "readonly",
@@ -46,6 +47,7 @@ export default tseslint.config(
       // default set, so every global the script uses has to be listed.
       globals: {
         URL: "readonly",
+        console: "readonly",
         process: "readonly",
       },
     },

@@ -65,6 +65,17 @@ const form = ref<FormState>({
   scheduleOffset: 480,
 });
 
+// The API answers null for an empty list even though the contract -- and the
+// generated type -- say these two fields are non-null arrays: the handler builds
+// them with append([]string(nil), input...), which yields nil for an empty
+// input. Reading them defensively is what the console can control here; the
+// server side is its own fix. Without this the dialog threw inside its own
+// watcher and the policy form silently kept its defaults, which look plausible
+// (timeout 30 is the seed's value too) and are somebody else's numbers.
+function list(value: string[] | null | undefined) {
+  return value ?? [];
+}
+
 watch(() => [props.modelValue, props.policy], () => {
   if (!props.policy || !props.modelValue) return;
   form.value = {
@@ -72,8 +83,8 @@ watch(() => [props.modelValue, props.policy], () => {
     browserIntervalSeconds: props.policy.browserIntervalSeconds,
     timeoutSeconds: props.policy.timeoutSeconds,
     maxResponseBytes: props.policy.maxResponseBytes,
-    ignoreSelectors: props.policy.ignoreSelectors.join("\n"),
-    trustedDomains: props.policy.trustedDomains.join("\n"),
+    ignoreSelectors: list(props.policy.ignoreSelectors).join("\n"),
+    trustedDomains: list(props.policy.trustedDomains).join("\n"),
     maintenanceWindowStart: props.policy.maintenanceWindowStart,
     maintenanceWindowEnd: props.policy.maintenanceWindowEnd,
     maintenanceSchedule: props.policy.maintenanceSchedule ?? null,

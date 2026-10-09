@@ -15,11 +15,26 @@ const session = useSessionStore();
 // and the same failure would show up twice.
 const viewFailure = ref<AppFailure | undefined>();
 onErrorCaptured((error, _instance, info) => {
-  // First error wins. A setup failure leaves the broken component in the tree
-  // while Vue re-renders around it, and that re-render raises a second,
-  // internal error ("Cannot read properties of undefined") which would
-  // otherwise replace the real cause with a symptom of the teardown.
-  if (!viewFailure.value) viewFailure.value = { message: messageOf(error), detail: `渲染失败：${info}` };
+  // Only a failure to draw the view takes the view away. That is the white
+  // screen this boundary exists for: nothing was produced to replace it with.
+  //
+  // Everything else Vue routes here -- a watcher, an async event handler, a
+  // lifecycle hook -- leaves the DOM the operator is using intact, and taking
+  // it away is worse than showing it with a warning. This is not theory: the
+  // policy dialog reads two lists that the API returns as null, its watcher
+  // threw, and an earlier version of this hook replaced the entire console with
+  // the error page. The operator lost the screen behind a broken dialog.
+  const drawing = info.startsWith("render") || info.startsWith("setup");
+  if (drawing) {
+    // First error wins. A setup failure leaves the broken component in the tree
+    // while Vue re-renders around it, and that re-render raises a second,
+    // internal error ("Cannot read properties of undefined") which would
+    // otherwise replace the real cause with a symptom of the teardown.
+    if (!viewFailure.value) viewFailure.value = { message: messageOf(error), detail: `渲染失败：${info}` };
+  } else if (!appFailure.value) {
+    appFailure.value = { message: messageOf(error), detail: `组件内的${info}失败` };
+    console.error(`[console] 组件内的${info}失败`, error);
+  }
   return false;
 });
 
