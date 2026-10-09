@@ -192,6 +192,25 @@ corepack pnpm build
 时不得把变更描述为已完成；如确需保留功能分支上的中间提交，必须在提交说明、
 PR 或最终报告中明确失败原因和未完成项，且不得合并到 `main` 作为可用功能。
 
+### 控制台的几条前端约定
+
+这些是踩过之后定下来的，改控制台时按它们做，理由见 `docs/rehearsals.md`
+的阶段二 2.3：
+
+- **首次加载用 `firstLoad`，不要用 `loading`** 驱动骨架屏。`loading` 在每次刷新
+  （含事件流触发的那次）都为真，用它会让有数据的表格每几秒退回骨架。
+- **空态**：表格用 Element Plus 的 `empty-text`；其余用
+  `components/system/EmptyState.vue`，不要直接写 `el-empty`（尺寸会各处漂移）。
+- **错误边界在 `App.vue`**：`render`/`setup` 失败才用兜底页替换视图；watcher、
+  异步处理器与生命周期钩子的失败只出顶栏横幅——把操作员眼前正常的页面换成错误页
+  是更糟的结果。
+- **组件测试跑在 jsdom 里**（`vite.config.ts` 的 `test` 块）。Element Plus 的表格
+  表体在 jsdom 里渲染不出来（测量全为 0），用 `src/test/elTableStub.ts` 的桩，
+  表格自身渲染由 `compose-smoke.ps1` 在真实浏览器覆盖。
+- **接口给的值要按契约防御性读取**：服务端出现过「契约写 required array、实际返回
+  `null`」（策略的 `ignoreSelectors`/`trustedDomains`），前端直接 `.join()` 会崩。
+
+
 ## 6. Agent 提交权限
 
 - 默认：Agent 可以读、改、测试和准备 staged 内容，但不自动 `git commit`。

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import ListFooter from "../components/monitoring/ListFooter.vue";
+import TableSkeleton from "../components/system/TableSkeleton.vue";
 import type { AuditFilterParams } from "../services/api/client";
 import type { AuditEvent } from "../types/domain";
 
-defineProps<{ audits: AuditEvent[]; hasMore: boolean; loadingMore: boolean }>();
+defineProps<{ audits: AuditEvent[]; hasMore: boolean; loadingMore: boolean; firstLoad?: boolean }>();
 const emit = defineEmits<{ loadMore: []; filter: [params: AuditFilterParams]; export: [params: AuditFilterParams] }>();
 
 // The action vocabulary is open: every handler writes its own, and
@@ -97,7 +98,8 @@ function formatTime(value: string) { return new Date(value).toLocaleString("zh-C
       <el-button @click="emit('export', currentFilterParams())">导出 CSV</el-button>
     </section>
     <section class="panel">
-      <el-table :data="audits" empty-text="暂无审计记录">
+      <TableSkeleton v-if="firstLoad && !audits.length" />
+      <el-table v-else :data="audits" empty-text="暂无审计记录">
         <el-table-column prop="action" label="操作" min-width="190" />
         <el-table-column prop="resourceType" label="资源类型" width="140" />
         <el-table-column prop="resourceId" label="资源 ID" min-width="220" />

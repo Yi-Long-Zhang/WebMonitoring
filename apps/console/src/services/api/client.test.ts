@@ -37,4 +37,20 @@ describe("API client", () => {
 
     await expect(request("/assets")).rejects.toThrow("无权执行");
   });
+
+  // What a proxy answers when the API behind it is down: HTML, not the JSON
+  // error envelope. The console used to surface "502 Bad Gateway" verbatim.
+  it("explains a status the API did not wrap in JSON", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("<html><body>502 Bad Gateway</body></html>", {
+          status: 502,
+          headers: { "content-type": "text/html" },
+        }),
+      ),
+    );
+
+    await expect(request("/assets")).rejects.toThrow("服务端错误（502），控制台无法完成本次请求");
+  });
 });

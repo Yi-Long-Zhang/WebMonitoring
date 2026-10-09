@@ -40,26 +40,26 @@ const emit = defineEmits<{
     </div>
     <div class="sidebar-caption">运营工作台</div>
     <nav class="nav-list">
-      <button :class="{ active: activeView === 'overview' }" @click="emit('navigate', 'overview')"><el-icon class="nav-icon"><House /></el-icon> 总览</button>
-      <button :class="{ active: activeView === 'assets' }" @click="emit('navigate', 'assets')"><el-icon class="nav-icon"><Monitor /></el-icon> 资产中心</button>
-      <button v-if="canAdmin(role)" :class="{ active: activeView === 'sites' }" @click="emit('navigate', 'sites')"><el-icon class="nav-icon"><Grid /></el-icon> 站点管理</button>
-      <button v-if="canOperate(role)" :class="{ active: activeView === 'baselines' }" @click="emit('navigate', 'baselines')"><el-icon class="nav-icon"><Checked /></el-icon> 基线审批<span v-if="candidateCount" class="nav-count">{{ candidateCount }}</span></button>
+      <button :aria-current="activeView === 'overview' ? 'page' : undefined" :class="{ active: activeView === 'overview' }" @click="emit('navigate', 'overview')"><el-icon class="nav-icon"><House /></el-icon> 总览</button>
+      <button :aria-current="activeView === 'assets' ? 'page' : undefined" :class="{ active: activeView === 'assets' }" @click="emit('navigate', 'assets')"><el-icon class="nav-icon"><Monitor /></el-icon> 资产中心</button>
+      <button v-if="canAdmin(role)" :aria-current="activeView === 'sites' ? 'page' : undefined" :class="{ active: activeView === 'sites' }" @click="emit('navigate', 'sites')"><el-icon class="nav-icon"><Grid /></el-icon> 站点管理</button>
+      <button v-if="canOperate(role)" :aria-current="activeView === 'baselines' ? 'page' : undefined" :class="{ active: activeView === 'baselines' }" @click="emit('navigate', 'baselines')"><el-icon class="nav-icon"><Checked /></el-icon> 基线审批<span v-if="candidateCount" class="nav-count">{{ candidateCount }}</span></button>
       <!-- 事件中心 stays ungated on purpose: GET /api/v1/incidents is readable by
            every authenticated role, and an auditor who cannot reach the incident
            list cannot audit anything. 总览 and 资产中心 are readable for the same
            reason. 审计日志 has no server-side role gate either, so gating it here
            is a UI reduction only -- see the note in app/permissions.ts. -->
-      <button :class="{ active: activeView === 'incidents' }" @click="emit('navigate', 'incidents')"><el-icon class="nav-icon"><WarningFilled /></el-icon> 事件中心<span v-if="openIncidentCount" class="nav-count alert">{{ openIncidentCount }}</span></button>
-      <button v-if="canOperate(role)" :class="{ active: activeView === 'jobs' }" @click="emit('navigate', 'jobs')"><el-icon class="nav-icon"><Aim /></el-icon> 检测任务</button>
-      <button v-if="canOperate(role)" :class="{ active: activeView === 'evidence' }" @click="emit('navigate', 'evidence')"><el-icon class="nav-icon"><Collection /></el-icon> 证据中心</button>
-      <button v-if="canOperate(role)" :class="{ active: activeView === 'channels' }" @click="emit('navigate', 'channels')"><el-icon class="nav-icon"><Bell /></el-icon> 告警渠道</button>
-      <button v-if="canOperate(role)" :class="{ active: activeView === 'audits' }" @click="emit('navigate', 'audits')"><el-icon class="nav-icon"><List /></el-icon> 审计日志</button>
-      <button v-if="canSuperAdmin(role)" :class="{ active: activeView === 'tenants' }" @click="emit('navigate', 'tenants')"><el-icon class="nav-icon"><OfficeBuilding /></el-icon> 租户管理</button>
+      <button :aria-current="activeView === 'incidents' ? 'page' : undefined" :class="{ active: activeView === 'incidents' }" @click="emit('navigate', 'incidents')"><el-icon class="nav-icon"><WarningFilled /></el-icon> 事件中心<span v-if="openIncidentCount" class="nav-count alert">{{ openIncidentCount }}</span></button>
+      <button v-if="canOperate(role)" :aria-current="activeView === 'jobs' ? 'page' : undefined" :class="{ active: activeView === 'jobs' }" @click="emit('navigate', 'jobs')"><el-icon class="nav-icon"><Aim /></el-icon> 检测任务</button>
+      <button v-if="canOperate(role)" :aria-current="activeView === 'evidence' ? 'page' : undefined" :class="{ active: activeView === 'evidence' }" @click="emit('navigate', 'evidence')"><el-icon class="nav-icon"><Collection /></el-icon> 证据中心</button>
+      <button v-if="canOperate(role)" :aria-current="activeView === 'channels' ? 'page' : undefined" :class="{ active: activeView === 'channels' }" @click="emit('navigate', 'channels')"><el-icon class="nav-icon"><Bell /></el-icon> 告警渠道</button>
+      <button v-if="canOperate(role)" :aria-current="activeView === 'audits' ? 'page' : undefined" :class="{ active: activeView === 'audits' }" @click="emit('navigate', 'audits')"><el-icon class="nav-icon"><List /></el-icon> 审计日志</button>
+      <button v-if="canSuperAdmin(role)" :aria-current="activeView === 'tenants' ? 'page' : undefined" :class="{ active: activeView === 'tenants' }" @click="emit('navigate', 'tenants')"><el-icon class="nav-icon"><OfficeBuilding /></el-icon> 租户管理</button>
       <!-- 用户管理 is gated on canAdmin because GET/POST/PATCH /users all require
            RoleAdmin. It is NOT placed beside 租户管理 for the super admin only:
            a tenant ADMIN is the one who provisions OPERATOR and AUDITOR accounts,
            which the create handler restricts them to. -->
-      <button v-if="canAdmin(role)" :class="{ active: activeView === 'users' }" @click="emit('navigate', 'users')"><el-icon class="nav-icon"><User /></el-icon> 用户管理</button>
+      <button v-if="canAdmin(role)" :aria-current="activeView === 'users' ? 'page' : undefined" :class="{ active: activeView === 'users' }" @click="emit('navigate', 'users')"><el-icon class="nav-icon"><User /></el-icon> 用户管理</button>
     </nav>
     <div class="sidebar-footer">
       <div class="status-dot"><span /> 检测服务运行中</div>

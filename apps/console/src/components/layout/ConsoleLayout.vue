@@ -1,20 +1,24 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
 import Sidebar from "./Sidebar.vue";
 import Topbar from "./Topbar.vue";
-import OverviewPage from "../../pages/OverviewPage.vue";
-import AssetsPage from "../../pages/AssetsPage.vue";
-import SitesPage from "../../pages/SitesPage.vue";
-import BaselinesPage from "../../pages/BaselinesPage.vue";
-import IncidentsPage from "../../pages/IncidentsPage.vue";
-import JobsPage from "../../pages/JobsPage.vue";
-import EvidencePage from "../../pages/EvidencePage.vue";
-import ChannelsPage from "../../pages/ChannelsPage.vue";
-import AuditsPage from "../../pages/AuditsPage.vue";
-import TenantsPage from "../../pages/TenantsPage.vue";
-import UsersPage from "../../pages/UsersPage.vue";
+// The views are loaded on demand. This component imports all twelve of them,
+// and ConsolePage imports this one, so static imports put every page -- plus
+// ECharts, which only the overview uses -- in the chunk the first signed-in
+// paint waits for, whether or not the operator ever opens that view.
+const OverviewPage = defineAsyncComponent(() => import("../../pages/OverviewPage.vue"));
+const AssetsPage = defineAsyncComponent(() => import("../../pages/AssetsPage.vue"));
+const SitesPage = defineAsyncComponent(() => import("../../pages/SitesPage.vue"));
+const BaselinesPage = defineAsyncComponent(() => import("../../pages/BaselinesPage.vue"));
+const IncidentsPage = defineAsyncComponent(() => import("../../pages/IncidentsPage.vue"));
+const JobsPage = defineAsyncComponent(() => import("../../pages/JobsPage.vue"));
+const EvidencePage = defineAsyncComponent(() => import("../../pages/EvidencePage.vue"));
+const ChannelsPage = defineAsyncComponent(() => import("../../pages/ChannelsPage.vue"));
+const AuditsPage = defineAsyncComponent(() => import("../../pages/AuditsPage.vue"));
+const TenantsPage = defineAsyncComponent(() => import("../../pages/TenantsPage.vue"));
+const UsersPage = defineAsyncComponent(() => import("../../pages/UsersPage.vue"));
 import PolicyDialog from "../monitoring/PolicyDialog.vue";
 import AssetImportDialog from "../monitoring/AssetImportDialog.vue";
 import BaselineSnapshotDrawer from "../monitoring/BaselineSnapshotDrawer.vue";
@@ -36,7 +40,13 @@ const route = useRoute();
 const session = useSessionStore();
 const data = useConsoleStore();
 const actions = useMonitoringActions();
-const activeView = ref<View>("overview");
+// Seeded from the hash rather than defaulted to the overview: the views are
+// async components, so a default of "overview" that is corrected a moment later
+// downloads the overview's chunk -- ECharts, 1.1 MB -- on every deep link,
+// which is exactly the cost the split exists to avoid. The route is already
+// resolved when this component first renders (the router-view only renders it
+// after the initial navigation), so the segment is readable here.
+const activeView = ref<View>(isView(route.params.view) ? route.params.view : "overview");
 const showAssetDialog = ref(false);
 const showImportDialog = ref(false);
 const showChannelDialog = ref(false);
@@ -403,20 +413,20 @@ onUnmounted(() => eventStream?.close());
     <Sidebar :active-view="activeView" :username="session.user.username" :role="session.user.role" :role-label="roleLabel" :candidate-count="data.baselines.filter((item) => item.status === 'CANDIDATE').length" :open-incident-count="data.dashboard?.openIncidents || 0" @navigate="navigate" @sign-out="signOut" />
     <main class="main-content">
       <Topbar :title="viewTitle" :loading="data.loading" :username="session.user.username" :role-label="roleLabel" @refresh="refresh" @change-password="submitOwnPasswordChange" />
-      <OverviewPage v-if="activeView === 'overview'" :dashboard="data.dashboard" :report-summary="data.reportSummary" :version="data.version" :assets="data.assets" :incidents="data.incidents" :asset-map="assetMap" @navigate="navigate" />
-      <AssetsPage v-else-if="activeView === 'assets'" :assets="data.assets" :policies="data.policies" :can-operate="session.canOperate" :can-admin="session.canAdmin" :has-more="data.hasMore('assets')" :loading-more="data.isLoadingMore('assets')" @load-more="data.loadMore('assets')" @create="showAssetDialog = true" @verify="verify" @toggle="toggle" @detect="detect" @policy="editPolicy" @import="showImportDialog = true" @export="exportAssetList" />
-      <SitesPage v-else-if="activeView === 'sites'" :sites="data.sites" :can-admin="session.canAdmin" :has-more="data.hasMore('sites')" :loading-more="data.isLoadingMore('sites')" @load-more="data.loadMore('sites')" @create="openSiteCreate" @edit="openSiteEdit" @remove="removeSite" />
-      <BaselinesPage v-else-if="activeView === 'baselines'" :baselines="data.baselines" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('baselines')" :loading-more="data.isLoadingMore('baselines')" @load-more="data.loadMore('baselines')" @review="review" @retire="retireBaseline" @preview="openBaselinePreview" />
-      <IncidentsPage v-else-if="activeView === 'incidents'" :incidents="data.incidents" :evidence="data.evidence" :deliveries="data.alertDeliveries" :asset-map="assetMap" :can-operate="session.canOperate" :timeline-key="timelineKey" :users="data.users" :on-comment="comment" :has-more="data.hasMore('incidents')" :loading-more="data.isLoadingMore('incidents')" :can-admin="session.canAdmin" @load-more="data.loadMore('incidents')" @transition="transition" @batch-transition="batchTransition" @filter="data.applyIncidentFilters" @export="exportIncidentList" />
-      <JobsPage v-else-if="activeView === 'jobs'" :jobs="data.jobs" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('jobs')" :loading-more="data.isLoadingMore('jobs')" @load-more="data.loadMore('jobs')" @cancel="cancelDetectionJob" />
-      <EvidencePage v-else-if="activeView === 'evidence'" :evidence="data.evidence" :assets="data.assets" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('evidence')" :loading-more="data.isLoadingMore('evidence')" @load-more="data.loadMore('evidence')" />
-      <ChannelsPage v-else-if="activeView === 'channels'" :channels="data.alertChannels" :can-admin="session.canAdmin" @create="openChannelCreate" @edit="openChannelEdit" @remove="deletingChannel = $event" @test="testChannel" />
-      <TenantsPage v-else-if="activeView === 'tenants'" :tenants="data.tenants" :self-tenant-id="session.user?.tenantId || ''" :default-tenant-id="DEFAULT_TENANT_ID" :can-delete="session.canSuperAdmin" :has-more="data.hasMore('tenants')" :loading-more="data.isLoadingMore('tenants')" @load-more="data.loadMore('tenants')" @create="openTenantCreate" @edit="openTenantEdit" @toggle="toggleTenant" @remove="openTenantDelete" />
-      <UsersPage v-else-if="activeView === 'users'" :users="data.users" :can-admin="session.canAdmin" :self-user-id="session.user?.id || ''" @create="openUserCreate" @edit="openUserEdit" @reset-password="openPasswordReset" />
+      <OverviewPage v-if="activeView === 'overview'" :first-load="data.firstLoad" :dashboard="data.dashboard" :report-summary="data.reportSummary" :version="data.version" :assets="data.assets" :incidents="data.incidents" :asset-map="assetMap" @navigate="navigate" />
+      <AssetsPage v-else-if="activeView === 'assets'" :first-load="data.firstLoad" :assets="data.assets" :policies="data.policies" :can-operate="session.canOperate" :can-admin="session.canAdmin" :has-more="data.hasMore('assets')" :loading-more="data.isLoadingMore('assets')" @load-more="data.loadMore('assets')" @create="showAssetDialog = true" @verify="verify" @toggle="toggle" @detect="detect" @policy="editPolicy" @import="showImportDialog = true" @export="exportAssetList" />
+      <SitesPage v-else-if="activeView === 'sites'" :first-load="data.firstLoad" :sites="data.sites" :can-admin="session.canAdmin" :has-more="data.hasMore('sites')" :loading-more="data.isLoadingMore('sites')" @load-more="data.loadMore('sites')" @create="openSiteCreate" @edit="openSiteEdit" @remove="removeSite" />
+      <BaselinesPage v-else-if="activeView === 'baselines'" :first-load="data.firstLoad" :baselines="data.baselines" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('baselines')" :loading-more="data.isLoadingMore('baselines')" @load-more="data.loadMore('baselines')" @review="review" @retire="retireBaseline" @preview="openBaselinePreview" />
+      <IncidentsPage v-else-if="activeView === 'incidents'" :first-load="data.firstLoad" :incidents="data.incidents" :evidence="data.evidence" :deliveries="data.alertDeliveries" :asset-map="assetMap" :can-operate="session.canOperate" :timeline-key="timelineKey" :users="data.users" :on-comment="comment" :has-more="data.hasMore('incidents')" :loading-more="data.isLoadingMore('incidents')" :can-admin="session.canAdmin" @load-more="data.loadMore('incidents')" @transition="transition" @batch-transition="batchTransition" @filter="data.applyIncidentFilters" @export="exportIncidentList" />
+      <JobsPage v-else-if="activeView === 'jobs'" :first-load="data.firstLoad" :jobs="data.jobs" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('jobs')" :loading-more="data.isLoadingMore('jobs')" @load-more="data.loadMore('jobs')" @cancel="cancelDetectionJob" />
+      <EvidencePage v-else-if="activeView === 'evidence'" :first-load="data.firstLoad" :evidence="data.evidence" :assets="data.assets" :asset-map="assetMap" :can-operate="session.canOperate" :has-more="data.hasMore('evidence')" :loading-more="data.isLoadingMore('evidence')" @load-more="data.loadMore('evidence')" />
+      <ChannelsPage v-else-if="activeView === 'channels'" :first-load="data.firstLoad" :channels="data.alertChannels" :can-admin="session.canAdmin" @create="openChannelCreate" @edit="openChannelEdit" @remove="deletingChannel = $event" @test="testChannel" />
+      <TenantsPage v-else-if="activeView === 'tenants'" :first-load="data.firstLoad" :tenants="data.tenants" :self-tenant-id="session.user?.tenantId || ''" :default-tenant-id="DEFAULT_TENANT_ID" :can-delete="session.canSuperAdmin" :has-more="data.hasMore('tenants')" :loading-more="data.isLoadingMore('tenants')" @load-more="data.loadMore('tenants')" @create="openTenantCreate" @edit="openTenantEdit" @toggle="toggleTenant" @remove="openTenantDelete" />
+      <UsersPage v-else-if="activeView === 'users'" :first-load="data.firstLoad" :users="data.users" :can-admin="session.canAdmin" :self-user-id="session.user?.id || ''" @create="openUserCreate" @edit="openUserEdit" @reset-password="openPasswordReset" />
       <!-- Explicit rather than a v-else fallback: with v-else any view key that
            matched nothing above would render the audit page, which is how an
            unknown hash segment used to reach the screen silently. -->
-      <AuditsPage v-else-if="activeView === 'audits'" :audits="data.audits" :has-more="data.hasMore('audits')" :loading-more="data.isLoadingMore('audits')" @load-more="data.loadMore('audits')" @filter="data.applyAuditFilters" @export="exportAuditList" />
+      <AuditsPage v-else-if="activeView === 'audits'" :first-load="data.firstLoad" :audits="data.audits" :has-more="data.hasMore('audits')" :loading-more="data.isLoadingMore('audits')" @load-more="data.loadMore('audits')" @filter="data.applyAuditFilters" @export="exportAuditList" />
     </main>
     <el-dialog v-model="showAssetDialog" title="登记监测资产" width="520px">
       <el-form label-position="top">

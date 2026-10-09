@@ -43,6 +43,31 @@ function listQuery(params: Record<string, string | number | undefined | null>): 
 // a second copy of the transport that would drift from this one.
 export type RequestOptions = RequestInit & { responseType?: "json" | "blob" };
 
+// statusMessage is the fallback used when the response carried no JSON error
+// envelope. That happens when something in front of the API answers instead --
+// nginx with the API down (502), the dev proxy with no backend (500), a load
+// balancer at capacity (503). "502 Bad Gateway" is text an operator reads past;
+// this says what happened to the request in the console's own words.
+function statusMessage(status: number, statusText: string): string {
+  if (status === 401) return "未登录或会话已过期";
+  if (status === 403) return "当前账号没有执行该操作的权限";
+  if (status === 404) return "目标不存在或已被删除";
+  if (status >= 500) return `服务端错误（${status}），控制台无法完成本次请求`;
+  return `${status} ${statusText}`.trim();
+}
+
+// HttpError keeps the status code that the message alone does not carry. A
+// caller that must tell "the API said no" from "the API could not be reached"
+// -- session restore answers 401 to a signed-out browser, which is normal, and
+// 5xx to a broken backend, which is not -- needs the number, and parsing it
+// back out of the message text would break the moment the wording changes.
+export class HttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
+
 export async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
   const { responseType = "json", ...rest } = init;
   const headers = new Headers(rest.headers);
@@ -66,7 +91,7 @@ export async function request<T>(path: string, init: RequestOptions = {}): Promi
     } catch {
       // Keep the network status as the fallback error.
     }
-    throw new Error(payload.message || `${response.status} ${response.statusText}`);
+    throw new HttpError(payload.message || statusMessage(response.status, response.statusText), response.status);
   }
   if (response.status === 204) {
     return undefined as T;
@@ -445,7 +470,7 @@ export async function deleteTenantDetailed(id: string, confirm: string, cascade 
     } catch {
       // Keep the network status as the fallback error.
     }
-    throw new ApiError(payload.message || `${response.status} ${response.statusText}`, payload.code ?? "", payload.details ?? {});
+    throw new ApiError(payload.message || statusMessage(response.status, response.statusText), payload.code ?? "", payload.details ?? {});
   }
   return response.json() as Promise<{ tenantId: string; deletedResources: Record<string, number>; orphanedEvidenceObjects: number }>;
 }
@@ -466,7 +491,7 @@ export async function deleteSiteDetailed(id: string) {
     } catch {
       // Keep the network status as the fallback error.
     }
-    throw new ApiError(payload.message || `${response.status} ${response.statusText}`, payload.code ?? "", payload.details ?? {});
+    throw new ApiError(payload.message || statusMessage(response.status, response.statusText), payload.code ?? "", payload.details ?? {});
   }
 }
 

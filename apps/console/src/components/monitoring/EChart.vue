@@ -15,7 +15,14 @@
 import * as echarts from "echarts";
 import { onBeforeUnmount, onMounted, useTemplateRef, watch } from "vue";
 
-const props = defineProps<{ option: echarts.EChartsOption; height?: string }>();
+const props = defineProps<{
+  option: echarts.EChartsOption;
+  height?: string;
+  // What the chart shows, for assistive technology. A canvas is opaque: without
+  // this the chart is an unlabelled box in the accessibility tree, and the
+  // numbers behind it exist only as pixels.
+  label?: string;
+}>();
 
 // useTemplateRef infers the element type from the template, so the component
 // never has to name a DOM type to hold its own node.
@@ -50,5 +57,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="host" class="echart" :style="{ height: height ?? '260px' }" />
+  <div
+    ref="host"
+    class="echart"
+    :style="{ height: height ?? '260px' }"
+    role="img"
+    :aria-label="label ?? '图表'"
+  />
 </template>

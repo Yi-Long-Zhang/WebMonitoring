@@ -1458,8 +1458,13 @@ func (s *Server) updatePolicy(writer http.ResponseWriter, request *http.Request)
 	current.BrowserIntervalSeconds = input.BrowserIntervalSeconds
 	current.TimeoutSeconds = input.TimeoutSeconds
 	current.MaxResponseBytes = input.MaxResponseBytes
-	current.IgnoreSelectors = append([]string(nil), input.IgnoreSelectors...)
-	current.TrustedDomains = append([]string(nil), input.TrustedDomains...)
+	// append([]string(nil), empty...) returns nil, which encoding/json writes as
+	// null -- the contract declares both fields as arrays. []string{} keeps an
+	// empty list empty on the way in, so this defect stops being created;
+	// redactPolicy normalizes it on the way out as well, for the rows already
+	// stored with null.
+	current.IgnoreSelectors = append([]string{}, input.IgnoreSelectors...)
+	current.TrustedDomains = append([]string{}, input.TrustedDomains...)
 	current.MaintenanceWindowStart = input.MaintenanceWindowStart
 	current.MaintenanceWindowEnd = input.MaintenanceWindowEnd
 	// A missing key leaves the existing recurrence alone; an explicit null clears
@@ -1575,6 +1580,22 @@ func (s *Server) buildAuthConfig(ctx context.Context, tenantID, assetID string, 
 // ciphertext never leaves the control plane. CredentialsSet is derived from the
 // stored ciphertext so clients can still tell whether login is configured.
 func redactPolicy(policy domain.MonitorPolicy) domain.MonitorPolicy {
+	// Both lists are declared as required arrays in the contract, so a nil slice
+	// must not reach the encoder: encoding/json writes nil as null, and a
+	// consumer that treats the field as a list -- the console calls .join() on
+	// it -- breaks on a shape the contract says cannot occur.
+	//
+	// Normalizing here rather than where the policy is built covers two paths at
+	// once: the update handler, which used to build these with
+	// append([]string(nil), input...) and so stored null for an empty list, and
+	// rows written before that was understood, whose stored JSON still says
+	// null. This is the one place every policy response passes through.
+	if policy.IgnoreSelectors == nil {
+		policy.IgnoreSelectors = []string{}
+	}
+	if policy.TrustedDomains == nil {
+		policy.TrustedDomains = []string{}
+	}
 	if policy.Auth == nil {
 		return policy
 	}
