@@ -10,6 +10,37 @@
 
 ---
 
+## 阶段二 2.1 本地集成测试入口实测 — 2026-10-09
+
+- **脚本**：`scripts/integration-test.ps1`（`make test-integration`）。
+- **关键断言**：(1) 一条命令能在本地跑通此前默认跳过的集成用例；(2) **缺 DSN 时
+  必须失败而不是静默全绿**；(3) Docker 不可达时要快速给出可操作的错误。
+- **结果**（2026-10-09）：
+  - `make test-integration` **130.0 秒全绿**。覆盖率（对照无 DSN 时）：
+    `internal/store` **32.3% → 56.4%**、`internal/jobqueue` **0.0% → 30.9%**、
+    `internal/rewrap` 80.8%（此前本地为 0，其集成用例全部跳过）、
+    `internal/migrate` 19.9%。**预测值是 store 约 70%，实测 56.4%**——差在
+    Postgres 实现里并非每个方法都被集成用例走到。
+  - **防假绿负向验证**：设 `WEBMONITORING_TEST_REQUIRE_SERVICES=1` 但不给 DSN，
+    `internal/store` 的 13 个集成用例**全部失败**（不是跳过），退出码 1。
+  - **Docker 不可达**（`DOCKER_HOST` 指向无效地址模拟）：**1.9 秒**退出，输出
+    「Docker 守护进程不可达……请先启动 Docker Desktop 再重跑」，并说明没有 Docker
+    时 `make test` 仍会跑内存实现那部分。
+  - 预检 `go run ./apps/migrate up` 在空库上应用全部迁移成功（第一次跑失败于
+    `migrate` 读的是 `POSTGRES_DSN` 而非 `POSTGRES_TEST_DSN`，已修）。
+- **修法摘要**：新增运行器（一次性 `postgres:17-alpine` / `redis:8-alpine`、临时
+  回环端口、`try/finally` 清理、`-KeepRunning` 与 `-Race` 开关）；七处跳过点在
+  `WEBMONITORING_TEST_REQUIRE_SERVICES` 存在时改为 `t.Fatal`，其中 store 的
+  `testRepositories` 是最危险的一处（它不跳过、只是少跑一半）。
+- **合并前整体回归**：**未跑 compose-smoke / multi-replica-drill**。理由是本次改动
+  逐文件核对后为零生产代码——只有 5 个 `_test.go`、新脚本、Makefile 与两份文档，
+  部署物逐字节不变，两个脚本不会执行到任何被改动的内容。适用门禁（gofmt / vet /
+  全量单测 / 运行器自身三条验证）已全部通过。
+- **未覆盖**：`-Race` 开关未在本机验证（无 C 工具链，见 2.2a）；运行器未在 Linux
+  上跑过（CI 已有服务容器，不打算加作业）。
+
+---
+
 ## 阶段二 2.0 工具链与可达依赖安全修复实测 — 2026-10-09
 
 - **脚本**：`govulncheck` 本地实跑、`docker build` 探针、`compose-smoke.ps1`、
