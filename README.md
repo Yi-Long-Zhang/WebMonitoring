@@ -46,6 +46,9 @@
 | 多副本演练（2026-09-20） | `--scale api=2 --scale http-worker=3`，40 资产 40 任务，0 重复分组 |
 | 备份恢复（2026-09-15） | 1198 个受校验文件，恢复后 `/readyz`、SHA-256、任务数、Redis pending 全通过 |
 
+上表是压测与演练这类「大件」；此外自 2026-09-26 起，**路线图的每一项**（阶段 0 的
+0.1–0.10、阶段 1 的 1.1–1.6）都各自有演练记录，最近一次为 2026-10-03。
+
 完整记录（脚本、断言、专项档案）见验收总账
 [docs/rehearsals.md](docs/rehearsals.md)。
 
@@ -105,8 +108,8 @@ corepack pnpm dev:console
 
 需要 Docker Compose，会启用 PostgreSQL、Redis、MinIO、独立 HTTP Worker 和
 Playwright Worker。首次启动前复制环境文件。`POSTGRES_PASSWORD`、
-`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`BROWSER_WORKER_TOKEN` 和
-`ADMIN_PASSWORD` **必须显式提供**——清单文件里没有任何默认值，缺一个
+`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`BROWSER_WORKER_TOKEN`、`ALERT_SECRET_KEY`
+和 `ADMIN_PASSWORD` **必须显式提供**——清单文件里没有任何默认值，缺一个
 `docker compose config` 就会失败并指出是哪一个。`.env.example` 已带一份可用的
 开发值；生产部署必须替换掉它们：
 
@@ -144,12 +147,16 @@ docker compose -f deployments/compose/docker-compose.yml up --build
 | `ALLOWED_ORIGINS` | 跨域控制台来源；留空即同源（单机部署默认） |
 | `ALLOW_PRIVATE_TARGETS` | 是否允许检测私网地址，默认 `false` |
 | `SESSION_SECURE` | 是否只通过 HTTPS 发送会话 Cookie |
-| `JOB_LEASE_SECONDS` | 检测任务领取租约，默认 600；不得低于 270（见下方说明） |
+| `JOB_LEASE_SECONDS` | 检测任务领取租约，默认 600；必须**严格大于** 270（见下方说明） |
 | `APP_ENV` | 设为 `production` 时启动前校验生产门禁 |
 | `ADMIN_USERNAME`、`ADMIN_PASSWORD` | 首次启动播种的平台管理员；密码至少 12 字节。`ADMIN_PASSWORD` 留空时回落到 `deployments/compose/.env.default`，另可用 `ADMIN_PASSWORD_FILE` 指向自定义文件 |
 | `POSTGRES_SSLMODE` | 写入 `POSTGRES_DSN` 的 `sslmode`；生产不得为 `disable` |
 | `POSTGRES_MAX_CONNS` 等池参数 | 单副本连接池上限/下限/存活/空闲/健康检查/建连超时，默认 10 / 1 / 3600 / 900 / 60 / 10（秒）；生产拒绝 `0`、负数、超过 1000 与 `MIN_CONNS > MAX_CONNS`（见 `docs/operations.md`） |
 | `HTTP_ADDR` | API 监听地址（http-worker 用 `WORKER_HTTP_ADDR`） |
+| `METRICS_TOKEN` | `/metrics` 的 Bearer 令牌；空值保持开放（开发默认），**生产校验强制要求**（见 `docs/operations.md`） |
+| `ESCALATION_INTERVAL_MINUTES`、`ESCALATION_UNCLAIMED_MINUTES` | 高危事件无人认领的升级扫描：扫描间隔与「多久算无人认领」，默认 5 / 30 分钟；间隔设 0 关闭定时器（手动入口仍在） |
+| `MIGRATE_CONFIRM_DESTRUCTIVE` | 升级窗口内确认破坏性迁移；留空时既有库遇到破坏性迁移会拒绝启动 |
+| `WORKER_DRAIN_TIMEOUT_SECONDS` | SIGTERM 后等待在途检测跑完的上限，默认 60 |
 | `DATA_DIR` | 未配 S3 时本地证据目录 |
 | `WORKER_TOKEN` / `WORKER_ID` | worker 向控制面认证的凭据，以及消费者身份（未设时按 hostname 生成） |
 | `EVIDENCE_SIGNED_URL_TTL_SECONDS` | 短时签名证据 URL 的有效期，默认 300 |
@@ -160,6 +167,7 @@ docker compose -f deployments/compose/docker-compose.yml up --build
 | `SMTP_HOST`、`SMTP_PORT`、`SMTP_USERNAME`、`SMTP_PASSWORD`、`SMTP_FROM` | EMAIL 渠道的出站邮件中继；`SMTP_HOST` 留空则关闭 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` 等 `OTEL_*` | Trace 导出，默认 no-op |
 | `BUILD_NETWORK` | 仅影响 `docker compose build` 的构建网络 |
+| `APP_VERSION`、`APP_COMMIT`、`APP_BUILD_TIME` | 构建时注入二进制的版本标识，由 `GET /api/v1/version` 与控制台「关于」显示；不设置时如实自称 `dev` |
 
 限速与告警投递的配额（不设置则用内置默认）：
 

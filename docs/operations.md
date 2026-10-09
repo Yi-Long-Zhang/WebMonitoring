@@ -249,7 +249,7 @@ API/Worker 重启。测试数据保存在 `.data-smoke`（已被 Git 忽略）�
 
 | CI job | 跑什么 |
 | --- | --- |
-| `backend` | `gofmt` 校验、`go vet`、`go test`（连真 Postgres 和 Redis 服务容器）、`golangci-lint` |
+| `backend` | `gofmt` 校验、`go vet`、`go test`（连真 Postgres 和 Redis 服务容器）、`golangci-lint`、`govulncheck`（阻断式，跑出可达漏洞即失败） |
 | `node` | 契约生成一致性（`generate:api` 后 `git diff --exit-code` 生成类型）、`lint`、`typecheck`、`test`、`build` |
 | `compose-smoke` | `compose-smoke.ps1` 全链路 |
 | `multi-replica-drill` | `multi-replica-drill.ps1`（默认 2 个 api 副本 + 3 个 http-worker） |
@@ -481,6 +481,8 @@ destructive`，说明有待应用的破坏性迁移而确认变量未设——�
 - `GET /metrics`：请求、任务、告警、事件和数据库连接池指标。设了
   `METRICS_TOKEN` 后需带 `Authorization: Bearer <token>`；生产校验强制要求
   设置（至少 16 字节），空值只在开发环境保持开放。
+- `GET /api/v1/version`：当前二进制的版本/commit/构建时间。在会话门禁之后，但它
+  不读数据库，因此库正是坏掉的那一环时也答得上来。
 - Redis detection/alert Stream 的 pending 和 dead-letter 状态。
 
 完整的只读诊断命令（curl/docker compose 示例）单源在
@@ -592,8 +594,8 @@ Invoke-RestMethod http://localhost:8080/metrics -Headers @{ Authorization = "Bea
 一次性池，有意不转发）。清单不写默认值，也不写空值以外的任何字面量：你在
 `deployments/compose/.env` 里写了什么就传什么，没写就是未设置——`${VAR:-}`
 传空串，而代码把空串当未设置。**因此这几个键只能写在 `deployments/compose/.env`
-（或 shell 环境里），写别处不会生效**；同一锚点也覆盖队列重试与告警限流/熔断的
-八个键（`QUEUE_*`、`ALERT_QUEUE_*`、`ALERT_GATE_WINDOW_SECONDS`、
+（或 shell 环境里），写别处不会生效**；另一个锚点 `x-queue-alert-env` 同样按原样
+转发队列重试与告警限流/熔断的八个键（`QUEUE_*`、`ALERT_QUEUE_*`、`ALERT_GATE_WINDOW_SECONDS`、
 `ALERT_MAX_PER_CHANNEL_PER_WINDOW`、`ALERT_FAILURE_THRESHOLD`、
 `ALERT_CIRCUIT_COOLDOWN_SECONDS`），它们同样只由 `api` 与 `http-worker` 读取。
 

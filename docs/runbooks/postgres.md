@@ -210,8 +210,8 @@ docker compose -f deployments/compose/docker-compose.yml exec -T postgres \
     WHERE datname='webmonitoring' GROUP BY 1 ORDER BY 2 DESC;"
 
 # 3. 任务重新流动：pended 回落、新任务进入终态
-curl -s http://localhost:8080/metrics | grep 'webmonitoring_detection_jobs_total'
-curl -s http://localhost:8080/metrics | grep 'webmonitoring_queue_pending'
+curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep 'webmonitoring_detection_jobs_total'
+curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep 'webmonitoring_queue_pending'
 
 # 4. 一次端到端写入：触发一个资产的检测，确认证据落库且可下载
 ```

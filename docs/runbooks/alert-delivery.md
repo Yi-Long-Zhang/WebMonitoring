@@ -66,7 +66,7 @@ curl -s -X POST "http://localhost:8080/api/v1/alert-channels/<channelId>/test" \
 | `webmonitoring_alert_suppressed_total{reason="LIMITED"}` | 单窗口内的投递量超过配额 | 不是故障。见下方「处置 B」 |
 
 ```bash
-curl -s http://localhost:8080/metrics | grep webmonitoring_alert_suppressed_total
+curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep webmonitoring_alert_suppressed_total
 ```
 
 控制台侧的呈现（`apps/console/src/pages/ChannelsPage.vue`）：渠道「状态」列
@@ -254,7 +254,7 @@ curl -s http://localhost:8080/api/v1/alert-channels -b "$COOKIE_JAR" \
   | grep -o '"suspended":[a-z]*'
 
 # 3. 不再有新的抑制
-curl -s http://localhost:8080/metrics | grep webmonitoring_alert_suppressed_total
+curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep webmonitoring_alert_suppressed_total
 
 # 4. 一次真实投递成功：触发一条会产生事件的变更，确认
 #    - 出现 status=DELIVERED 的投递行

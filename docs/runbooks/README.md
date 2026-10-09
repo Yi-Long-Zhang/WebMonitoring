@@ -101,8 +101,17 @@ docker inspect --format '{{.State.Health.Status}}' \
   $(docker compose -f deployments/compose/docker-compose.yml ps -q postgres)
 # 同理替换为 redis / minio / browser-worker / console
 
-# 4. 指标（未鉴权，Prometheus 文本格式）
-curl -s http://localhost:8080/metrics
+# 4. 指标（Prometheus 文本格式；设了 METRICS_TOKEN 时需带 Bearer 头，否则 401。
+#    生产校验强制要求设置它，下面的命令假定它已导出到环境）
+curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics
+# 其中两组最能说明「监测本身是不是还活着」：
+#   webmonitoring_last_successful_detection_timestamp_seconds  最近一次成功检测的时刻
+#   webmonitoring_detection_checks_last_hour{result}           最近一小时的完成/失败数
+# 前者停止推进就是信号，哪怕控制台上一条事件都没有。
+
+# 5. 现在跑的是哪个版本（在会话门禁之后，需要登录后的 Cookie；控制台总览页也显示）。
+#    它不读数据库，库正是坏掉的那一环时也答得上来——而那时恰恰是有人要问它的时候。
+curl -s -b "webmonitoring_session=<登录后的 Cookie 值>" http://localhost:8080/api/v1/version
 ```
 
 > **日志只保留最近 3×10MB。** 所有服务用 `json-file` 驱动、`max-size: 10m`、

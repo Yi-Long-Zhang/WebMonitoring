@@ -226,7 +226,7 @@ curl -s -X POST "http://localhost:8080/api/v1/evidence/<id>/signed-url" \
 
 ```bash
 # 3. 指标不再增长
-curl -s http://localhost:8080/metrics | grep -E \
+curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep -E \
   'webmonitoring_evidence_writes_total|webmonitoring_evidence_failures_total'
 
 # 4. 卷使用率回落并留出余量

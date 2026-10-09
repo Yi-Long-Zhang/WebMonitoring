@@ -40,6 +40,7 @@
 | 怎么部署、升级、备份、恢复、配 TLS | [operations.md](operations.md) |
 | 出故障了怎么办 | [runbooks/](runbooks/README.md) |
 | 备份恢复到底验过没有 | [backup-restore-rehearsal.md](backup-restore-rehearsal.md) |
+| 哪些功能真的实测过、结果如何 | [rehearsals.md](rehearsals.md)（全部实测的唯一事实来源） |
 
 **Q：我想评估这个项目（安全评审 / 技术选型），看哪些？**
 
@@ -154,7 +155,7 @@ CI 的 backend 任务通过服务容器设置了它们（`.github/workflows/ci.y
 
 ## 已经实测过什么？
 
-截至 2026-09-20，以下演练全部实测通过（脚本、关键断言、结果与专项档案见
+截至 2026-10-03，以下演练全部实测通过（脚本、关键断言、结果与专项档案见
 验收总账 [rehearsals.md](rehearsals.md)）：
 
 - **多副本（HA）**（2026-09-20）：`--scale api=2 --scale http-worker=3`，

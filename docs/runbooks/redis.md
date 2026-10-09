@@ -67,13 +67,15 @@ docker inspect --format '{{.State.Health.Status}} restarts={{.RestartCount}}' \
 先读指标——它比手工算 Stream 长度更直接，且与调度器看到的是同一份数字：
 
 ```bash
-curl -s http://localhost:8080/metrics | grep -E \
+curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep -E \
   'webmonitoring_queue_pending|webmonitoring_queue_enqueues_total|webmonitoring_queue_deliveries_total|webmonitoring_queue_dead_letters_total|webmonitoring_queue_read_failures_total|webmonitoring_queue_claim_failures_total|webmonitoring_queue_processing_failures_total'
 ```
 
 `webmonitoring_queue_pending{stream=...}` 由消费者每次循环后 `Set` 写入，因此
 **只在有消费者在跑时才会更新**。数值停滞不动本身就是信号：消费者可能已经
-退出循环（消费函数返回即整个 goroutine 结束，不会自动重连）。
+退出循环——消费过程本身仍会重试（Redis 读失败后按 500ms→30s 退避重入，不退出
+进程，见 `consumeWithRetry`），所以停滞更可能是消费真的不干了、或 worker 已经
+不在，而不是一次读抖动。
 
 ```bash
 # 两个 Stream 的长度与消费者组状态
@@ -189,9 +191,10 @@ docker compose -f deployments/compose/docker-compose.yml restart redis
      | grep -E "read jobs from|claim pending jobs from|redis"
    ```
 
-   消费循环返回错误即整个 goroutine 结束（`Consume`/`ConsumeAlerts` 不自动重连）。
-   容器 `restart: unless-stopped` 会重启进程，但如果 Redis 一直不可达，就是
-   重启风暴 + 队列继续堆积——**先修 Redis，不要先扩容 worker**。
+   Redis 读失败**不会**结束消费：`consumeWithRetry` 记日志、退避（500ms 起，翻倍
+   至 30s 上限）后重入 `Consume`/`ConsumeAlerts`，直到进程收到信号。因此不存在
+   「重启风暴」这条路径；Redis 长时间不可达的表现是**队列持续堆积**（消费者在
+   退避等待），而不是 worker 反复重启——**先修 Redis，不要先扩容 worker**。
 
 2. **【改变状态：增加并发】扩容 http-worker**
 
@@ -218,7 +221,7 @@ docker compose -f deployments/compose/docker-compose.yml restart redis
    通常是目标站点慢或超时。看任务分布：
 
    ```bash
-   curl -s http://localhost:8080/metrics | grep 'webmonitoring_detection_jobs_total'
+   curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep 'webmonitoring_detection_jobs_total'
    docker compose -f deployments/compose/docker-compose.yml exec -T postgres \
      psql -U webmonitoring -d webmonitoring -c \
      "SELECT status, error_code, count(*) FROM detection_jobs
@@ -251,7 +254,7 @@ docker compose -f deployments/compose/docker-compose.yml restart redis
 curl -s http://localhost:8080/readyz
 
 # 2. pending 回落而不是持平：前后各取一次，间隔大于 QUEUE_MIN_IDLE_SECONDS
-curl -s http://localhost:8080/metrics | grep webmonitoring_queue_pending
+curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep webmonitoring_queue_pending
 
 # 3. 消费组在推进（last-delivered-id 变化、pending 下降）
 docker compose -f deployments/compose/docker-compose.yml exec -T redis \

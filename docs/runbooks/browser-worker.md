@@ -69,7 +69,7 @@ docker compose -f deployments/compose/docker-compose.yml logs --tail=400 browser
 ### 3. 是 worker 挂了，还是任务在超时
 
 ```bash
-curl -s http://localhost:8080/metrics | grep 'webmonitoring_detection_jobs_total'
+curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep 'webmonitoring_detection_jobs_total'
 docker compose -f deployments/compose/docker-compose.yml exec -T postgres \
   psql -U webmonitoring -d webmonitoring -c \
   "SELECT mode, status, coalesce(error_code,'') AS code, count(*)
@@ -200,7 +200,7 @@ curl -s http://localhost:8080/readyz
 #    smoke 脚本覆盖了 HTTP 与 Browser 两种检测（scripts/compose-smoke.ps1）
 
 # 4. 失败率回落
-curl -s http://localhost:8080/metrics | grep 'webmonitoring_detection_jobs_total'
+curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep 'webmonitoring_detection_jobs_total'
 ```
 
 判据是**一次 BROWSER 模式检测成功并产出证据**，而不是 `/healthz` 返回 200。

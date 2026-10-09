@@ -111,9 +111,9 @@ OpenAPI 类型生成到 `apps/console/src/types/generated/`，HTTP 调用集中�
 
 ```text
 internal/
-├── api/            # HTTP 处理器、路由、中间件、权限校验（最大，25 个文件）
-├── store/          # 仓储接口与 PostgreSQL / 内存实现（15 个文件）
-├── detection/      # 检测编排、HTTP/浏览器检查、差异信号、事件聚合（14 个文件）
+├── api/            # HTTP 处理器、路由、中间件、权限校验（最大，39 个文件）
+├── store/          # 仓储接口与 PostgreSQL / 内存实现（20 个文件）
+├── detection/      # 检测编排、HTTP/浏览器检查、差异信号、事件聚合（16 个文件）
 ├── security/       # 加密、密钥环、签名 URL、脱敏（12 个文件）
 ├── config/         # 配置解析与生产门禁
 ├── auth/           # 认证、会话、登录限流
@@ -130,6 +130,7 @@ internal/
 ├── events/         # SSE 广播
 ├── identity/       # 标识生成
 ├── migrate/        # 迁移执行器
+├── version/        # 构建标识（由 ldflags 注入）
 └── domain/         # 领域类型与枚举（仅 models.go）
 ```
 
