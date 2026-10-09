@@ -396,6 +396,28 @@ docker compose -f deployments/compose/docker-compose.yml build
 `BUILD_NETWORK` 默认是 `default`，即 compose 原本的行为；**只有显式设置才会改变
 构建网络**。
 
+**Q：构建阶段取不到 proxy.golang.org 怎么办？**
+
+那是**取不到**而不是慢，换网络也没用（实测容器直连 `proxy.golang.org` 报 EOF，
+而 `goproxy.cn` 正常）。四个 Go 镜像都接受一个 `GOPROXY` 构建参数，默认不设置即
+沿用工具链自身的代理，只有你显式给出才会写入：
+
+```powershell
+$env:GOPROXY = "https://goproxy.cn,direct"   # 或写进 deployments/compose/.env
+docker compose -f deployments/compose/docker-compose.yml build
+```
+
+两条与它相关的实测结论，值得记住：
+
+- **官方 `golang` 镜像设了 `GOTOOLCHAIN=local`**，会让 `go.mod` 的 `toolchain`
+  指令在镜像构建里**静默失效**——本机 `govulncheck` 全绿，而真正部署的镜像仍用
+  镜像自带的补丁级构建、仍带着那个补丁级的标准库漏洞。四个 Go 镜像因此都设了
+  `ENV GOTOOLCHAIN=auto`，让 `go.mod` 成为唯一事实来源；代价是首次构建会下载
+  工具链（需要上面这个 `GOPROXY` 可用）。首次之后由构建缓存吸收。
+- `GOPROXY` 只影响构建取包，不影响运行时；`GOPRIVATE`/`GONOSUMDB` 一律不设，
+  校验（`go.sum` 与 sumdb）保持开启。若要改用其它镜像源，换成
+  `https://goproxy.cn,direct` 这类「镜像 + direct 兜底」的写法即可。
+
 **Q：registry 连元数据都频繁重置怎么办？**
 
 可以在宿主机预热 pnpm store 再灌进构建缓存，让镜像里的

@@ -83,6 +83,17 @@ scrape 配置、告警规则与时序存储由部署方提供。需要指标时�
 
 ---
 
+## 工具链要求
+
+**Go ≥ 1.27.2**。`go.mod` 里有 `toolchain go1.27.2`，本机版本低于它时 `go` 命令会
+自动下载对应工具链（受限网络下需 `GOPROXY=https://goproxy.cn,direct`）。
+
+为什么钉到**补丁级**：`govulncheck` 是 CI 的阻断式门禁，而 1.27.1 的标准库带有
+**11 个可达漏洞**（`net/http`、`net/http/internal/http2`、`net/textproto`、
+`crypto/tls`，以及 `html/template` 的两个上下文转义错判——打印就绪报告正是靠
+`html/template` 转义攻击者可控文本）。这些都在 1.27.2 修复。写进 `go.mod` 而不是
+只改 CI，是为了让每个开发者和 CI 解析到同一个下限。
+
 ## 怎么跑起来？
 
 ### 只想调 API 和前端（无需基础设施）
@@ -168,6 +179,7 @@ docker compose -f deployments/compose/docker-compose.yml up --build
 | `OTEL_EXPORTER_OTLP_ENDPOINT` 等 `OTEL_*` | Trace 导出，默认 no-op |
 | `BUILD_NETWORK` | 仅影响 `docker compose build` 的构建网络 |
 | `APP_VERSION`、`APP_COMMIT`、`APP_BUILD_TIME` | 构建时注入二进制的版本标识，由 `GET /api/v1/version` 与控制台「关于」显示；不设置时如实自称 `dev` |
+| `GOPROXY` | 仅影响 `docker compose build` 取 Go 依赖；默认沿用工具链自身的代理，取不到 `proxy.golang.org` 时设为 `https://goproxy.cn,direct`（见 `docs/operations.md`） |
 
 限速与告警投递的配额（不设置则用内置默认）：
 

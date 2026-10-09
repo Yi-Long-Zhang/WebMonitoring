@@ -57,6 +57,11 @@ jobs:
       # 报出 GO-2026-5004（pgx/v5 占位符混淆 SQL 注入），随后的安全提交把
       # pgx 升到 v5.11.0 并实测归零（govulncheck 退出码 0），因此不再需要
       # continue-on-error。
+      #
+      # 注意这不是一次性的：漏洞库每天更新，标准库的修复按「补丁版本」发布。
+      # 本步骤随后又因 1.27.1 的 11 个可达漏洞（含 html/template 的两个上下文
+      # 转义错判）再次变红，靠 go.mod 的 `toolchain go1.27.2` 与 x/net v0.60.0
+      # 修复。新增漏洞时先看这里，再决定是升依赖还是升工具链。
       - name: Vulnerability scan (govulncheck)
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
