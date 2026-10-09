@@ -1,4 +1,6 @@
-import { defineConfig } from "vite";
+// vitest/config re-exports Vite's defineConfig with the `test` key typed; the
+// bare one from "vite" would reject it.
+import { defineConfig } from "vitest/config";
 import vue from "@vitejs/plugin-vue";
 import Components from "unplugin-vue-components/vite";
 import { ElementPlusResolver } from "unplugin-vue-components/resolvers";
@@ -27,6 +29,17 @@ export default defineConfig({
     }),
   ],
   cacheDir: "../../.cache/vite-console",
+  // The console is a browser application, so its own tests need a DOM. Without
+  // this block every .vue test would have to opt in individually, and a test
+  // that mounts a page silently could not exist at all.
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.ts"],
+    // Element Plus is inlined rather than externalized. On-demand imports pull
+    // their own stylesheets, and an externalized dependency is loaded by Node
+    // as-is, where "Unknown file extension .css" is the end of the test run.
+    server: { deps: { inline: ["element-plus"] } },
+  },
   server: {
     port: 5173,
     proxy: {
