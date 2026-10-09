@@ -2465,6 +2465,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            404: components["responses"]["Error"];
         };
     };
     issueEvidenceSignedUrl: {
@@ -2564,6 +2565,8 @@ export interface operations {
                     "application/json": components["schemas"]["AlertChannel"];
                 };
             };
+            400: components["responses"]["Error"];
+            409: components["responses"]["Error"];
         };
     };
     updateAlertChannel: {
@@ -2592,6 +2595,8 @@ export interface operations {
                     "application/json": components["schemas"]["AlertChannel"];
                 };
             };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
         };
     };
     deleteAlertChannel: {
@@ -2614,6 +2619,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            404: components["responses"]["Error"];
         };
     };
     testAlertChannel: {

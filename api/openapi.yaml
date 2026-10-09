@@ -9,12 +9,22 @@ security:
   - sessionCookie: []
 paths:
   /healthz:
+    # Served at the root, not under the base path above: these are liveness,
+    # readiness and scrape endpoints, and the console reaches them without a
+    # session. Declared here so a client generated from this file calls the
+    # right URL.
+    servers: [{ url: / }]
     get:
       security: []
       operationId: health
       responses:
         "200": { description: 进程存活 }
   /readyz:
+    # Served at the root, not under the base path above: these are liveness,
+    # readiness and scrape endpoints, and the console reaches them without a
+    # session. Declared here so a client generated from this file calls the
+    # right URL.
+    servers: [{ url: / }]
     get:
       security: []
       operationId: readiness
@@ -22,6 +32,11 @@ paths:
         "200": { description: 依赖就绪 }
         "503": { description: 依赖未就绪 }
   /metrics:
+    # Served at the root, not under the base path above: these are liveness,
+    # readiness and scrape endpoints, and the console reaches them without a
+    # session. Declared here so a client generated from this file calls the
+    # right URL.
+    servers: [{ url: / }]
     get:
       security: []
       operationId: metrics
@@ -637,6 +652,7 @@ paths:
         - $ref: "#/components/parameters/ResourceID"
       responses:
         "200": { description: 证据文件 }
+        "404": { $ref: "#/components/responses/Error" }
   /evidence/{id}/signed-url:
     post:
       operationId: issueEvidenceSignedUrl
@@ -700,6 +716,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AlertChannel" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /alert-channels/{id}:
     put:
       operationId: updateAlertChannel
@@ -720,6 +738,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AlertChannel" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
     delete:
       operationId: deleteAlertChannel
       parameters:
@@ -731,6 +751,7 @@ paths:
       responses:
         "204":
           description: 已删除
+        "404": { $ref: "#/components/responses/Error" }
   /alert-channels/{id}/test:
     post:
       operationId: testAlertChannel
