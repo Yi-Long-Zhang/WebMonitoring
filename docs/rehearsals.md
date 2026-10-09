@@ -10,6 +10,94 @@
 
 ---
 
+## 阶段二 2.6 依赖升级与供应链实测 — 2026-10-10
+
+- **脚本**：`go get` + `go mod tidy`（`GOPROXY=https://goproxy.cn,direct`）、
+  `go vet`/`go test ./...`、`scripts/integration-test.ps1`、`corepack pnpm typecheck|lint|test|build`、
+  `compose-smoke.ps1`（两次）、以及在**仓库外的隔离目录**里对工具链做的最小复现实验。
+- **关键断言**：(1) driver/redis 类升级必须过**真实栈**，不只看单测；(2) 每个大版本单独提交、
+  单独过完整门禁；(3) **升不动的要取证**——不许写「大概不行」，要给出可复现的失败。
+
+### 1. 五个批次
+
+| 批次 | 提交 | 门禁 |
+| --- | --- | --- |
+| Go：redis v9.12.1→**v9.23.0**、minio-go v7.0.95→**v7.3.0**、cascadia v1.3.3→**v1.3.5**、OTel 全家 v1.46.0→**v1.47.0** | `d54e9d1` | vet + `go test ./...` **21 包** + 集成测试（真实 PG/Redis，**107.4s**，覆盖率与 2.1 记录一致）+ **compose-smoke 通过** |
+| Vite 7.1.3→**8.3.4**（Rolldown） | `0a68297` | typecheck/lint/test(85)/build + **compose-smoke 通过** |
+| Vitest 3.2.4→**5.0.3**（两个 workspace） | `80c25dc` | typecheck/lint/test/build |
+| vue-router 4.5.1→**5.4.0** | `d5308bf` | typecheck/lint/test(85)/build + **compose-smoke 通过** |
+| TypeScript 5.9.2→**6.0.3** + vue-tsc 3.0.6→**3.3.12** | `f798def` | typecheck（两个 workspace）/lint/test/build |
+
+pgx v5.11.0、x/crypto v0.57.0、x/net v0.60.0 已由 0.8 与 2.0 升到最新，本次无变化；
+升级后 `go list -m -u all` 的**直接**依赖已无待升项。
+
+### 2. 三个实测发现（都是这次升级才暴露的）
+
+**(a) Vitest 5 的默认 exclude 不再覆盖 `dist/`。** `apps/browser-worker` 没有 vitest 配置、
+一直吃默认值，而它的 `tsc` 构建会把测试源码也编译进 `dist/test/`。升级后实测
+**4 个文件 / 16 个测试**——每条跑两遍：一遍对源码、一遍对**编译后的陈旧副本**。两个后果
+都很安静：本地与 CI 会跑不同集合（CI 在 build 前跑 test，那时 `dist/` 不存在），且陈旧副本
+能掩盖源码里已修好的失败。修法是显式写 `include: ["test/**/*.test.ts"]`（`80c25dc`），
+修好后回到 **2 个文件 / 8 个测试**。console 侧无此问题（vite 构建不产出测试文件，已核实）。
+
+**(b) Vite 8 是硬失败，不是警告。** 构建直接停在
+`manualChunks is not a function`——对象形式被移除、`rollupOptions` 更名为 `rolldownOptions`。
+迁移到 `rolldownOptions.output.codeSplitting.groups`（写法取自**本地安装的 rolldown 类型
+定义**：`codeSplitting` 是现行 API，`advancedChunks` 在 1.2.13 里也已标 deprecated；
+文档站在本机网络下抓不到，类型定义才是可核实的一手来源）。正则锚定包目录，所以
+`vue-router` 不会被扫进 vendor chunk（旧配置也没算它）。
+
+首屏字节（同 2.3 口径：浏览器实下载、无压缩）**全面略降**——压缩器换成 Oxc、CSS 换成
+Lightning CSS：
+
+| 入口 | vite 7 | vite 8 | |
+| --- | --- | --- | --- |
+| `#/login` | 355,844 B | 346,345 B | −2.7% |
+| `#/assets` | 804,562 B | 794,750 B | −1.2% |
+| `#/incidents` | 929,180 B | 918,979 B | −1.1% |
+| `#/overview` | 1,937,336 B | 1,917,659 B | −1.0% |
+
+产物里出现的 `css-*.js` 是 Element Plus 按需样式入口（模块本身就名为 `css`）被 Rolldown
+归成的 chunk，不是把 CSS 打成了 JS——`css-*.css` 仍在。
+
+**(c) TypeScript 7 被工具链双重阻塞，落点是 6.0.3。** 两步取证：
+
+1. TS 7 是 Go 原生编译器，**不再提供程序化 Compiler API**；本仓库的 `typecheck` 就是
+   `vue-tsc --noEmit`，而最新的 vue-tsc（3.3.12，无 4.x）依赖 `@volar/typescript`，即那套
+   API。隔离目录实测（`typescript@7.0.2` + `vue-tsc@3.3.12` + 一个最小 `.vue`）：
+   `Error [ERR_PACKAGE_PATH_NOT_EXPORTED]: Package subpath './lib/tsc' is not defined by
+   "exports"`（`vue-tsc/index.js:73`）——**连启动都不行**。同目录 `typescript@6.0.3` 下
+   `vue-tsc --noEmit` 退出码 0。
+2. `typescript-eslint@8.71.1` 的 peer 是 `>=4.8.4 <6.1.0`，**TS 7 也会被 lint 拒**。
+
+6.0.3 是官方指定的过渡版（报出 7 将移除的弃用项），两条工具链都接受。本仓库 tsconfig 早已
+6/7 就绪（显式 `types`、`NodeNext`/`Bundler`、`ES2022`、`strict`、无 import assertions），
+因此**零代码改动**。
+
+**一条要写下来的非问题**：`openapi-typescript@7.13.0` 的 peer 是 `typescript ^5.x`，pnpm 报
+unmet peer。实测不受影响：TS 6 下 `generate:api` 产出的 `api.d.ts` 与提交版本**逐字节一致**
+（`git cat-file blob HEAD:… | diff` 无差异），CI 门禁 `git diff --exit-code` 退出码 0。
+不必为此把 TS 降回去。
+
+### 3. 刻意没做的
+
+- **playwright 1.63.0 → 1.64.0**：它与 browser-worker 的镜像标签
+  `mcr.microsoft.com/playwright:v1.63.0-noble` 耦合，升级要连 Dockerfile 一起改，属于独立
+  一项（否则会出现「包是 1.64、浏览器是 1.63」的静默错配）。
+- **其余 patch/minor**（element-plus 2.14.7、vue 3.5.43、eslint 10.12、@tanstack/vue-query
+  5.104 等）：交给既有的 dependabot 月度批次——`.github/dependabot.yml` 的注释就写着这是
+  既定节奏，手工再升一遍是重复劳动。
+
+### 未覆盖
+
+- CI 里的这些 job（backend/node/compose-smoke/drill）仍未在 GitHub 上验证，本节的结论全部
+  来自本机（Windows + Docker Desktop）。
+- 安装过程中本机直连 registry 不稳（`@vue-macros/common` 元数据取不到，`ERR_PNPM_META_FETCH_FAIL`），
+  改走本机代理后成功；这不是仓库问题，但下一个遇到同类失败的人应先怀疑网络再怀疑版本。
+- TS 7 何时可升取决于 vue-tsc 与 typescript-eslint 何时支持原生编译器，见 `docs/roadmap.md`。
+
+---
+
 ## 2.3 与 2.4 合并进 main 及合并后整体回归 — 2026-10-09
 
 - **脚本**：`git merge --no-ff`（两次）、合并后门禁（gofmt/vet/`go test ./...`、
