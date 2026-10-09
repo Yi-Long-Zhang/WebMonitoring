@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import type { User } from "../types/domain";
+import TableSkeleton from "../components/system/TableSkeleton.vue";
 // Read-only in the sense that it does no IO: every write goes back out through
 // the layout, which owns the actions and the reload. That is what keeps the
 // store the only thing that touches the API.
-const props = defineProps<{ users: User[]; canAdmin: boolean; selfUserId: string }>();
+const props = defineProps<{ users: User[]; canAdmin: boolean; selfUserId: string; firstLoad?: boolean }>();
 const emit = defineEmits<{
   create: [];
   edit: [user: User];
@@ -35,7 +36,8 @@ function formatTime(value: string) { return new Date(value).toLocaleString("zh-C
       <el-button v-if="canAdmin" type="primary" @click="emit('create')">新增用户</el-button>
     </div>
     <section class="panel">
-      <el-table :data="users" empty-text="暂无用户">
+      <TableSkeleton v-if="firstLoad && !users.length" />
+      <el-table v-else :data="users" empty-text="暂无用户">
         <el-table-column label="用户名" min-width="180"><template #default="{ row }"><strong>{{ row.username }}</strong><small v-if="isSelf(row)" class="table-sub">当前账号</small></template></el-table-column>
         <el-table-column label="角色" width="140"><template #default="{ row }: { row: User }">{{ ROLE_LABELS[row.role] || row.role }}</template></el-table-column>
         <el-table-column label="状态" width="120"><template #default="{ row }: { row: User }"><el-tag :type="row.disabled ? 'info' : 'success'" effect="plain">{{ row.disabled ? "已停用" : "已启用" }}</el-tag></template></el-table-column>

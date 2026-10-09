@@ -173,6 +173,38 @@ describe("console store pagination", () => {
     expect(store.audits.map((event) => event.id)).toEqual(["f1"]);
   });
 
+  // The views show a skeleton only for the first load. `loading` cannot answer
+  // that on its own: it is true on every refresh, including the ones the event
+  // stream triggers, and a table that turns back into a skeleton every few
+  // seconds is worse than one that never did.
+  it("reports a first load only until the first refresh succeeds", async () => {
+    const store = useConsoleStore();
+    expect(store.firstLoad).toBe(false);
+
+    const pending = store.refresh();
+    expect(store.firstLoad).toBe(true);
+
+    await pending;
+    expect(store.firstLoad).toBe(false);
+
+    const again = store.refresh();
+    expect(store.firstLoad).toBe(false);
+    await again;
+  });
+
+  it("does not claim a first load after a failed first refresh", async () => {
+    const store = useConsoleStore();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ code: "STORAGE_UNAVAILABLE", message: "boom" }), { status: 500, headers: { "content-type": "application/json" } })),
+    );
+
+    await expect(store.refresh()).rejects.toThrow("boom");
+    // A skeleton left running after a failure says "still coming" forever; the
+    // empty state plus the shell's error toast says what happened.
+    expect(store.firstLoad).toBe(false);
+  });
+
   it("clears the loading flag when a refresh fails", async () => {
     const store = useConsoleStore();
     vi.stubGlobal(

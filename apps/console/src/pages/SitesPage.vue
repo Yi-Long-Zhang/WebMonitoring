@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import ListFooter from "../components/monitoring/ListFooter.vue";
+import TableSkeleton from "../components/system/TableSkeleton.vue";
 import type { Site } from "../types/domain";
 
-defineProps<{ sites: Site[]; canAdmin: boolean; hasMore: boolean; loadingMore: boolean }>();
+defineProps<{ sites: Site[]; canAdmin: boolean; hasMore: boolean; loadingMore: boolean; firstLoad?: boolean }>();
 const emit = defineEmits<{
   create: [];
   edit: [site: Site];
@@ -19,7 +20,8 @@ function formatTime(value: string) { return new Date(value).toLocaleString("zh-C
       <el-button v-if="canAdmin" type="primary" @click="emit('create')">新增站点</el-button>
     </div>
     <section class="panel">
-      <el-table :data="sites" empty-text="尚未创建站点">
+      <TableSkeleton v-if="firstLoad && !sites.length" />
+      <el-table v-else :data="sites" empty-text="尚未创建站点">
         <el-table-column prop="name" label="站点名称" min-width="180" />
         <el-table-column prop="domain" label="域名" min-width="240" />
         <el-table-column label="创建时间" width="180"><template #default="{ row }">{{ formatTime(row.createdAt) }}</template></el-table-column>

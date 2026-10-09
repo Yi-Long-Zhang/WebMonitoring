@@ -2,11 +2,12 @@
 import { computed, onUnmounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import ListFooter from "../components/monitoring/ListFooter.vue";
+import TableSkeleton from "../components/system/TableSkeleton.vue";
 import { issueEvidenceSignedUrl } from "../services/api/client";
 import { formatRemaining, secondsRemaining } from "../features/monitoring/signedUrl";
 import type { Asset, Evidence } from "../types/domain";
 
-const props = defineProps<{ evidence: Evidence[]; assets: Asset[]; assetMap: Map<string, Asset>; canOperate: boolean; hasMore: boolean; loadingMore: boolean }>();
+const props = defineProps<{ evidence: Evidence[]; assets: Asset[]; assetMap: Map<string, Asset>; canOperate: boolean; hasMore: boolean; loadingMore: boolean; firstLoad?: boolean }>();
 const emit = defineEmits<{ loadMore: [] }>();
 const selectedAsset = ref("");
 const visibleEvidence = computed(() => selectedAsset.value ? props.evidence.filter((item) => item.assetId === selectedAsset.value) : props.evidence);
@@ -87,7 +88,8 @@ const remaining = computed(() => formatRemaining(secondsRemaining(issuedExpiresA
       </div>
     </section>
     <section class="panel">
-      <el-table :data="visibleEvidence" empty-text="暂无检测证据">
+      <TableSkeleton v-if="firstLoad && !visibleEvidence.length" />
+      <el-table v-else :data="visibleEvidence" empty-text="暂无检测证据">
         <el-table-column label="资产" min-width="180"><template #default="{ row }">{{ assetMap.get(row.assetId)?.name || row.assetId }}</template></el-table-column>
         <el-table-column prop="kind" label="证据类型" width="150" />
         <el-table-column prop="mediaType" label="媒体类型" min-width="170" />

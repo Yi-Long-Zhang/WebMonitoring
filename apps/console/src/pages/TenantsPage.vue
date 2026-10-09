@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import ListFooter from "../components/monitoring/ListFooter.vue";
+import TableSkeleton from "../components/system/TableSkeleton.vue";
 import type { Tenant } from "../types/domain";
 
-const props = defineProps<{ tenants: Tenant[]; selfTenantId: string; defaultTenantId: string; canDelete: boolean; hasMore: boolean; loadingMore: boolean }>();
+const props = defineProps<{ tenants: Tenant[]; selfTenantId: string; defaultTenantId: string; canDelete: boolean; hasMore: boolean; loadingMore: boolean; firstLoad?: boolean }>();
 const emit = defineEmits<{
   create: [];
   edit: [tenant: Tenant];
@@ -31,7 +32,8 @@ function formatTime(value: string) { return new Date(value).toLocaleString("zh-C
       <el-button type="primary" @click="emit('create')">新增租户</el-button>
     </div>
     <section class="panel">
-      <el-table :data="tenants" empty-text="暂无租户">
+      <TableSkeleton v-if="firstLoad && !tenants.length" />
+      <el-table v-else :data="tenants" empty-text="暂无租户">
         <el-table-column prop="name" label="租户名称" min-width="180" />
         <el-table-column prop="slug" label="租户标识" min-width="180" />
         <el-table-column label="状态" width="150"><template #default="{ row }"><el-switch :model-value="!row.disabled" :disabled="isSelf(row)" @change="emit('toggle', row, !row.disabled)" /><small v-if="isSelf(row)" class="table-sub">当前租户</small></template></el-table-column>

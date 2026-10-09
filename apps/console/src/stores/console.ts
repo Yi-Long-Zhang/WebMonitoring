@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import type { Ref } from "vue";
 import {
   getAlertChannels,
@@ -123,6 +123,13 @@ export const useConsoleStore = defineStore("console", () => {
   const users = ref<User[]>([]);
   const reportSummary = ref<ReportSummary>();
   const loading = ref(false);
+  // Set once the first refresh has succeeded. The views show a skeleton for as
+  // long as this is false and a refresh is running, and never again: `loading`
+  // alone is true on every refresh, including the ones the event stream
+  // triggers, and replacing a populated table with a skeleton every few seconds
+  // is worse than showing nothing.
+  const loaded = ref(false);
+  const firstLoad = computed(() => loading.value && !loaded.value);
 
   async function refresh() {
     loading.value = true;
@@ -140,6 +147,10 @@ export const useConsoleStore = defineStore("console", () => {
         baselines.loadFirst(), incidents.loadFirst(), jobs.loadFirst(),
         evidence.loadFirst(), alertDeliveries.loadFirst(), audits.loadFirst(),
       ]);
+      // Only on success: a failed first load must fall through to the views'
+      // empty states, which the shell's error toast explains. A skeleton left
+      // running after a failure would say "still coming" forever.
+      loaded.value = true;
     } finally {
       loading.value = false;
     }
@@ -225,6 +236,7 @@ export const useConsoleStore = defineStore("console", () => {
     audits: audits.items,
     reportSummary,
     loading,
+    firstLoad,
     refresh,
     loadTenants,
     loadUsers,

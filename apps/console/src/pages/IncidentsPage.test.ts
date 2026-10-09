@@ -52,6 +52,7 @@ const baseProps = {
   onComment: vi.fn(async () => {}),
   hasMore: false,
   loadingMore: false,
+  firstLoad: false,
 };
 
 function render(props: Partial<typeof baseProps> = {}) {
@@ -68,6 +69,13 @@ describe("IncidentsPage", () => {
 
     expect(wrapper.text()).toContain("暂无安全事件");
     expect(wrapper.findAll(".el-table__row")).toHaveLength(0);
+  });
+
+  it("shows a skeleton rather than the empty state while the first load is in flight", () => {
+    const wrapper = render({ firstLoad: true });
+
+    expect(wrapper.find(".table-skeleton").exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("暂无安全事件");
   });
 
   it("renders the incident with its asset url, severity and count", () => {

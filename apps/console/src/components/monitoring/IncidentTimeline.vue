@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import EmptyState from "../../components/system/EmptyState.vue";
 import { ref, watch } from "vue";
 import { getIncidentTimeline } from "../../services/api/client";
 import type { IncidentEvent } from "../../types/domain";
@@ -111,7 +112,7 @@ function backfilledNote(event: IncidentEvent) {
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon>
         <template #default><el-button link type="primary" @click="load">重试</el-button></template>
       </el-alert>
-      <el-empty v-else-if="!events.length" description="暂无时间线记录" :image-size="54" />
+      <EmptyState v-else-if="!events.length" description="暂无时间线记录" />
       <el-timeline v-else>
         <el-timeline-item
           v-for="event in events"

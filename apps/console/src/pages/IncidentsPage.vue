@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import EmptyState from "../components/system/EmptyState.vue";
 import { computed, ref } from "vue";
 import IncidentTimeline from "../components/monitoring/IncidentTimeline.vue";
 import ListFooter from "../components/monitoring/ListFooter.vue";
+import TableSkeleton from "../components/system/TableSkeleton.vue";
 import type { IncidentFilterParams } from "../services/api/client";
 import type { AlertDelivery, Asset, Evidence, Incident, User } from "../types/domain";
 
@@ -24,6 +26,8 @@ type Props = {
   onComment: (incident: Incident, note: string) => Promise<void>;
   hasMore: boolean;
   loadingMore: boolean;
+  // True only while the first load of the list is in flight; see the store.
+  firstLoad?: boolean;
 };
 
 const props = defineProps<Props>();
@@ -172,7 +176,8 @@ async function submitComment() {
         <el-button size="small" type="danger" plain @click="batch('FALSE_POSITIVE')">批量误报</el-button>
         <el-button size="small" plain @click="batch('CLOSED')">批量关闭</el-button>
       </div>
-      <el-table :data="incidents" empty-text="暂无安全事件" row-key="id" @selection-change="onSelectionChange" @row-click="openIncident">
+      <TableSkeleton v-if="firstLoad && !incidents.length" />
+      <el-table v-else :data="incidents" empty-text="暂无安全事件" row-key="id" @selection-change="onSelectionChange" @row-click="openIncident">
         <el-table-column v-if="canOperate" type="selection" width="42" reserve-selection />
         <el-table-column label="风险" width="105"><template #default="{ row }"><el-tag :type="statusType(row.severity)" effect="dark">{{ row.severity }}</el-tag></template></el-table-column>
         <el-table-column label="事件" min-width="290"><template #default="{ row }"><strong>{{ row.title }}</strong><small class="table-sub">{{ assetMap.get(row.assetId)?.url }}</small></template></el-table-column>
@@ -211,7 +216,7 @@ async function submitComment() {
         </el-descriptions>
 
         <h3 class="detail-heading">当前检测信号</h3>
-        <el-empty v-if="!selected.signals?.length" description="没有关联信号" :image-size="54" />
+        <EmptyState v-if="!selected.signals?.length" description="没有关联信号" />
         <div v-for="signal in selected.signals" :key="signal.id" class="signal-row">
           <div><el-tag size="small" :type="statusType(signal.severity)" effect="plain">{{ signal.severity }}</el-tag><strong>{{ signal.kind }}</strong></div>
           <p>{{ signal.summary }}</p>
@@ -219,14 +224,14 @@ async function submitComment() {
         </div>
 
         <h3 class="detail-heading">证据</h3>
-        <el-empty v-if="!detailEvidence.length" description="没有可用证据" :image-size="54" />
+        <EmptyState v-if="!detailEvidence.length" description="没有可用证据" />
         <div v-for="item in detailEvidence" :key="item.id" class="evidence-row">
           <span><strong>{{ item.kind }}</strong><small>{{ item.mediaType }} · {{ Math.ceil(item.size / 1024) }} KB · {{ formatTime(item.createdAt) }}</small></span>
           <a class="evidence-link no-margin" :href="`/api/v1/evidence/${item.id}/download`">下载</a>
         </div>
 
         <h3 class="detail-heading">告警投递</h3>
-        <el-empty v-if="!detailDeliveries.length" description="尚未产生投递记录" :image-size="54" />
+        <EmptyState v-if="!detailDeliveries.length" description="尚未产生投递记录" />
         <div v-for="delivery in detailDeliveries" :key="delivery.id" class="evidence-row">
           <span><strong>{{ delivery.status }}</strong><small>{{ delivery.attempts }} 次尝试 · {{ formatTime(delivery.updatedAt) }}</small></span>
           <span class="muted">{{ delivery.lastError || "-" }}</span>

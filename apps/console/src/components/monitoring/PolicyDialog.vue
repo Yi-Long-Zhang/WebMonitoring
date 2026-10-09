@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import EmptyState from "../system/EmptyState.vue";
 import { ref, watch } from "vue";
 import type { Asset, Policy } from "../../types/domain";
 
@@ -166,7 +167,7 @@ function submit() {
         </el-form-item>
       </div>
     </el-form>
-    <el-empty v-else description="未找到策略" />
+    <EmptyState v-else description="未找到策略" />
     <template #footer>
       <el-button @click="emit('update:modelValue', false)">取消</el-button>
       <el-button type="primary" :disabled="!policy" @click="submit">保存策略</el-button>

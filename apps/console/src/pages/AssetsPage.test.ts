@@ -35,6 +35,7 @@ const baseProps = {
   canAdmin: true,
   hasMore: false,
   loadingMore: false,
+  firstLoad: false,
 };
 
 function render(props: Partial<typeof baseProps> = {}) {
@@ -47,6 +48,23 @@ describe("AssetsPage", () => {
 
     expect(wrapper.text()).toContain("尚未登记监测资产");
     expect(wrapper.findAll(".el-table__row")).toHaveLength(0);
+  });
+
+  // The empty state and the not-loaded-yet state are identical on screen and
+  // mean opposite things: one says "you have no assets", the other says "wait".
+  it("shows a skeleton rather than the empty state while the first load is in flight", () => {
+    const wrapper = render({ firstLoad: true });
+
+    expect(wrapper.find(".table-skeleton").exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("尚未登记监测资产");
+    expect(wrapper.find(".el-table").exists()).toBe(false);
+  });
+
+  it("drops the skeleton once rows are there, even mid-refresh", () => {
+    const wrapper = render({ firstLoad: true, assets: [asset()] });
+
+    expect(wrapper.find(".table-skeleton").exists()).toBe(false);
+    expect(wrapper.text()).toContain("官网首页");
   });
 
   it("renders a row per asset with its verification state and type", () => {
