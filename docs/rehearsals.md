@@ -10,6 +10,68 @@
 
 ---
 
+## 阶段二 2.2 测试与 lint 门禁实测 — 2026-10-09
+
+- **脚本**：golangci-lint v2.14.0 本地实跑、`govulncheck`、全量测试（含真实
+  Postgres/Redis）、`compose-smoke.ps1`、`multi-replica-drill.ps1`。
+- **关键断言**：(1) lint 门禁必须**真的在检查**；(2) 补了断言的并发测试在注入故障
+  时必须红；(3) 门禁不得有看不见的部分。
+
+### 1. lint 门禁此前是坏的，不是弱的
+
+CI 钉的 golangci-lint **v1.64.8 读不懂 go1.27 的导出数据**
+（`cannot decode "cmp", export data version 5 is greater than maximum supported
+version 2`），以 **Running error 退出码 3** 收场——**它什么都没检查过**。换成
+v2.14.0（`go install` 而非 action，版本显式）后一次报出 **71 条真实问题**，清理后
+**0 issues、退出码 0**。`.golangci.yml` 已迁移到 v2 格式。
+
+**第二个陷阱**：golangci-lint **默认每个 linter 只报 50 条**。先看到的「50 条
+errcheck」是上限而非全量，按它清理只放出了被截断的下一批——真实的 `_ =` 约 **108**
+处。已在配置里关掉 `max-issues-per-linter` 与 `max-same-issues`。
+
+### 2. check-blank 关闭（**与计划不同，实测后的判断**）
+
+计划原本要开。开启后逐处审查约 108 个 `_ =`，**没有一处是真缺陷**：全是惯例写法
+（关流、向已断开的客户端写、编码已知结构）与测试夹具。全注解是近百条噪音，按正则
+整类排除等于门禁重新变成摆设。唯一值得警惕的两处（`strconv.ParseBool` 解析失败
+静默回落，会让 `SESSION_SECURE` 之类悄悄变 false）在源码处标了 nolint 并写明它在
+收尾项里。理由与测量结论写进了 `.golangci.yml`。
+
+### 3. 修掉的 16 条
+
+两处 negated 复合条件改成肯定谓词 `isHexDigit`/`isSlugChar`（过 QF1001 且更好读）、
+四条以省略号结尾的错误信息改写（**同步了两处断言旧文案的测试**）、删除死代码
+`appendUnique`；8 条 gosec 经核对为误报（会话 Cookie 的 Secure 取自配置且生产门禁
+强制、证据路径由服务端 UUID 拼成、`template.CSS` 包的是编译期常量样式表）就地标注。
+
+### 4. -race、覆盖率与那条零断言的测试
+
+- CI 的 `go test ./...` 改为 `-race -count=1 -covermode=atomic -coverprofile`；
+  新增覆盖率步骤打印真实数字、低于 55% 失败（**实测带服务容器 60.3%**，留了余量）。
+- **本机跑不了 `-race`**（无 gcc、CGO_ENABLED=0），以 CI 为准，未写成已本地验证。
+- `TestConcurrentPublishAndSubscribe` 此前是 4+4 goroutine 加一个 `time.Sleep`、
+  **零断言**。补上三项：订阅者收到帧的计数（阻塞式读取，不赌运气）、风暴后订阅表
+  必须为空、风暴后再发一条必须仍能送达。**注入故障验证过它会红**（把泄漏断言反转
+  → FAIL；还原 → PASS）。
+
+### 5. drill 门禁本身的缺陷（顺带修掉）
+
+drill 五次里两次随机报 **0/40**，两次 wall clock 都恰好落在它自己的 240 秒上限上
+（243.2s / 244.1s）。诊断显示它要验的东西两次都成立（40 个任务、0 重复），单个任务
+只要毫秒级（排队 7.2s、执行 0.1s、零重试）；同一份代码的 wall clock 在 25.6s 到
+244.1s 之间摆动。循环一满足条件即退出，所以超时是**上限而非时长**——放宽到 900 秒
+不会拖慢通过路径，也不削弱它验的不变量。**根因未查清**：延迟出现在任务被创建之前
+（调度器排队阶段），而调度器启动即 `scheduleAll`、无每轮上限，因此「为什么偶尔要
+三分钟」仍无定论；若再观察到接近 900s 的排空，应按真故障处理。
+
+- **合并前整体回归**（`codex/test-gates` @ `4b9d886`）：`compose-smoke.ps1` **通过**
+  （退出码 0）；`multi-replica-drill.ps1` **通过**（40/40、0 重复、105.3s）——修复前
+  同一命令报 0/40。
+- **未覆盖**：`-race` 与覆盖率步骤、golangci-lint v2 的 CI 步骤本身（本地无 C 工具链、
+  CI 未跑）；`check-blank` 决定与计划不同，已在配置与本节写明依据。
+
+---
+
 ## 阶段二 2.1 本地集成测试入口实测 — 2026-10-09
 
 - **脚本**：`scripts/integration-test.ps1`（`make test-integration`）。
