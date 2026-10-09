@@ -10,6 +10,70 @@
 
 ---
 
+## 2.3 与 2.4 合并进 main 及合并后整体回归 — 2026-10-09
+
+- **脚本**：`git merge --no-ff`（两次）、合并后门禁（gofmt/vet/`go test ./...`、
+  `pnpm typecheck|lint|test|build`）、`.\scripts\compose-smoke.ps1`、
+  `.\scripts\multi-replica-drill.ps1`（本机需先设 `GOPROXY=https://goproxy.cn,direct`
+  才能建 Go 镜像）。
+- **关键断言**：(1) 合并只在总账顶部冲突，且两节都要保留；(2) 合并后**适用门禁必须
+  重跑**；(3) 整体回归（smoke + drill）通过之后，才把这次合并称为已验证。
+
+### 1. 合并
+
+- `codex/frontend-quality`（2.3，8 提交）→ merge `27fe872`；`codex/openapi-drift-gate`
+  （2.4，3 提交）→ merge `c59e0bf`。两次都用 `--no-ff` 保留分支边界。
+- 唯一冲突：`docs/rehearsals.md` 顶部——总账是 append-only、最新在最前的追加式记录，
+  两条分支都把各自小节插在「阶段二 2.2」之前。解法：两节都保留，**2.4 放在 2.3 上面**
+  （同日，2.4 后跑）。`docs/engineering.md` 自动合并成功。
+- 合并后 `git merge-base --is-ancestor <branch> main` 两条都为真。
+
+### 2. 合并后的门禁（全部在合并后的 main 上）
+
+- `gofmt`：对**索引/提交里的 LF 副本**校验通过（工作区是 CRLF，见第 4 节）。
+- `go vet ./...` 无输出；`go test ./...` **21 个包全部 ok**。
+- 前端：`typecheck`、`lint` 通过；`pnpm test` 为 **console 85 + browser-worker 8**
+  （2.3 把 console 从 47 抬到 85，合并后生效）；`pnpm build` 通过。
+
+### 3. 整体回归：smoke 先红、定位、修好、再绿
+
+- **第一次 `compose-smoke.ps1` 失败**（退出码 1）：`console-smoke.mjs:39` 的侧边栏视图
+  巡检，点「资产中心」后断言 `main` 含 `REGISTERED TARGETS` 失败。
+- **根因（实测，不是推断）**：`assertPageHasContent` 是「等到 `main` 出现 → **读一次**
+  → 断言包含」，而 2.3 把视图改成按需加载后，外壳先出现、视图 chunk 后到，这一次读取
+  就落在上一个视图上。真实栈 + Playwright 直连五个视图实测：**三个视图「立刻读」读不到，
+  但随后都渲染出来了**（`settledHit` 全为 true）——所以不是视图坏了，是断言与 chunk 赛跑。
+  这也解释了为什么它在 2.3 分支上两次通过：当时 chunk 已热。
+- **修法**：`assertPageHasContent` 改为等待文本出现（`locator("main", { hasText })` +
+  `waitFor` 15 秒），失败时打印当时屏幕上真实的文本片段。12 处调用共用它，一处修复覆盖
+  全部（含深链巡检 `#/jobs`、`#/evidence` 那一组）。改动只在 E2E 脚本，无生产代码变化。
+  分支 `codex/e2e-view-race`（`1d611bb`）→ merge `dcdf8e7`。
+- **重跑 compose-smoke：通过**（退出码 0，末行「Compose smoke test passed」，含控制台
+  Playwright E2E 全部步骤与安全边界断言）。
+- **`multi-replica-drill.ps1`：通过**——40 资产 / 40 任务 / **0 重复分组** / 40 成功 /
+  3 个 worker 消费者。
+  - wall clock **234.5s**。这是同一脚本**第三次**落在 240s 附近（2.2 记过 243.2s 与
+    244.1s），说明「延迟出现在任务创建前的调度器排队阶段、根因未查清」那条是可复现的，
+    不是一次性抖动；当前 900s 预算内仍然通过。
+
+### 4. 一条查证过程中的坑（值得记住）
+
+核对「提交进去的 Go 文件是 LF 还是 CRLF」时，`git show HEAD:<path> | grep -c $'\r'`
+数出了大量 CR（看起来像**整个仓库以 CRLF 入库、CI 的 gofmt 门禁一直在红**）。这是**错的**：
+Git for Windows 的 `git show <rev>:<path>` 会按 `core.autocrlf` 做工作区式转换。
+权威口径是 `git ls-files --eol`（本例四类文件全是 **`i/lf` `w/crlf`**）与
+`git cat-file blob`（原始字节是 `\n`）。**仓库里存的是 LF，CI 在 Linux 上看到的是 LF，
+gofmt 门禁正常。** 本地 `gofmt -l` 报 CRLF 纯属工作区状况——要贴 CI 口径，就对
+`git cat-file blob :<path>` 出来的 LF 副本跑 gofmt。
+
+### 未覆盖
+
+- 两个演练都是**本机**跑（Windows + Docker Desktop）；CI 里的 `compose-smoke` 与
+  `multi-replica-drill` 两个 job 仍未在 GitHub 上验证过（既有的缺口，非本次引入）。
+- drill 超过 900s 预算的排空行为没有构造过（只有「接近 240s」这一档被反复观察到）。
+
+---
+
 ## 阶段二 2.4 openapi ↔ 路由漂移门禁实测 — 2026-10-09
 
 - **脚本**：`go test ./internal/api/ -run TestRoutesMatchOpenAPIContract`（新增门禁）；
