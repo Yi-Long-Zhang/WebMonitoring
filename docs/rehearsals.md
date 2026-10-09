@@ -65,7 +65,8 @@
 
 ### 4. 与计划不同的地方（都是实测后的判断）
 
-1. **计划称「`App.vue` 的 `restore()` 无 try/catch」——实际有**（`stores/session.ts`）。
+1. **计划称「`App.vue` 的 `onMounted` 里 `restore()` 无 try/catch」——实际有**
+   （`stores/session.ts:19`）。
    真实缺口是失败后没有任何提示：401（未登录，正常）与「API 不可达」被压成同一个
    `false`。修法是让 `request()` 抛带 status 的 `HttpError`，只对 401 保持静默。
 2. **`manualChunks` 里的 `element-plus` 条目会抵消按需引入**：它把整包强制塞进一个
@@ -100,11 +101,27 @@
    打开、表单静默保留默认值；而默认 `timeoutSeconds` 恰好等于 compose smoke 种子的
    30，E2E 因此一直绿。改后边界把同一个异常放大成整页错误，才暴露出来。
 
-处置：前端把 null 当空数组读（并在注释里写明服务端行为），边界按 `info` 分流（见
-第 2 节）。**服务端那两行未修**——它仍会按契约外的方式返回 null，只是前端不再被它
-击穿。实测确认修复有效：真实栈 + 重建镜像后对话框正常出现，且表单读到
-`maxResponseBytes = 1048576`（种子值；组件默认是 5242880），证明策略确实加载，
-而不是回落到默认值。
+处置（两侧都修）：
+
+- **前端**：把 null 当空数组读（并在注释里写明服务端行为），边界按 `info` 分流
+  （见第 2 节）。前端这一侧保留——接口现在按契约说话了，但前端不该依赖「另一个
+  服务永远不会犯错」。
+- **服务端**：`updatePolicy` 改 `append([]string{}, …)`，缺陷不再被制造；
+  `redactPolicy` 把 nil 规整成空数组。后者是**所有**策略响应（列表与更新）的唯一
+  出口，因此历史行——存进 jsonb 的 JSON 里就写着 null 的那些——一并修正，**不需要
+  数据迁移**。
+
+实测确认：
+
+- 真实栈 + 重建镜像后对话框正常出现，且表单读到 `maxResponseBytes = 1048576`
+  （种子值；组件默认是 5242880），证明策略确实加载，而不是回落到默认值。
+- Go 测试：两个字段按 `json.RawMessage` 断言（把 null 与 `[]` 都解成 `[]string`
+  得到同一个空切片，差别正是击穿 console 的那一点）。把修复整体还原验证过：两个
+  用例都红，输出是 `ignoreSelectors is null, want []`；恢复后通过。
+- **历史行的真机取证**（真实 Postgres 栈，非构造数据）：修复前写入的那一行
+  （`15c705ea-…`，`updated_at` 09:01）库里仍是
+  `jsonb_typeof(config->'ignoreSelectors') = null`，而修复后的 API 对**同一行**返回
+  `"ignoreSelectors":[],"trustedDomains":[]`——响应侧归一化对存量数据同样成立。
 
 ### 6. jsdom 的边界（测试覆盖到哪、没到哪）
 
@@ -118,15 +135,15 @@
 
 ### 7. 整栈回归
 
-- `.\scripts\compose-smoke.ps1`：**通过**（退出码 0，末行「Compose smoke test
-  passed」，含控制台 Playwright E2E）。第一次运行失败于 **Go 镜像构建**：
-  `proxy.golang.org` 在本机网络下不可达（`connection refused`），与本项改动无关；
-  按 `operations.md` 既有做法设 `GOPROXY=https://goproxy.cn,direct` 后通过。
-  控制台镜像的 `pnpm install --frozen-lockfile` 两次都正常（313 个包）。
+- `.\scripts\compose-smoke.ps1`：**两次通过**（退出码 0，末行「Compose smoke test
+  passed」，含控制台 Playwright E2E）——一次是本项前端改动，一次是加上服务端
+  契约修复之后。第一次运行失败于 **Go 镜像构建**：`proxy.golang.org` 在本机网络下
+  不可达（`connection refused`），与本项改动无关；按 `operations.md` 既有做法设
+  `GOPROXY=https://goproxy.cn,direct` 后通过。控制台镜像的
+  `pnpm install --frozen-lockfile` 每次都正常（313 个包）。
 
 ### 未覆盖
 
-- **服务端那两行没有修**（见第 5 节），因此接口仍会在空列表时返回 `null`。
 - **无障碍只做了基线三项**（图表标签、当前导航项、既有的图标按钮），没有全面审计，
   也没有跑 axe 之类的扫描。
 - 视图级骨架屏的**首屏感知**没有量化：只有「骨架 → 空态」的状态断言与截图，没有
