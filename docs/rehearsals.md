@@ -10,6 +10,133 @@
 
 ---
 
+## 阶段二 2.3 前端工程质量实测 — 2026-10-09
+
+- **脚本**：`apps/console/e2e/` 下的一次性 Playwright 探针（`vite preview` 提供
+  构建产物 + 路由拦截 mock 后端；探针未入库，方法与数字都在本节写明）；
+  `corepack pnpm typecheck|lint|test|build`；`.\scripts\compose-smoke.ps1`。
+- **关键断言**：(1) 首屏体积要用**浏览器实测下载字节**，基线也必须同法实测，不能
+  用文件求和凑一个更好看的对比；(2) 错误页必须显示**真实原因**且重试能恢复；
+  (3) 深链必须落到同一个视图；(4) 骨架屏只能出现在首次加载，且不能把「还没到」
+  说成「没有」。
+
+### 1. 体积：基线也用同一探针实测
+
+口径：同一探针、同一天、无压缩（`vite preview` 不 gzip；compose 里的 nginx 也未
+开 gzip）。基线在 `HEAD`（`274462a`）另建 worktree 构建后实测，不是文件求和。
+
+| 入口 | 基线 | 改造后 | |
+| --- | --- | --- | --- |
+| `#/login` | 2,676,778 B | 355,844 B | −86.7% |
+| `#/assets` | 2,676,778 B | 804,562 B | −69.9% |
+| `#/incidents` | 2,676,778 B | 929,180 B | −65.3% |
+| `#/overview`（默认视图） | 2,676,778 B | 1,937,336 B | −27.6% |
+
+- 基线的四个入口字节数相同：静态 import 让每个入口都下载全部产物。
+- 现在 `#/overview` 比其他视图多约 1.14 MB，那是 ECharts，只在打开概览时加载。
+- **sourcemap**：基线 12.9 MB 的 `.map` 随 dist 一起发布（浏览器不开 devtools 不
+  会下载，但任何能打开控制台的人都能按 URL 取到）；现在默认不生成，
+  `CONSOLE_SOURCEMAP=true` 才生成。
+- 构建不再出现 921 kB 的 element-plus 单块（基线它与 1,271 kB 的 index 并列）。
+
+### 2. 错误页、深链与边界范围（真实浏览器）
+
+- 注入渲染期异常（临时改 `LoginPage.vue`，验证后还原）→ 显示「这个页面没能渲染」，
+  正文是**注入的那条错误原文**；点「重试渲染」后登录页正常渲染回来。
+- API 不可达（dev server 无后端，代理回 500）→ 登录页仍渲染，顶栏横幅显示
+  「服务端错误（500），控制台无法完成本次请求」；基线文案是 `500 Internal Server Error`。
+- `#/incidents` 深链 → 渲染「事件中心」，且**不加载** ECharts chunk。改前实测：最终
+  停在 `#/` 并加载了概览的 ECharts。
+- **边界范围是实测后收窄的**：最初只要子组件抛错就整页替换。这次在真实栈里撞到
+  「对话框的 watcher 抛错 → 整个控制台被错误页替换」，才改成按 Vue 给的 `info`
+  分流：只有 `render`/`setup` 失败才拿走视图，watcher/异步处理器/生命周期钩子失败
+  走横幅（第 5 节是它的完整来源）。
+
+### 3. 骨架屏、空态与 aria（真实浏览器）
+
+- `#/assets` 首次加载：显示骨架，且**不出现**「尚未登记监测资产」。
+- `#/overview` 首次加载：10 个骨架，页面**不含**「该区间内没有事件」。
+- 响应落地后：骨架 0、空状态 3，真实数字与空状态正常渲染（截图核对）。
+- aria：`[role="img"][aria-label]` 命中「检测任务成功率仪表盘」；
+  侧边导航 `button[aria-current="page"]` = 总览。
+- dev 模式另跑一次（`pnpm dev`，与构建路径的转换方式不同）：登录页与控制台外壳
+  均正常、零 console 错误。**注意**：改动依赖后首次加载会撞上 Vite 的
+  「504 Outdated Optimize Dep」，重载一次即好——这是重新预构建依赖，不是缺陷。
+
+### 4. 与计划不同的地方（都是实测后的判断）
+
+1. **计划称「`App.vue` 的 `restore()` 无 try/catch」——实际有**（`stores/session.ts`）。
+   真实缺口是失败后没有任何提示：401（未登录，正常）与「API 不可达」被压成同一个
+   `false`。修法是让 `request()` 抛带 status 的 `HttpError`，只对 401 保持静默。
+2. **`manualChunks` 里的 `element-plus` 条目会抵消按需引入**：它把整包强制塞进一个
+   chunk，第一次改造后构建仍是 921 kB；删掉条目后才真正按需。
+3. **`App.vue` 恢复会话后无条件 `router.replace("/")` 会取消深链**。这本是
+   `router.ts` 注释与 `console-smoke.mjs:43-54` 深链断言声明过的契约，此前只能靠
+   竞态通过（断言要在跳转生效前读到 DOM 才算过）。现在只在登录页跳转。
+4. **`activeView` 默认 `"overview"` 会让深链也加载 ECharts**（默认值先渲染、再纠正）。
+   改为从 hash 播种。
+5. **`unplugin-vue-components` 的声明文件保持关闭**：打开会让 `vue-tsc` 按
+   `el-table` 槽位的 `DefaultRow` 校验全站 emit（多处报错）。那是独立的一件事，
+   不该由体积改动携带；相对改前也没有减少（`app.use(ElementPlus)` 本来就没给编辑器
+   提供组件类型）。
+6. **`BaselineSnapshotDrawer` 的两张表没有 `empty-text`，但不是缺陷**：它们在
+   `v-if="rows.length"` 里，永远不会渲染空表。核对后不改。
+
+### 5. 错误边界顺带挖出的服务端缺陷（本次最值得看的一条）
+
+错误边界上线后，整栈 E2E 在「编辑资产策略」这一步超时。排查链（全部是实测）：
+
+1. 点「策略」后对话框不出现，整个视图被兜底页替换，显示
+   `Cannot read properties of null (reading 'join')`。
+2. 定位到 `PolicyDialog.vue` 的 `watch(..., { immediate: true })` 里对
+   `policy.ignoreSelectors/trustedDomains` 直接 `.join()`。
+3. 真实栈取证：PUT 时给 `[]`，`GET /api/v1/policies` 回的是
+   `"ignoreSelectors":null,"trustedDomains":null`，而 `api/openapi.yaml:1666` 把这两项
+   声明为 **required array**——**服务端违反自己的契约**。
+4. 服务端根因：`internal/api/server.go:1461-1462` 用
+   `append([]string(nil), input...)` 构造字段，空输入得到 `nil` → JSON `null`。
+   全文件该模式共 **2 处**，都在策略处理器里（已定点排查）。
+5. **这个缺陷此前是隐形的**：改前没有错误边界，watcher 抛错只进 console，对话框照常
+   打开、表单静默保留默认值；而默认 `timeoutSeconds` 恰好等于 compose smoke 种子的
+   30，E2E 因此一直绿。改后边界把同一个异常放大成整页错误，才暴露出来。
+
+处置：前端把 null 当空数组读（并在注释里写明服务端行为），边界按 `info` 分流（见
+第 2 节）。**服务端那两行未修**——它仍会按契约外的方式返回 null，只是前端不再被它
+击穿。实测确认修复有效：真实栈 + 重建镜像后对话框正常出现，且表单读到
+`maxResponseBytes = 1048576`（种子值；组件默认是 5242880），证明策略确实加载，
+而不是回落到默认值。
+
+### 6. jsdom 的边界（测试覆盖到哪、没到哪）
+
+- Element Plus 的表格**表体**由列宽测量驱动，jsdom 没有布局引擎：所有测量为 0 时
+  只渲染表头，断言会在空表上通过——那是绿的假象。页面测试因此用桩
+  （`src/test/elTableStub.ts`，保留 `data`/列 `#default`/`empty-text` 契约），
+  **表格自身的渲染由 compose-smoke 在真实浏览器覆盖**。给 jsdom 灌固定宽度的尝试
+  也验证过：无效。
+- ECharts 需要真实 canvas 尺寸，概览测试里桩掉 `EChart`。
+- 单测 52 → 85。四批改动与本次修复都做过注入故障验证（去掉守卫/条件后测试确实变红）。
+
+### 7. 整栈回归
+
+- `.\scripts\compose-smoke.ps1`：**通过**（退出码 0，末行「Compose smoke test
+  passed」，含控制台 Playwright E2E）。第一次运行失败于 **Go 镜像构建**：
+  `proxy.golang.org` 在本机网络下不可达（`connection refused`），与本项改动无关；
+  按 `operations.md` 既有做法设 `GOPROXY=https://goproxy.cn,direct` 后通过。
+  控制台镜像的 `pnpm install --frozen-lockfile` 两次都正常（313 个包）。
+
+### 未覆盖
+
+- **服务端那两行没有修**（见第 5 节），因此接口仍会在空列表时返回 `null`。
+- **无障碍只做了基线三项**（图表标签、当前导航项、既有的图标按钮），没有全面审计，
+  也没有跑 axe 之类的扫描。
+- 视图级骨架屏的**首屏感知**没有量化：只有「骨架 → 空态」的状态断言与截图，没有
+  真实网络下的时间线测量。
+- 同类缺陷只做了**定点排查**（`append([]T(nil), …)` 全文件 2 处；控制台侧读取这两
+  个字段的只有 `PolicyDialog`），没有全量审计「契约说非空、服务端可能给 null」的
+  其他字段。
+
+---
+
 ## 阶段二 2.2 测试与 lint 门禁实测 — 2026-10-09
 
 - **脚本**：golangci-lint v2.14.0 本地实跑、`govulncheck`、全量测试（含真实
