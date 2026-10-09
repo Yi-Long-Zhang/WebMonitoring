@@ -42,7 +42,15 @@ param(
     [int]$Tenants = 1,
     [int]$ApiReplicas = 2,
     [int]$HttpWorkers = 3,
-    [int]$TimeoutSeconds = 240,
+    # 这是**上限而不是时长**：下面的循环一满足「任务齐了且没有在途」就退出，所以
+    # 放宽它不会让通过的那条路径变慢（实测快时 25.6s 就结束）。
+    #
+    # 从 240 提到 900 是因为这个上限在本机上已经卡到边：实测同一份代码的 wall clock
+    # 在 25.6s 到 244.1s 之间摆动，两次恰好落在 240 的边界上报出 0/40 —— 而两次的
+    # 诊断都显示它真正要验的东西**是成立的**（40 个任务、0 重复），单个任务也只要
+    # 毫秒级（排队 7.2s、执行 0.1s）。一个会随机报红的门禁比没有门禁更危险：它会把
+    # 真回归淹没成「又抖了」。
+    [int]$TimeoutSeconds = 900,
     [ValidateSet("HTTP", "BROWSER")][string]$Mode = "HTTP",
     [switch]$DropActiveJobIndex,
     [switch]$KeepRunning
