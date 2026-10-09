@@ -1,19 +1,56 @@
+version: "2"
+
 run:
   timeout: 5m
-  tests: true
+
+# 默认每个 linter 只报 50 条、同类只报 3 条。上限会把「还剩多少」藏起来——本轮
+# 就吃过一次：先前看到的 50 条 errcheck 是上限而不是全部真实数量。门禁要可信，
+# 就不能有看不见的部分。
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
 
 linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused —— 与原配置的
+  # v1 默认集一致；gosec 是这里额外加的。
+  default: standard
   enable:
-    - errcheck
-    - govet
-    - staticcheck
     - gosec
-
-issues:
-  exclude-dirs:
-    - .cache
-  exclude-rules:
-    # 测试夹具里的合成密钥、固定私网目标是测试数据，不是产品缺陷。
-    - path: _test\.go
-      linters:
-        - gosec
+  settings:
+    errcheck:
+      # check-blank 保持关闭，这是实测后的决定而不是默认值沿用：打开它会报出
+      # 约 108 处 `_ =`，逐处审查后**没有一处是真缺陷**——全是惯例写法（关流、
+      # 向已断开的客户端写、编码已知结构）与测试夹具。全annotate 是近百条噪音，
+      # 而按正则整类排除等于门禁重新变成摆设。
+      #
+      # 唯一确实值得警惕的两处是 `strconv.ParseBool` 解析失败静默回落（会让
+      # SESSION_SECURE 之类的取值悄悄变成 false），它在计划的收尾项里单独列出，
+      # 并在源码处标了 nolint 说明。
+      check-blank: false
+      # 只放行「惯例上本就不看返回值」的函数：关闭清理路径上的 Closer，以及
+      # 写入不可能失败的内存/编码目标（fmt 到 ResponseWriter、hash、csv 缓冲）。
+      # 其余每一处都要么处理，要么就地写明理由，不用正则整类放过。
+      exclude-functions:
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+        - (*os.File).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*encoding/csv.Writer).Write
+        - (hash.Hash).Write
+        # HTTP 处理器里对客户端的写：写失败意味着连接已经断了，没有可补救的动作，
+        # 覆盖率也只可能靠 r.Context().Done()。
+        - (net/http.ResponseWriter).Write
+        - (net/http.ResponseWriter).WriteHeader
+        # 打包与关流：失败只在最终 Close/Finish 时可见并已被检查。
+        - (*archive/zip.Writer).Close
+        - (*archive/zip.Writer).Write
+  exclusions:
+    paths:
+      - .cache
+    rules:
+      # 测试夹具里的合成密钥、固定私网目标是测试数据，不是产品缺陷。
+      - path: _test\.go
+        linters:
+          - gosec

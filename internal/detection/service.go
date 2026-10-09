@@ -245,14 +245,14 @@ func (s *Service) Queue(ctx context.Context, tenantID, assetID, mode string) (do
 	s.broker.Publish("detection.job.queued", job)
 	if s.queue != nil {
 		if err := s.queue.Enqueue(ctx, job); err != nil {
-			_ = s.failJob(ctx, job, "QUEUE_FAILED", err)
+			_ = s.failJob(ctx, job, "QUEUE_FAILED", err) //nolint:errcheck // 此处返回给调用方的是入队失败本身，failJob 的错误只影响状态标记
 			return domain.DetectionJob{}, err
 		}
 	} else {
 		// WithoutCancel keeps trace values but drops the caller's cancellation:
 		// the inline job must survive the API client disconnecting, or Queue
 		// would report a queued job that the disconnect silently killed.
-		go s.Process(context.WithoutCancel(ctx), job)
+		go s.Process(context.WithoutCancel(ctx), job) //nolint:errcheck // 协程内部自行记录失败，错误不回到调用方
 	}
 	return job, nil
 }
@@ -341,7 +341,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 	s.recordEvidenceWrite("page.html", "success")
 	evidenceIDs = append(evidenceIDs, htmlEvidence.ID)
 
-	snapshotJSON, _ := json.MarshalIndent(result.Snapshot, "", "  ")
+	snapshotJSON, _ := json.MarshalIndent(result.Snapshot, "", "  ") //nolint:errcheck // 编码的是已知结构（字符串切片/快照），不会失败
 	snapshotEvidence, err := s.evidence.Put(asset.TenantID, asset.ID, job.ID, "snapshot.json", "application/json", snapshotJSON)
 	if err != nil {
 		return s.failJob(ctx, job, "EVIDENCE_WRITE_FAILED", err)
@@ -530,7 +530,7 @@ func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code str
 				} else {
 					// Detach from the failing request: the retry timer and the
 					// re-process must outlive the caller that just got an error.
-					go s.enqueueRetry(context.WithoutCancel(ctx), job)
+					go s.enqueueRetry(context.WithoutCancel(ctx), job) //nolint:errcheck // 协程内部自行记录失败，错误不回到调用方
 				}
 				return nil
 			}

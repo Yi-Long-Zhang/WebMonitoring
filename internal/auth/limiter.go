@@ -113,7 +113,7 @@ func (g *LoginGuard) BeforeLogin(ctx context.Context, tenantID, username, remote
 		return nil
 	}
 	if ipCount == 1 {
-		_ = g.store.Expire(ctx, key, g.ipWindow)
+		_ = g.store.Expire(ctx, key, g.ipWindow) //nolint:errcheck // 尽力而为的簿记/解锁：失败不影响本次结果
 	}
 	if ipCount > int64(g.maxIP) {
 		return &ErrRateLimited{RetryAfter: g.ipWindow}

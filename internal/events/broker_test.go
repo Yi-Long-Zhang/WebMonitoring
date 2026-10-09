@@ -3,6 +3,7 @@ package events
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -116,9 +117,18 @@ func TestPublishWithUnmarshalablePayloadIsIgnored(t *testing.T) {
 	}
 }
 
+// Concurrent publishers and subscribers must not lose each other, deadlock, or
+// leave a subscription behind.
+//
+// Until this was rewritten the body was four goroutines publishing flat out,
+// four subscribing and unsubscribing in a loop, and `time.Sleep(50ms)` -- with
+// no assertion of any kind. Its only value was as a target for -race, and -race
+// was not enabled anywhere, so the test exercised nothing observable in either
+// mode. The counters below are what make it a test rather than a warm-up.
 func TestConcurrentPublishAndSubscribe(t *testing.T) {
 	broker := NewBroker()
 	var wait sync.WaitGroup
+	var received atomic.Int64
 	stop := make(chan struct{})
 
 	for range 4 {
@@ -141,9 +151,15 @@ func TestConcurrentPublishAndSubscribe(t *testing.T) {
 			defer wait.Done()
 			for range 200 {
 				channel, unsubscribe := broker.Subscribe()
+				// Blocking rather than non-blocking: publishers are running flat
+				// out until stop closes, so a fresh subscriber receives a frame
+				// rather than being tested for luck.
 				select {
 				case <-channel:
-				default:
+					received.Add(1)
+				case <-stop:
+					unsubscribe()
+					return
 				}
 				unsubscribe()
 			}
@@ -153,4 +169,23 @@ func TestConcurrentPublishAndSubscribe(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	close(stop)
 	wait.Wait()
+
+	if received.Load() == 0 {
+		t.Fatal("no subscriber received anything while four publishers were running")
+	}
+	// Every unsubscribe must have taken effect: a subscription left behind would
+	// leak a channel and, in the SSE handler, a goroutine.
+	if leaked := len(broker.subscribers); leaked != 0 {
+		t.Fatalf("%d subscription(s) survived the storm", leaked)
+	}
+	// And the broker still works afterwards -- publishing to a closed subscriber
+	// set would panic on a closed channel, which the loop above could hide.
+	channel, unsubscribe := broker.Subscribe()
+	defer unsubscribe()
+	broker.Publish("incident.created", map[string]string{"id": "incident-1"})
+	select {
+	case <-channel:
+	case <-time.After(time.Second):
+		t.Fatal("the broker stopped delivering after the concurrent storm")
+	}
 }

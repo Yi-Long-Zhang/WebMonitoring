@@ -52,7 +52,7 @@ func main() {
 	case "baseline":
 		flags := flag.NewFlagSet("baseline", flag.ExitOnError)
 		version := flags.Int("version", 0, "last migration version already verified in the database")
-		_ = flags.Parse(os.Args[2:])
+		_ = flags.Parse(os.Args[2:]) //nolint:errcheck // 参数解析失败由后续的校验发现，这里不吞掉判断
 		if *version <= 0 {
 			log.Fatal("baseline requires --version")
 		}

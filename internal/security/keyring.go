@@ -144,11 +144,11 @@ func SplitKeyVersion(encoded string) (version int, payload string, ok bool) {
 
 func parseKeyVersion(label string) (int, error) {
 	if !strings.HasPrefix(label, "v") {
-		return 0, fmt.Errorf("secret key label %q must look like v1, v2, ...", label)
+		return 0, fmt.Errorf("secret key label %q must look like v1 or v2", label)
 	}
 	version, err := strconv.Atoi(label[1:])
 	if err != nil || version < 1 {
-		return 0, fmt.Errorf("secret key label %q must look like v1, v2, ...", label)
+		return 0, fmt.Errorf("secret key label %q must look like v1 or v2", label)
 	}
 	return version, nil
 }

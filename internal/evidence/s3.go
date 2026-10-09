@@ -164,7 +164,7 @@ func (s *S3Store) Open(ctx context.Context, objectKey string) (io.ReadCloser, er
 		return nil, err
 	}
 	if _, err := object.Stat(); err != nil {
-		_ = object.Close()
+		_ = object.Close() //nolint:errcheck // 尽力而为的簿记/解锁：失败不影响本次结果
 		return nil, err
 	}
 	return object, nil

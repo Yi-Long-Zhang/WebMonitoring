@@ -47,7 +47,7 @@ func (s *LocalStore) Put(tenantID, assetID, jobID, kind, mediaType string, conte
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return domain.Evidence{}, fmt.Errorf("create evidence directory: %w", err)
 	}
-	file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // target 由服务端生成的 UUID 与 safeKind(kind) 拼成，不含客户端输入
 	if err != nil {
 		return domain.Evidence{}, fmt.Errorf("create immutable evidence: %w", err)
 	}
@@ -81,7 +81,7 @@ func (s *LocalStore) Open(_ context.Context, objectKey string) (io.ReadCloser, e
 	if err != nil || strings.HasPrefix(relative, "..") || filepath.IsAbs(relative) {
 		return nil, errors.New("invalid evidence object key")
 	}
-	return os.Open(target)
+	return os.Open(target) //nolint:gosec // 同上：target 只由服务端生成的标识与 s.root 组成
 }
 
 func (s *LocalStore) Delete(objectKey string) error {

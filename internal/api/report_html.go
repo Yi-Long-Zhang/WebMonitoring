@@ -184,7 +184,7 @@ func (s *Server) writeReport(writer http.ResponseWriter, request *http.Request, 
 		// alone. Without it the contextual escaper rewrites the stylesheet --
 		// measured: a 1.3 KB sheet came out as 8 bytes, and the report printed
 		// with no styling at all while every test still passed.
-		"Styles": template.CSS(reportPrintStyles),
+		"Styles": template.CSS(reportPrintStyles), //nolint:gosec // 样式表是编译期常量、不含任何动态内容；用 template.CSS 是为了阻止 html/template 的 CSS 上下文重写它（被重写过一次，1.3KB→8 字节）
 	}); err != nil {
 		s.logger.Error("report render failed", "error", err)
 		writeError(writer, request, http.StatusInternalServerError, "REPORT_FAILED", "无法生成报告", nil)

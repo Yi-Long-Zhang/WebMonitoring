@@ -137,7 +137,7 @@ func (c *Checker) Check(ctx context.Context, asset domain.Asset, policy domain.M
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("request target: %w", err)
 	}
-	defer response.Body.Close()
+	defer response.Body.Close() //nolint:errcheck // 延迟清理：此处失败已无可补救，调用方也不依赖它
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("read response: %w", err)
@@ -207,8 +207,8 @@ func (c *Checker) authenticate(ctx context.Context, client *http.Client, auth *d
 	if err != nil {
 		return fmt.Errorf("login request: %w", err)
 	}
-	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxBytes+1))
+	defer response.Body.Close()                                           //nolint:errcheck // 延迟清理：此处失败已无可补救，调用方也不依赖它
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxBytes+1)) //nolint:errcheck // 排空响应体或测试写入：目标不会失败，结果也不参与判定
 	if response.StatusCode >= 500 {
 		return fmt.Errorf("login endpoint returned status %d", response.StatusCode)
 	}
@@ -253,7 +253,7 @@ func SameOrigin(left, right string) bool {
 
 func effectivePort(value *url.URL) int {
 	if value.Port() != "" {
-		port, _ := strconv.Atoi(value.Port())
+		port, _ := strconv.Atoi(value.Port()) //nolint:errcheck // 端口来自已解析的 URL，解析失败会回落到 0，随后被 URL 校验拒绝
 		return port
 	}
 	if value.Scheme == "https" {

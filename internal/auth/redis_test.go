@@ -70,7 +70,7 @@ func TestRedisSessionStoreFailsClosed(t *testing.T) {
 	ctx := context.Background()
 
 	// A malformed record must not be handed to the caller.
-	server.Set("session:corrupt", "not-json")
+	server.Set("session:corrupt", "not-json") //nolint:errcheck // 测试夹具：写入失败会让随后的断言失败
 	if _, err := store.Get(ctx, "corrupt"); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("a corrupt session record must read as missing, got %v", err)
 	}

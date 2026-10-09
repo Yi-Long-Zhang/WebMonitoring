@@ -26,7 +26,7 @@ type ReplicaLease interface {
 func leaseKey(name string) int64 {
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(name))
-	return int64(hash.Sum64())
+	return int64(hash.Sum64()) //nolint:gosec // 咨询锁只需要一个稳定的键；符号位无意义，溢出也不是此处的语义
 }
 
 // TryAcquire implements ReplicaLease with a session-level PostgreSQL advisory
@@ -54,7 +54,7 @@ func (p *PostgresRepository) TryAcquire(ctx context.Context, name string) (func(
 		once.Do(func() {
 			// A cancelled sweep still has to free the lease, so the unlock runs
 			// on a background context. Losing the session would drop it anyway.
-			_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, key)
+			_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, key) //nolint:errcheck // 尽力而为的簿记/解锁：失败不影响本次结果
 			conn.Release()
 		})
 	}, true, nil

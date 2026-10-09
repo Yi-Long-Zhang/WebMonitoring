@@ -141,8 +141,8 @@ func TestAuditRetentionDeletesOnlyExpiredTenantEvents(t *testing.T) {
 	if err != nil || deleted != 1 {
 		t.Fatalf("deleted=%d err=%v", deleted, err)
 	}
-	current, _, _ := repository.ListAudits(context.Background(), "tenant", AuditFilter{}, ListOptions{})
-	other, _, _ := repository.ListAudits(context.Background(), "other", AuditFilter{}, ListOptions{})
+	current, _, _ := repository.ListAudits(context.Background(), "tenant", AuditFilter{}, ListOptions{}) //nolint:errcheck // 测试夹具：这里断言的是别的东西
+	other, _, _ := repository.ListAudits(context.Background(), "other", AuditFilter{}, ListOptions{})    //nolint:errcheck // 测试夹具：这里断言的是别的东西
 	if len(current) != 1 || current[0].ID != "current" || len(other) != 1 {
 		t.Fatalf("unexpected retained audits: current=%#v other=%#v", current, other)
 	}

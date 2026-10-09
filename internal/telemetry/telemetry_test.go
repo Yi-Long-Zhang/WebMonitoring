@@ -55,7 +55,7 @@ func TestSetupExportsSpansToTheConfiguredCollector(t *testing.T) {
 		bodies [][]byte
 	)
 	collector := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		body, _ := io.ReadAll(request.Body)
+		body, _ := io.ReadAll(request.Body) //nolint:errcheck // 测试夹具：读取请求体用于断言
 		mu.Lock()
 		paths = append(paths, request.URL.Path)
 		bodies = append(bodies, body)

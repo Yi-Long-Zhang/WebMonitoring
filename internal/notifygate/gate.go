@@ -212,8 +212,8 @@ func (g *Gate) RecordOutcome(ctx context.Context, channelID string, delivered bo
 	}
 	if delivered {
 		wasOpen := g.breakerRecorded(ctx, channelID)
-		_ = g.store.Reset(ctx, g.failureKey(channelID))
-		_ = g.store.Reset(ctx, g.breakerKey(channelID))
+		_ = g.store.Reset(ctx, g.failureKey(channelID)) //nolint:errcheck // 尽力而为的簿记/解锁：失败不影响本次结果
+		_ = g.store.Reset(ctx, g.breakerKey(channelID)) //nolint:errcheck // 尽力而为的簿记/解锁：失败不影响本次结果
 		return false, wasOpen
 	}
 	count, err := g.store.Incr(ctx, g.failureKey(channelID))
@@ -226,10 +226,10 @@ func (g *Gate) RecordOutcome(ctx context.Context, channelID string, delivered bo
 	// between its failures would restart the count every time and never reach
 	// the threshold. This is a window sized to outlive a slow failure cadence,
 	// not to bound anything.
-	_ = g.store.Expire(ctx, g.failureKey(channelID), failureCountLifetime)
+	_ = g.store.Expire(ctx, g.failureKey(channelID), failureCountLifetime) //nolint:errcheck // 尽力而为的簿记/解锁：失败不影响本次结果
 	if count >= int64(g.policy.FailureThreshold) {
 		wasOpen := g.breakerRecorded(ctx, channelID)
-		_ = g.store.SetWithTTL(ctx, g.breakerKey(channelID),
+		_ = g.store.SetWithTTL(ctx, g.breakerKey(channelID), //nolint:errcheck // 尽力而为的簿记/解锁：失败不影响本次结果
 			g.now().UTC().Format(time.RFC3339Nano), breakerOpenLifetime)
 		return true, !wasOpen
 	}

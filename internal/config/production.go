@@ -190,12 +190,12 @@ func validateSecretKeys(get func(string) string) []error {
 		if label, rest, found := strings.Cut(entry, ":"); found {
 			parsed, err := strconv.Atoi(strings.TrimPrefix(label, "v"))
 			if !strings.HasPrefix(label, "v") || err != nil || parsed < 1 {
-				failures = append(failures, fmt.Errorf("ALERT_SECRET_KEYS entry %q must be labelled v1, v2, ...", entry))
+				failures = append(failures, fmt.Errorf("ALERT_SECRET_KEYS entry %q must carry a version label such as v1 or v2", entry))
 				continue
 			}
 			version, key = parsed, rest
 		} else if explicitList {
-			failures = append(failures, fmt.Errorf("ALERT_SECRET_KEYS entry %q must be labelled v1, v2, ...", entry))
+			failures = append(failures, fmt.Errorf("ALERT_SECRET_KEYS entry %q must carry a version label such as v1 or v2", entry))
 			continue
 		}
 		if seen[version] {

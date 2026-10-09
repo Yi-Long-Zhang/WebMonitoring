@@ -507,7 +507,7 @@ func (d *Dispatcher) postJSON(ctx context.Context, channel domain.AlertChannel, 
 		return err
 	}
 	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024)) //nolint:errcheck // 排空响应体或测试写入：目标不会失败，结果也不参与判定
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return fmt.Errorf("notification endpoint returned %d", response.StatusCode)
 	}

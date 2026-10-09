@@ -377,7 +377,7 @@ func (s *Server) login(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	s.loginGuard.RecordSuccess(request.Context(), tenantID, username)
-	http.SetCookie(writer, &http.Cookie{
+	http.SetCookie(writer, &http.Cookie{ //nolint:gosec // Secure 取自配置且生产门禁强制 SESSION_SECURE=true；HttpOnly 与 SameSite 紧随其后显式设置（G124 无法证明变量为真）
 		Name:     sessionCookie,
 		Value:    session.ID,
 		Path:     "/",
@@ -398,7 +398,7 @@ func (s *Server) session(writer http.ResponseWriter, request *http.Request) {
 func (s *Server) logout(writer http.ResponseWriter, request *http.Request) {
 	session := principal(request)
 	s.auth.Delete(request.Context(), session.ID)
-	http.SetCookie(writer, &http.Cookie{
+	http.SetCookie(writer, &http.Cookie{ //nolint:gosec // Secure 取自配置且生产门禁强制 SESSION_SECURE=true；HttpOnly 与 SameSite 紧随其后显式设置（G124 无法证明变量为真）
 		Name: sessionCookie, Value: "", Path: "/", HttpOnly: true,
 		Secure: s.sessionSecure, SameSite: http.SameSiteLaxMode, MaxAge: -1,
 	})
@@ -2808,6 +2808,17 @@ func parseAuditTime(raw string) (time.Time, error) {
 // no uuid parser (identity.New only generates), and this is the one place a
 // caller-supplied id is handed to Postgres as a cast rather than compared as
 // text.
+// isHexDigit and isSlugChar are positive predicates so the call sites can use a
+// plain negation. Writing the condition inline inverted the whole compound
+// expression, which staticcheck flags and which reads worse than either form.
+func isHexDigit(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+}
+
+func isSlugChar(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-'
+}
+
 func looksLikeUUID(value string) bool {
 	if len(value) != 36 {
 		return false
@@ -2819,7 +2830,7 @@ func looksLikeUUID(value string) bool {
 				return false
 			}
 		default:
-			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			if !isHexDigit(r) {
 				return false
 			}
 		}
@@ -3442,7 +3453,7 @@ func normalizeSlug(value string) (string, bool) {
 		return "", false
 	}
 	for _, r := range slug {
-		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-') {
+		if !isSlugChar(r) {
 			return "", false
 		}
 	}

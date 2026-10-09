@@ -49,10 +49,10 @@ func TestJobLeaseGovernsTheReapBoundary(t *testing.T) {
 			if reaped != 1 {
 				t.Fatalf("reaped=%d, want only the job older than the lease", reaped)
 			}
-			if job, _ := repository.GetJob(context.Background(), tenantID, youngID); job.Status != domain.JobRunning {
+			if job, _ := repository.GetJob(context.Background(), tenantID, youngID); job.Status != domain.JobRunning { //nolint:errcheck // 测试夹具：这里断言的是别的东西
 				t.Fatalf("a job 10s into a 60s lease was reaped: status=%s", job.Status)
 			}
-			if job, _ := repository.GetJob(context.Background(), tenantID, oldID); job.Status != domain.JobTimedOut {
+			if job, _ := repository.GetJob(context.Background(), tenantID, oldID); job.Status != domain.JobTimedOut { //nolint:errcheck // 测试夹具：这里断言的是别的东西
 				t.Fatalf("a job 120s into a 60s lease was not reaped: status=%s", job.Status)
 			}
 		})

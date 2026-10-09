@@ -43,10 +43,10 @@ func TestCheckerLoginState(t *testing.T) {
 	mux.HandleFunc("/account", func(writer http.ResponseWriter, request *http.Request) {
 		cookie, err := request.Cookie("session")
 		if err != nil || cookie.Value != "authenticated" {
-			_, _ = writer.Write([]byte("<html><title>Login</title></html>"))
+			_, _ = writer.Write([]byte("<html><title>Login</title></html>")) //nolint:errcheck // 排空响应体或测试写入：目标不会失败，结果也不参与判定
 			return
 		}
-		_, _ = writer.Write([]byte("<html><title>Account Dashboard</title></html>"))
+		_, _ = writer.Write([]byte("<html><title>Account Dashboard</title></html>")) //nolint:errcheck // 排空响应体或测试写入：目标不会失败，结果也不参与判定
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -101,8 +101,8 @@ func TestCheckerRejectsPrivateLoginURL(t *testing.T) {
 	checker.SetCipher(cipher)
 
 	associatedData := security.AuthAssociatedData("tenant-1", "asset-1")
-	encryptedUsername, _ := cipher.Encrypt("u", associatedData)
-	encryptedPassword, _ := cipher.Encrypt("p", associatedData)
+	encryptedUsername, _ := cipher.Encrypt("u", associatedData) //nolint:errcheck // 测试夹具：这里断言的是别的东西
+	encryptedPassword, _ := cipher.Encrypt("p", associatedData) //nolint:errcheck // 测试夹具：这里断言的是别的东西
 
 	// The asset URL is a literal public address so it passes validation without
 	// a DNS lookup; the login URL is loopback and must be rejected.

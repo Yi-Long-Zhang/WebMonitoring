@@ -29,7 +29,7 @@ func TestRedisAcknowledgementReclaimAndDeadLetter(t *testing.T) {
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Fatalf("Redis integration test unavailable: %v", err)
 	}
-	defer client.Close()
+	defer client.Close() //nolint:errcheck // 延迟清理：此处失败已无可补救，调用方也不依赖它
 
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	stream := "webmonitoring:test:" + suffix
@@ -40,11 +40,11 @@ func TestRedisAcknowledgementReclaimAndDeadLetter(t *testing.T) {
 	var queue *Redis
 	t.Cleanup(func() {
 		if queue != nil {
-			_ = queue.Close()
+			_ = queue.Close() //nolint:errcheck // 尽力而为的簿记/解锁：失败不影响本次结果
 		}
 		cleanupClient := redis.NewClient(&redis.Options{Addr: host, Password: password})
-		_ = cleanupClient.Del(context.Background(), stream, stream+deadLetterSuffix).Err()
-		_ = cleanupClient.Close()
+		_ = cleanupClient.Del(context.Background(), stream, stream+deadLetterSuffix).Err() //nolint:errcheck // 尽力而为的簿记/解锁：失败不影响本次结果
+		_ = cleanupClient.Close()                                                          //nolint:errcheck // 尽力而为的簿记/解锁：失败不影响本次结果
 	})
 	queue = &Redis{
 		client: client, stream: stream, group: group,

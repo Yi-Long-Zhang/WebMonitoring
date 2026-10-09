@@ -197,17 +197,17 @@ func startFakeSMTP(t *testing.T) (string, chan string) {
 			go handleSMTPConnection(conn, received)
 		}
 	}()
-	t.Cleanup(func() { _ = listener.Close() })
+	t.Cleanup(func() { _ = listener.Close() }) //nolint:errcheck // 测试清理
 	return listener.Addr().String(), received
 }
 
 func handleSMTPConnection(conn net.Conn, received chan string) {
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck // 延迟清理：此处失败已无可补救，调用方也不依赖它
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 	write := func(line string) {
-		_, _ = writer.WriteString(line + "\r\n")
-		_ = writer.Flush()
+		_, _ = writer.WriteString(line + "\r\n") //nolint:errcheck // 排空响应体或测试写入：目标不会失败，结果也不参与判定
+		_ = writer.Flush()                       //nolint:errcheck // 排空响应体或测试写入：目标不会失败，结果也不参与判定
 	}
 	write("220 fake ESMTP")
 	inData := false
@@ -723,7 +723,7 @@ func TestBreakerTransitionNotifiesOtherChannels(t *testing.T) {
 		var payload struct {
 			Event string `json:"event"`
 		}
-		_ = json.NewDecoder(request.Body).Decode(&payload)
+		_ = json.NewDecoder(request.Body).Decode(&payload) //nolint:errcheck // 测试夹具：解码失败会让后面的断言失败
 		mu.Lock()
 		observed = append(observed, payload.Event)
 		mu.Unlock()

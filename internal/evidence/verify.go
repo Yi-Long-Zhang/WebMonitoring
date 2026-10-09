@@ -31,7 +31,7 @@ func ReadVerified(ctx context.Context, store Store, item domain.Evidence) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	defer object.Close()
+	defer object.Close() //nolint:errcheck // 延迟清理：此处失败已无可补救，调用方也不依赖它
 
 	content, err := io.ReadAll(io.LimitReader(object, item.Size+1))
 	if err != nil {

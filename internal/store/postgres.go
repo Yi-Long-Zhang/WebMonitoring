@@ -152,7 +152,7 @@ func (p *PostgresRepository) DeleteTenant(ctx context.Context, tenantID string) 
 	if err != nil {
 		return normalizePostgresError(err)
 	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
+	defer func() { _ = tx.Rollback(context.Background()) }() //nolint:errcheck // 延迟清理：此处失败已无可补救，调用方也不依赖它
 	// Children first, respecting foreign keys down to tenants.
 	statements := []string{
 		`DELETE FROM alert_deliveries WHERE tenant_id=$1`,
@@ -519,7 +519,7 @@ func (p *PostgresRepository) CreateBaseline(ctx context.Context, baseline domain
 	if err != nil {
 		return err
 	}
-	evidenceIDs, _ := json.Marshal(baseline.EvidenceIDs)
+	evidenceIDs, _ := json.Marshal(baseline.EvidenceIDs) //nolint:errcheck // 编码的是已知结构（字符串切片/快照），不会失败
 	_, err = p.pool.Exec(ctx, `
 		INSERT INTO baseline_versions (
 			id,tenant_id,asset_id,version,status,snapshot,evidence_ids,created_by,
@@ -536,7 +536,7 @@ func (p *PostgresRepository) UpdateBaseline(ctx context.Context, baseline domain
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
+	defer func() { _ = tx.Rollback(context.Background()) }() //nolint:errcheck // 延迟清理：此处失败已无可补救，调用方也不依赖它
 	if baseline.Status == domain.BaselineApproved {
 		if _, err := tx.Exec(ctx, `
 			UPDATE baseline_versions SET status='RETIRED'
@@ -1058,7 +1058,7 @@ func (p *PostgresRepository) FailedJobCount(ctx context.Context, tenantID string
 }
 
 func (p *PostgresRepository) UpsertIncident(ctx context.Context, incident domain.Incident) (domain.Incident, IncidentUpsertOutcome, error) {
-	signals, _ := json.Marshal(incident.Signals)
+	signals, _ := json.Marshal(incident.Signals) //nolint:errcheck // 编码的是已知结构（signals），不会失败
 	evidenceIDs, _ := json.Marshal(incident.EvidenceIDs)
 	// The timeline entry is written by the same statement as the counter it
 	// describes. A second write could fail, or the process could die between the

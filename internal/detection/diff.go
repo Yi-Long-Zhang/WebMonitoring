@@ -130,7 +130,7 @@ func IncidentFingerprint(signals []domain.Signal) string {
 }
 
 func fingerprint(kind string, before, after any) string {
-	payload, _ := json.Marshal([]any{kind, before, after})
+	payload, _ := json.Marshal([]any{kind, before, after}) //nolint:errcheck // 编码的是已知结构（字符串切片/快照），不会失败
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
 }

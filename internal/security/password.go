@@ -82,7 +82,7 @@ func VerifyPassword(encoded, password string) bool {
 		uint32(iterations),
 		uint32(memory),
 		uint8(parallelism),
-		uint32(len(expected)),
+		uint32(len(expected)), //nolint:gosec // 长度来自本进程生成的哈希字符串，不可能接近 uint32 上界
 	)
 	return subtle.ConstantTimeCompare(actual, expected) == 1
 }

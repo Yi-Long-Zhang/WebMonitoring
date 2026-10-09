@@ -28,7 +28,7 @@ func TestCancelJobOnlyTerminatesQueuedOrRunning(t *testing.T) {
 		if err != nil || !changed {
 			t.Fatalf("cancel %s: changed=%v err=%v", id, changed, err)
 		}
-		if job, _ := repository.GetJob(context.Background(), "tenant", id); job.Status != domain.JobCancelled {
+		if job, _ := repository.GetJob(context.Background(), "tenant", id); job.Status != domain.JobCancelled { //nolint:errcheck // 测试夹具：这里断言的是别的东西
 			t.Fatalf("job %s status=%s, want CANCELLED", id, job.Status)
 		}
 	}

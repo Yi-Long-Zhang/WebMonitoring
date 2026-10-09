@@ -56,7 +56,7 @@ func DefaultAdminPassword(get func(string) string) string {
 // returns "" for a missing or unreadable file so a caller can treat that as
 // "no default configured" rather than a startup failure.
 func passwordFromFile(path string) string {
-	contents, err := os.ReadFile(path)
+	contents, err := os.ReadFile(path) //nolint:gosec // 路径来自运维配置的 ADMIN_PASSWORD_FILE，本就是这个变量的用途
 	if err != nil {
 		return ""
 	}

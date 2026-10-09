@@ -57,7 +57,7 @@ func rewrapTestDatabase(t *testing.T, dsn string) string {
 	if err != nil {
 		t.Fatalf("connect to create the test database: %v", err)
 	}
-	defer func() { _ = admin.Close(ctx) }()
+	defer func() { _ = admin.Close(ctx) }() //nolint:errcheck // 延迟清理：此处失败已无可补救，调用方也不依赖它
 	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
 		t.Fatalf("create the test database: %v", err)
 	}
@@ -67,7 +67,7 @@ func rewrapTestDatabase(t *testing.T, dsn string) string {
 			t.Logf("could not reconnect to drop the test database %s: %v", name, err)
 			return
 		}
-		defer func() { _ = conn.Close(context.Background()) }()
+		defer func() { _ = conn.Close(context.Background()) }() //nolint:errcheck // 延迟清理：此处失败已无可补救，调用方也不依赖它
 		if _, err := conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); err != nil {
 			t.Logf("could not drop the test database %s: %v", name, err)
 		}

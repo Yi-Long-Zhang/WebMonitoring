@@ -172,10 +172,10 @@ func TestValidateProductionRejectsMalformedKeyMaterial(t *testing.T) {
 		material string
 		want     string
 	}{
-		{"unlabelled entry in the plural form", keyMaterial(1) + ",v2:" + keyMaterial(2), "v1, v2"},
+		{"unlabelled entry in the plural form", keyMaterial(1) + ",v2:" + keyMaterial(2), "must carry a version label"},
 		{"duplicate version", "v1:" + keyMaterial(1) + ",v1:" + keyMaterial(2), "more than once"},
 		{"key of the wrong length", "v1:" + base64.StdEncoding.EncodeToString([]byte("short")), "32-byte"},
-		{"zero version", "v0:" + keyMaterial(1), "v1, v2"},
+		{"zero version", "v0:" + keyMaterial(1), "must carry a version label"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

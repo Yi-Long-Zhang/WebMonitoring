@@ -45,14 +45,29 @@ jobs:
           echo "REDIS_TEST_ADDR=localhost:6379" >> "$GITHUB_ENV"
       - run: git ls-files '*.go' -z | xargs -0 gofmt -l | tee /tmp/gofmt.txt && test ! -s /tmp/gofmt.txt
       - run: go vet ./...
-      - run: go test ./...
-      # 同一个 .golangci.yml 一直在仓库里启用了 errcheck/govet/staticcheck/gosec，
-      # 但从来没有在 CI 里跑过，等于门禁贴着墙。锁到具体版本而不是 latest，
-      # 否则上游发布新 linter 会凭空让历史提交变红。
+      # -race 是这一层最值钱的部分：多副本的不变量与事件广播都只在并发下暴露，
+      # 而此前全仓库没有任何地方启用过它（唯一那条并发测试因此零断言地躺着）。
+      - run: go test -race -count=1 -covermode=atomic -coverprofile=coverage.out ./...
+      # 锁到具体版本而不是 latest，否则上游发布新 linter 会凭空让历史提交变红；
+      # 用 go install 而不是官方 action，是为了版本与 go.mod 一样显式，且不必再猜
+      # action 的大版本与 linter 大版本是否配套。
+      #
+      # 从 v1.64.8 换到 v2 不是「想升级」：v1.64.8 内置的类型检查器读不懂 go1.27
+      # 的导出数据（`cannot decode "cmp", export data version 5 ...`），会以
+      # Running error 退出码 3 收场——也就是说这个门禁此前什么都没检查过。
+      # v2 的配置格式不同，.golangci.yml 已随之迁移。
       - name: Lint (golangci-lint)
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.64.8
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+          golangci-lint run
+      # 覆盖率只做「报告 + 棘轮」：打印真实数字，低于下限就失败，不设 KPI 阈值。
+      # 下限按实测留了余量（带服务容器时约 60%），目的是不让它无声下跌，而不是
+      # 考核数字本身。
+      - name: Coverage floor
+        run: |
+          go tool cover -func=coverage.out | tail -1
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
+          awk -v t="$total" -v floor=55 'BEGIN { if (t+0 < floor) { printf "total coverage %s%% is below the floor %d%%\n", t, floor; exit 1 } }'
       # 漏洞扫描。锁版本而非 latest，理由同 golangci-lint。阻断式：本步骤引入时
       # 报出 GO-2026-5004（pgx/v5 占位符混淆 SQL 注入），随后的安全提交把
       # pgx 升到 v5.11.0 并实测归零（govulncheck 退出码 0），因此不再需要

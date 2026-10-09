@@ -67,7 +67,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	allowPrivate, _ := strconv.ParseBool(env("ALLOW_PRIVATE_TARGETS", "false"))
+	allowPrivate, _ := strconv.ParseBool(env("ALLOW_PRIVATE_TARGETS", "false")) //nolint:errcheck // 解析失败会静默回落到 false；这一处已列入收尾项（配置静默回落）
 	guard := security.NewURLGuard(allowPrivate)
 	broker := events.NewBroker()
 	var secretCipher security.SecretBox
@@ -146,8 +146,8 @@ func main() {
 		alertQueue.SetMaxDeliveries(envInt64("ALERT_QUEUE_MAX_DELIVERIES", 5))
 		alertQueue.SetMinIdle(time.Duration(envInt64("ALERT_QUEUE_MIN_IDLE_SECONDS", 120)) * time.Second)
 		closeQueue = func() {
-			_ = queue.Close()
-			_ = alertQueue.Close()
+			_ = queue.Close()      //nolint:errcheck // 尽力而为的簿记/解锁：失败不影响本次结果
+			_ = alertQueue.Close() //nolint:errcheck // 尽力而为的簿记/解锁：失败不影响本次结果
 		}
 	} else {
 		logger.Warn("using embedded job execution; configure REDIS_ADDR for independent workers")
@@ -166,7 +166,7 @@ func main() {
 	} else {
 		loginGuard = auth.NewMemoryLoginGuard(loginMaxFailures, loginLockout)
 	}
-	sessionSecure, _ := strconv.ParseBool(env("SESSION_SECURE", "false"))
+	sessionSecure, _ := strconv.ParseBool(env("SESSION_SECURE", "false")) //nolint:errcheck // 解析失败会静默回落到 false；这一处已列入收尾项（配置静默回落）
 	server := api.NewServer(
 		repository, authService, detectionService, evidenceStore, guard, broker, logger, sessionSecure,
 	)
@@ -354,7 +354,7 @@ func healthcheck(target string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer response.Body.Close() //nolint:errcheck // 延迟清理：此处失败已无可补救，调用方也不依赖它
 	if response.StatusCode != http.StatusOK {
 		log.Fatalf("health check returned %d", response.StatusCode)
 	}

@@ -51,7 +51,7 @@ func newStream(ctx context.Context, address, stream, group string) (*Redis, erro
 		return nil, fmt.Errorf("connect redis: %w", err)
 	}
 	if err := ensureGroup(ctx, client, stream, group); err != nil {
-		_ = client.Close()
+		_ = client.Close() //nolint:errcheck // 尽力而为的簿记/解锁：失败不影响本次结果
 		return nil, err
 	}
 	return &Redis{

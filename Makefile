@@ -9,7 +9,7 @@ GO      ?= go
 PS      ?= powershell
 COMPOSE := docker compose -f deployments/compose/docker-compose.yml
 
-.PHONY: help fmt vet test test-integration lint typecheck build compose-up compose-down compose-smoke migrate-up release-check
+.PHONY: help fmt vet test test-integration test-race cover lint typecheck build compose-up compose-down compose-smoke migrate-up release-check
 
 help: ## 列出可用目标
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -26,6 +26,12 @@ test: ## 运行 Go 测试（集成用例在未设 DSN 时会跳过）
 
 test-integration: ## 起一次性 Postgres/Redis 跑集成测试（需要 Docker；未启动会明确报错）
 	$(PS) -File scripts/integration-test.ps1
+
+test-race: ## 运行 Go 测试并开启竞态检测（需要 C 工具链；Windows 本机通常没有，以 CI 为准）
+	$(GO) test -race ./...
+
+cover: ## 打印总覆盖率（未设集成 DSN 时相关用例会跳过，数字明显偏低）
+	$(GO) test -covermode=atomic -coverprofile=coverage.out ./... && $(GO) tool cover -func=coverage.out | tail -1
 
 lint: ## Go（golangci-lint）与前端（pnpm lint）
 	golangci-lint run

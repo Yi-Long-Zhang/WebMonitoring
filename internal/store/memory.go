@@ -1390,20 +1390,6 @@ func cloneIncident(incident domain.Incident) domain.Incident {
 	return incident
 }
 
-func appendUnique(existing []string, additions ...string) []string {
-	seen := make(map[string]struct{}, len(existing)+len(additions))
-	for _, item := range existing {
-		seen[item] = struct{}{}
-	}
-	for _, item := range additions {
-		if _, ok := seen[item]; !ok {
-			existing = append(existing, item)
-			seen[item] = struct{}{}
-		}
-	}
-	return existing
-}
-
 // sortedUnique merges two id lists without duplicates, in sorted order.
 //
 // Sorted rather than insertion-ordered so it matches the jsonb aggregation the
