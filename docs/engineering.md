@@ -179,6 +179,12 @@ go vet ./...
 gofmt -w <changed-go-files>
 ```
 
+其中 `internal/api` 里跑着一条**契约 ↔ 路由一致性门禁**
+（`internal/api/routes_contract_test.go`）：它比对 `server.go` 的 `routes()` 与
+`api/openapi.yaml` 的 operation 集合，少了任何一边都会红。**加了 handler 就要写契约
+并重新生成 client 类型**（`corepack pnpm --filter @webmonitoring/console generate:api`），
+否则两道门禁会分别拦住你（这一条拦路由，CI 的 `git diff --exit-code api.d.ts` 拦类型）。
+
 当前前端 workspace 支持：
 
 ```text

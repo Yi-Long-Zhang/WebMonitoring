@@ -10,6 +10,84 @@
 
 ---
 
+## 阶段二 2.4 openapi ↔ 路由漂移门禁实测 — 2026-10-09
+
+- **脚本**：`go test ./internal/api/ -run TestRoutesMatchOpenAPIContract`（新增门禁）；
+  四组注入故障（临时改 `server.go` / `api/openapi.yaml` / 门禁自身的正则，`git checkout`
+  还原）；`openapi-typescript` 重新生成 client 类型后 `git diff`。
+- **关键断言**：(1) 门禁必须**真的会红**——四种破坏各自都要被指名，其中「解析器弄坏」
+  那组必须因下界而红，而不是两边空集相比变绿；(2) 契约改动后门禁仍绿（新增的 4 空格
+  `servers:` 行不得被误收成 operation）；(3) 生成的 client 类型必须与契约一致。
+
+### 1. 门禁本身
+
+- 枚举路由只能**读源码**：`routes()` 建两个 `ServeMux` 并把受保护的那个挂在鉴权中间件
+  后面（`internal/api/server.go:291`），那是局部变量，运行时无从遍历——对返回的 handler
+  调 `(*http.ServeMux).Patterns()` 只能看到根上的 5 条与那个挂载。
+- 用 `go/parser` + `go/ast` 而非正则：`routes()` 的函数体里**本来就写着路由字样的注释**
+  （`server.go:214-252`），文本扫描会把注释当注册收进来；被注释掉的注册也会被误收。
+- 契约按行解析（`go.mod` 里没有任何 YAML 库，本机 `proxy.golang.org` 不可达，故不新增
+  依赖）：path 键 2 空格、method 键 4 空格且**锚定方法名**——path 级 `parameters:` 也在
+  4 空格（共 9 处），「4 空格即方法」会把它收成 operation。方法名后不加 `$`，否则
+  `get: { … }` 这种 flow 写法会被静默丢掉。
+- 归一化：server 侧路径去掉契约 `servers:` 声明的 `/api/v1` 前缀再与裸路径比。根上的
+  三条因此自然匹配，**不需要白名单**；前缀按整段锚定，`/api/v10/foo` 不会被误剥。
+- 前缀挂载**记下来并断言恰为 `{"/api/v1/"}`**，而不是字符串匹配后跳过：将来多一个挂载
+  会被抓到，而不是被悄悄丢掉。
+- **六条防假绿**：两侧集合大小下界（≥60 operations / ≥50 paths）、key 形态校验、双向
+  差集都空且数量相等、`routes()` 里必须真扫到调用、两侧各自查重、挂载集合与 `servers`
+  取值守卫（后者会指名「归一化常量该更新了」）。
+
+### 2. 敏感度：四组注入故障实测
+
+| 注入 | 结果 |
+| --- | --- |
+| `routes()` 加一条 `GET /api/v1/__drift__` | 红，69 vs 68，指名 `GET /__drift__` 归入「missing from api/openapi.yaml」 |
+| 契约加一条 `/__drift__` operation | 红，68 vs 69，指名同一条，归入反方向 |
+| 把 path / method 正则改坏 | **因下界而红**（`parsed 0 operations across 54 paths …`），不是变绿 |
+| 挂载点改成 `/api/v2/` | 红，`prefix mounts are [/api/v2/], expected exactly the "/api/v1/" mount` |
+
+基线日志常驻一行 `compared 68 registered operations against 68 declared across 54 paths`，
+一眼能看出比的不是 0 vs 0。
+
+### 3. operation 集合现状：**已经同步，首日即绿**
+
+68 条注册（5 条在根、63 条在受保护 mux）= 契约的 68 个 operation（54 个 path，全部有
+operationId）。**roadmap 说「第一次跑就会把这些缺口暴露为红」不成立于 operation 这一类**
+——它指的其实是响应声明那一类（见第 4 节），而这一类本次只做了手工核对，没有门禁。
+
+### 4. 契约修正（客户端的可判断性）
+
+- **根端点位置**：全局 `servers: /api/v1` 使 `/healthz`、`/readyz`、`/metrics` 的生效
+  地址变成 `/api/v1/*`，而它们在 `server.go:205-207` 挂在根上（三条自身都写了
+  `security: []`）。按 OpenAPI 的做法加 path 级 `servers: [{ url: / }]`，而不是在门禁里
+  加白名单。
+- **四处响应声明缺口**（逐条对照 handler 的 `writeError`/`notFound` 核实）：
+  `POST /alert-channels` +400/+409（`CHANNEL_EXISTS`，`server.go:2477`）、
+  `PUT /alert-channels/{id}` +400/+404（`2517`/`2544`）、
+  `DELETE /alert-channels/{id}` +404（`2561`）、
+  `GET /evidence/{id}/download` +404（`2065`/`2070`；同族 signed 端点早有 404，一写一漏）。
+- **与 roadmap 原文的两处出入**：operation 集合早已同步（上节）；**409 在 POST 上**，
+  不在 PUT/DELETE——PUT/DELETE 缺的是 400/404。另外给 POST 也补了 400（与 PUT 同一个
+  decodeJSON/校验路径），只补 PUT 会让「为什么这条声明那条不声明」变成新的任意性。
+- **生成的 client 类型一并重生成**：实测推翻了「响应声明不进类型」这个先验假设——
+  `api.d.ts` 里 `operations[...].responses` 多了 4 条 400/404/409（6 行）。不重生成的话
+  CI 的 `git diff --exit-code api.d.ts` 会红。`servers` 覆盖确实不进类型。
+
+### 未覆盖
+
+- **响应状态码的系统性缺口未做**：`500` 全文件一个都没有，而 `server.go` 有 14 处直接
+  500 + 41 处 `repositoryFailure`（共享 500）；全局中间件产生的 401/403/429 也没有任何
+  operation 声明。要做就得连 AST 级「声明必须覆盖 handler 能写的状态码」门禁一起做，
+  否则只是逐个补声明。
+- 门禁只管 **operation 集合**，不管响应/参数 schema 是否与实现一致。
+- **没有跑 `compose-smoke.ps1`**：本项只有测试与契约改动，无运行时行为变化。写明以免
+  读者以为跑过。
+- 顺带观察（未改）：`updateAlertChannel` 把仓储失败也映射成 404——数据库故障会表现成
+  「渠道不存在」，与 0.4 修过的那类静默失败同源，不在本项范围。
+
+---
+
 ## 阶段二 2.2 测试与 lint 门禁实测 — 2026-10-09
 
 - **脚本**：golangci-lint v2.14.0 本地实跑、`govulncheck`、全量测试（含真实
