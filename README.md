@@ -64,7 +64,7 @@
 - **多租户运营**：当前不提供。无配额计费，租户只能由 SUPER_ADMIN 创建，
   无跨租户管理员视图。
 - **外部 KMS/Vault**：当前未接入。主密钥以明文环境变量注入。
-  `状态：部分实现 —— 版本化轮换与再加密扫描已实现，再加密尚未在真实数据执行。`
+  `状态：部分实现 —— 版本化轮换与存量密文再加密的扫描（dry-run）与执行路径均已实现并在一次性容器上验证；尚未在真实部署的数据上执行过再加密。`
 - **外部对象存储**：`状态：部分实现 —— MinIO 已实测跑通，外部 S3 演练尚未执行。`
 - **Kubernetes**：当前只有单机 Docker Compose，无 K8s 清单与 Helm chart。
 
@@ -88,6 +88,11 @@ scrape 配置、告警规则与时序存储由部署方提供。需要指标时�
 
 **Go ≥ 1.27.2**。`go.mod` 里有 `toolchain go1.27.2`，本机版本低于它时 `go` 命令会
 自动下载对应工具链（受限网络下需 `GOPROXY=https://goproxy.cn,direct`）。
+
+**前端：Node 24 + pnpm 11.19.0**。CI 的两个 node job 与两个
+应用的镜像都用 `node:24`；pnpm 的版本由根 `package.json` 的 `packageManager` 钉住，
+用 `corepack pnpm …` 调用即可，无需单独安装。仓库**没有**声明 `engines` 下限——下限
+就是镜像与 CI 实际用的那个版本，写在这里以免读者以为可以随意用更旧的 Node。
 
 为什么钉到**补丁级**：`govulncheck` 是 CI 的阻断式门禁，而 1.27.1 的标准库带有
 **11 个可达漏洞**（`net/http`、`net/http/internal/http2`、`net/textproto`、
@@ -268,6 +273,15 @@ corepack pnpm typecheck
 corepack pnpm lint
 corepack pnpm test
 corepack pnpm build
+```
+
+Go 的 lint 不在上面（它需要单独安装，且**必须与 CI 同版本**，否则本地绿而 CI 红、
+或反过来）：
+
+```powershell
+# 版本以 .github/workflows/ci.yml 的 Lint 步骤为准，这里不抄写版本号
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@<该版本>
+golangci-lint run
 ```
 
 有 `make` 的环境（Linux/macOS/CI/WSL）可以用仓库根的 Makefile：

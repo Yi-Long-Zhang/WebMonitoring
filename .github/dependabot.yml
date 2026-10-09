@@ -1,5 +1,7 @@
 # Dependabot keeps the two dependency graphs from silently rotting between the
-# manual batches in the roadmap (2.6). Monthly matches the internal-tool cadence:
+# manual batches the roadmap schedules (the most recent was 2.6, 2026-10-10, which
+# took the Go graph to no outstanding direct updates and the frontend to
+# vite 8 / vitest 5 / vue-router 5 / TypeScript 6). Monthly matches the internal-tool cadence:
 # weekly noise has no audience here, and "never" is how the vite/typescript
 # major-version backlog happened.
 version: 2

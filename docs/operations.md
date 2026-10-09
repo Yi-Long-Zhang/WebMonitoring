@@ -249,7 +249,7 @@ API/Worker 重启。测试数据保存在 `.data-smoke`（已被 Git 忽略）�
 
 | CI job | 跑什么 |
 | --- | --- |
-| `backend` | `gofmt` 校验、`go vet`、`go test`（连真 Postgres 和 Redis 服务容器）、`golangci-lint`、`govulncheck`（阻断式，跑出可达漏洞即失败） |
+| `backend` | `gofmt` 校验、`go vet`、`go test -race -count=1`（连真 Postgres 和 Redis 服务容器，产出覆盖率文件）、**覆盖率下限**（低于 55% 失败）、`golangci-lint`、`govulncheck`（阻断式，跑出可达漏洞即失败） |
 | `node` | 契约生成一致性（`generate:api` 后 `git diff --exit-code` 生成类型）、`lint`、`typecheck`、`test`、`build` |
 | `compose-smoke` | `compose-smoke.ps1` 全链路 |
 | `multi-replica-drill` | `multi-replica-drill.ps1`（默认 2 个 api 副本 + 3 个 http-worker） |
@@ -259,7 +259,9 @@ API/Worker 重启。测试数据保存在 `.data-smoke`（已被 Git 忽略）�
 路径——`compose-smoke` 走的是 API 逐资产建任务那条与调度器无关的路径，碰不到
 迁移 000012 的部分唯一索引。
 
-`golangci-lint` 锁到具体版本（`v1.64.8`）而不是 `latest`：上游发布新 linter 规则
+`golangci-lint` 锁到具体版本而不是 `latest`（**版本号以 `.github/workflows/ci.yml` 的
+Lint 步骤为准，本文件不再抄写**——这里曾写死过 `v1.64.8`，而那个版本读不懂新版 Go 的
+导出数据、其实什么都没检查过，文档却一直宣称它在跑）：上游发布新 linter 规则
 不应让历史提交凭空变红。
 
 **Q：浏览器登录态断言是怎么做的？为什么不能用简单办法？**
