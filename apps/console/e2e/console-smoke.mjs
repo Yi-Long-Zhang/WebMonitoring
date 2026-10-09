@@ -307,9 +307,24 @@ function selectIn(scope, label) {
   return scope.locator(".el-form-item", { hasText: label }).locator(".el-select").first();
 }
 
+// Waits for the view's own text instead of reading once.
+//
+// The console loads its views on demand (apps/console/vite.config.ts's router
+// imports and ConsoleLayout's async components), so the shell -- and this
+// helper's "main" element -- is on screen before the view's chunk arrives.
+// Reading the text once raced against that chunk: measured on 2026-10-09, three
+// of the five sidebar views were read before they rendered, and the walk
+// reported "console view did not render" for views that rendered a moment later.
 async function assertPageHasContent(page, title) {
   await page.locator("main").waitFor();
-  assert.ok((await page.locator("main").innerText()).includes(title), `console view did not render: ${title}`);
+  try {
+    await page.locator("main", { hasText: title }).first().waitFor({ timeout: 15000 });
+  } catch {
+    // Print what was actually on screen: "did not render" on its own sends the
+    // reader looking for a broken view when the usual cause is the wrong view.
+    const seen = (await page.locator("main").innerText()).replace(/\s+/g, " ").slice(0, 200);
+    assert.fail(`console view did not render: ${title} (main shows: ${seen})`);
+  }
 }
 
 
