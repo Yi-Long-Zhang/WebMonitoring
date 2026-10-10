@@ -171,7 +171,8 @@ CI 的 backend 任务通过服务容器设置这两个变量（`.github/workflow
 ## 已经实测过什么？
 
 以下是压测与演练这类「大件」；路线图**每一项**的实测记录见验收总账
-[rehearsals.md](rehearsals.md)（最近一次 2026-10-09，阶段二的 2.0–2.4），
+[rehearsals.md](rehearsals.md)（最近一次 2026-10-10：阶段二的 2.6，以及一次不在路线图
+条目内的修复——SSE 事件流的租户隔离与跨进程投递），
 条目与剩余量的索引见 [roadmap.md](roadmap.md)。
 
 - **多副本（HA）**（2026-09-20）：`--scale api=2 --scale http-worker=3`，
