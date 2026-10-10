@@ -206,3 +206,29 @@ func TestReissueCarriesOneSessionAcrossItsOwnPasswordChange(t *testing.T) {
 		t.Fatalf("a second session survived the password change: %v", err)
 	}
 }
+
+// The documented upgrade behaviour: a session record written before
+// PasswordFingerprint existed reads back as "" and matches no live fingerprint,
+// so it ends on its next use instead of being trusted. Deploying the change
+// therefore logs everyone out once -- operations.md says so, and this is what
+// makes that claim true rather than hopeful.
+func TestSessionWrittenBeforeTheFingerprintExistsIsRejected(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	user := authTestUser(t, repo, "admin", domain.RoleAdmin)
+	service := NewService(repo, time.Hour)
+	ctx := context.Background()
+
+	// Exactly the shape a pre-upgrade deployment still has in Redis: identifiers
+	// and an expiry, no fingerprint.
+	legacy := sessionRecord{
+		ID: "legacy-session", CSRFToken: "csrf", UserID: user.ID,
+		TenantID: domain.DefaultTenantID, ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	if err := service.store.Put(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.Get(ctx, legacy.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("a session predating the fingerprint survived: %v", err)
+	}
+}
