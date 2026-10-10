@@ -12,12 +12,19 @@ import (
 	"webmonitoring/internal/domain"
 )
 
-const maxVerifiedEvidenceBytes = 10 * 1024 * 1024
+// MaxVerifiedBytes bounds any evidence object the control plane will read back.
+//
+// Producers have to refuse to store more than this: an object above the limit is
+// written successfully and then rejected by every read path — downloads answer
+// 404 and reports fail — which is the worst possible outcome for the one
+// artefact an incident may hinge on. Exported so the producers can enforce the
+// same number rather than restating it.
+const MaxVerifiedBytes = 10 * 1024 * 1024
 
 // ReadVerified reads an evidence object into bounded memory and verifies the
 // immutable metadata before it is returned to an API or report exporter.
 func ReadVerified(ctx context.Context, store Store, item domain.Evidence) ([]byte, error) {
-	if item.Size < 0 || item.Size > maxVerifiedEvidenceBytes {
+	if item.Size < 0 || item.Size > MaxVerifiedBytes {
 		return nil, fmt.Errorf("evidence size is outside the allowed verification limit")
 	}
 	if len(item.SHA256) != sha256.Size*2 {

@@ -9,6 +9,25 @@ const port = Number(process.env.PORT || 8081);
 const workerToken = process.env.WORKER_TOKEN || "";
 const maxResponseBytes = 10 * 1024 * 1024;
 
+// A screenshot has to fit two limits the control plane enforces, and they are
+// stated in different units, which is how it came to be sent unbounded:
+//
+//   - internal/evidence/verify.go refuses to read back any evidence object
+//     larger than this, so a bigger PNG is written and then permanently
+//     unreadable -- downloads 404 and reports fail on exactly the artefact an
+//     incident may hinge on;
+//   - internal/browser/client.go reads at most maxCheckResponseBytes of this
+//     worker's JSON response, and the HTML travels in the same response, so the
+//     room left for a screenshot depends on how big the page was.
+//
+// Both numbers are duplicated here on purpose: the worker is a separate process
+// and cannot import them. They must be changed together.
+const maxEvidenceBytes = 10 * 1024 * 1024;
+const maxCheckResponseBytes = 15 * 1024 * 1024;
+// Room for the snapshot JSON, the field names and the JSON syntax around the two
+// base64 strings.
+const responseOverheadBytes = 64 * 1024;
+
 // LoginRequest carries decrypted customer credentials. ADR-0004 explains why the
 // control plane sends plaintext rather than sharing the master key: nothing in
 // this worker may log, echo or return these values.
@@ -141,6 +160,19 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
+// screenshotBudget is how many bytes of PNG the response can still carry, given
+// what the HTML and the snapshot already occupy.
+//
+// It can come out negative, and that is a meaningful answer rather than a
+// clamping bug: it says the page left no room at all, which is what makes the
+// caller omit the screenshot instead of sending one nobody can read back. The
+// caller compares a real screenshot against it, so the sign carries through.
+export function screenshotBudget(htmlBase64Bytes: number, snapshotBytes: number): number {
+  const responseRoom = maxCheckResponseBytes - htmlBase64Bytes - snapshotBytes - responseOverheadBytes;
+  // base64 inflates by 4/3, so room in the response is not room in the PNG.
+  return Math.min(maxEvidenceBytes, Math.floor((responseRoom * 3) / 4));
+}
+
 export async function check(input: CheckRequest) {
   const { target, addresses } = await assertSafeTarget(input.url, input.allowPrivateTargets === true);
   const tlsFingerprint = target.protocol === "https:" ? await probeTLSFingerprint(target.hostname) : "";
@@ -233,23 +265,46 @@ export async function check(input: CheckRequest) {
     const responseHeaders = Object.fromEntries(
       Object.entries(await response.allHeaders()).map(([name, value]) => [name, [value]]),
     );
-    const [snapshot, screenshot] = await Promise.all([
-      extractSnapshot(page, redirects, requests, response.status(), started, input.ignoreSelectors ?? [], {
-        resourceRequests: requests,
-        blockedRequests,
-        popups,
-        dialogs,
-        downloads,
-        responseHeaders,
-        resolvedIps: addresses,
-        tlsFingerprint,
-      }),
-      page.screenshot({ type: "png", fullPage: true }),
-    ]);
-    snapshot.screenshotHash = hash(screenshot);
+    const snapshot = await extractSnapshot(page, redirects, requests, response.status(), started, input.ignoreSelectors ?? [], {
+      resourceRequests: requests,
+      blockedRequests,
+      popups,
+      dialogs,
+      downloads,
+      responseHeaders,
+      resolvedIps: addresses,
+      tlsFingerprint,
+    });
+
+    // Serialised once here because the snapshot shares the response with the
+    // screenshot: what is left after it (and the HTML) is what a screenshot may
+    // occupy, converted back out of base64 to the raw size the evidence gate is
+    // stated in.
+    const htmlBase64 = Buffer.from(body).toString("base64");
+    const budget = screenshotBudget(Buffer.byteLength(htmlBase64), Buffer.byteLength(JSON.stringify(snapshot)));
+
+    // Long pages are the ones whose full-page PNG overflows, and a viewport shot
+    // of the same page is still evidence -- narrower evidence than asked for, but
+    // evidence that can actually be downloaded. Sending the full page anyway
+    // would store an object every read path rejects.
+    let screenshot = await page.screenshot({ type: "png", fullPage: true });
+    let screenshotMode = "FULL";
+    if (screenshot.byteLength > budget) {
+      screenshot = await page.screenshot({ type: "png", fullPage: false });
+      screenshotMode = "VIEWPORT";
+      if (screenshot.byteLength > budget) {
+        // A page big enough to leave no room at all. The HTML and snapshot
+        // evidence are still sent; only the screenshot is dropped, and the mode
+        // says so rather than leaving an empty field to be read as a black page.
+        screenshot = Buffer.alloc(0);
+        screenshotMode = "OMITTED";
+      }
+    }
+    snapshot.screenshotHash = screenshot.length > 0 ? hash(screenshot) : "";
     return {
       snapshot,
-      htmlBase64: Buffer.from(body).toString("base64"),
+      screenshotMode,
+      htmlBase64,
       screenshotBase64: screenshot.toString("base64"),
     };
   } finally {

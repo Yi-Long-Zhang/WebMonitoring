@@ -178,7 +178,13 @@ Chromium 的临时文件与 profile 都落在这里。页面越大越吃紧。�
 - 单页响应有上限 `maxResponseBytes`（worker 自身硬上限 10MB，
   `apps/browser-worker/src/index.ts`；策略侧 `MaxResponseBytes` 的 API 校验
   范围是 1KB–10MB，默认策略 5MB，`internal/api/server.go` 的 `defaultPolicy`）。
-  但 DOM、截图和 profile 不受这个上限约束。
+  DOM 与 profile 不受这个上限约束。
+- **截图现在也受约束**（2026-10-10 起）。此前它与前面两者一样无界，而控制面读回证据的
+  上限是 10MB（`internal/evidence/verify.go`）——超过的截图会**写得进、读不出**：下载
+  404、报告 507。现在 worker 按响应剩余空间给截图定额度：整页超限就退化为视口截图，
+  视口也放不下就整张不发。降级会记在证据写入指标里（`status=degraded_viewport` /
+  `omitted`）。所以**长页面拿到的可能是视口截图而非整页**，排查「截图为什么这么小」时
+  先看这个指标。
 - **【改变状态：改配置并重启】** 提高 `/tmp` 的 `size=`（例如 1g），或降低
   并发。提高 tmpfs 占用的是宿主内存/交换，不是磁盘。
 

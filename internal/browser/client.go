@@ -17,6 +17,14 @@ import (
 	"webmonitoring/internal/security"
 )
 
+// maxCheckResponseBytes bounds the worker's JSON response. The response carries
+// the rendered HTML and the screenshot base64-encoded, so it is larger than
+// either; the worker budgets what it sends against this same number
+// (apps/browser-worker/src/index.ts, which duplicates it because the worker is a
+// separate process). Without the cap an oversized page would be read truncated
+// and surface only as "decode browser worker response".
+const maxCheckResponseBytes = 15 * 1024 * 1024
+
 type Client struct {
 	baseURL string
 	token   string
@@ -101,7 +109,7 @@ func (c *Client) Check(ctx context.Context, asset domain.Asset, policy domain.Mo
 		return detection.CheckResult{}, fmt.Errorf("call browser worker: %w", err)
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 15*1024*1024))
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxCheckResponseBytes))
 	if err != nil {
 		return detection.CheckResult{}, fmt.Errorf("read browser worker response: %w", err)
 	}
@@ -112,6 +120,11 @@ func (c *Client) Check(ctx context.Context, asset domain.Asset, policy domain.Mo
 		Snapshot         domain.Snapshot `json:"snapshot"`
 		HTMLBase64       string          `json:"htmlBase64"`
 		ScreenshotBase64 string          `json:"screenshotBase64"`
+		// ScreenshotMode says what the screenshot covers: FULL, VIEWPORT when the
+		// full page exceeded what this response or the evidence gate allows, or
+		// OMITTED when even the viewport did not fit. An older worker omits it,
+		// which reads as full-page -- what it always sent.
+		ScreenshotMode string `json:"screenshotMode"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return detection.CheckResult{}, fmt.Errorf("decode browser worker response: %w", err)
@@ -124,7 +137,12 @@ func (c *Client) Check(ctx context.Context, asset domain.Asset, policy domain.Mo
 	if err != nil {
 		return detection.CheckResult{}, fmt.Errorf("decode browser screenshot: %w", err)
 	}
-	return detection.CheckResult{Snapshot: payload.Snapshot, RawHTML: rawHTML, Screenshot: screenshot}, nil
+	return detection.CheckResult{
+		Snapshot:       payload.Snapshot,
+		RawHTML:        rawHTML,
+		Screenshot:     screenshot,
+		ScreenshotMode: payload.ScreenshotMode,
+	}, nil
 }
 
 // loginPayload decrypts the stored credentials and revalidates the login URL

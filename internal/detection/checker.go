@@ -29,6 +29,13 @@ type CheckResult struct {
 	Snapshot   domain.Snapshot
 	RawHTML    []byte
 	Screenshot []byte
+	// ScreenshotMode says what Screenshot covers: FULL, VIEWPORT when the full
+	// page was too large to send, or OMITTED when even the viewport was. A
+	// screenshot that could not be sent in full is not the same evidence as one
+	// that could, and it travels to the report rather than being flattened into
+	// the bytes alone. Empty means a worker that predates the field, which is the
+	// full-page behaviour of the time.
+	ScreenshotMode string
 }
 
 type Checker struct {
