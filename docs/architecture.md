@@ -87,8 +87,11 @@ OpenAPI 类型生成到 `apps/console/src/types/generated/`，HTTP 调用集中�
 
 **Q：有什么测试？**
 
-有 API client 和 Worker 单元测试，以及控制台 Playwright E2E
-（`console-smoke`，已纳入 Compose smoke）。
+分四层：Go 单测与真实 Postgres/Redis 的集成用例、控制台的 `jsdom` 组件测试
+（页面渲染、角色可见性、加载/空/失败三态）、Worker 单元测试，以及控制台
+Playwright E2E（`console-smoke`，已纳入 Compose smoke）。其中控制台组件测试在
+`jsdom` 里跑，Element Plus 的表格体渲染不出来（jsdom 无布局引擎），因此表格用桩——
+表格自身的渲染由 E2E 在真实浏览器覆盖，别把桩当成「表格没测」。
 
 **Q：展示采集到的 HTML 安全吗？**
 
@@ -257,7 +260,9 @@ W3C `traceparent`，Worker 的 span 与产生该任务的 API 请求因此不是
 
 ## API 约定
 
-- API 契约使用 OpenAPI，前端客户端和类型由契约生成。
+- API 契约使用 OpenAPI，前端客户端和类型由契约生成；**反向也门禁**：
+  `internal/api/routes_contract_test.go` 比对 `routes()` 与契约的 operation 集合，
+  加了 handler 忘了写契约会红（见 `docs/engineering.md` 第 5 节）。
 - 时间使用 UTC 存储，展示层转换为用户时区。
 - 列表接口必须支持分页、排序和明确的最大页大小。
 - 写操作返回稳定资源 ID 和状态，不返回内部存储路径。

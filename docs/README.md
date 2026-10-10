@@ -134,7 +134,7 @@ CI 的 backend 任务通过服务容器设置这两个变量（`.github/workflow
 - **多租户运营**：当前不提供。无配额计费，租户只能由 SUPER_ADMIN 创建，
   无跨租户管理员视图。
 - **外部 KMS/Vault**：当前未接入。主密钥以明文环境变量注入。
-  `状态：部分实现 —— 版本化轮换与存量密文再加密扫描已实现，再加密尚未在真实数据执行。`
+  `状态：部分实现 —— 版本化轮换与存量密文再加密的扫描（dry-run）与执行路径均已实现并在一次性容器上验证；尚未在真实部署的数据上执行过再加密。`
 - **Kubernetes**：当前只有单机 Docker Compose，无 K8s 清单与 Helm chart。
 - **外部对象存储**：`状态：部分实现 —— MinIO 已实测跑通，外部 S3 演练尚未执行`
   （方案见 [object-storage-rehearsal.md](object-storage-rehearsal.md)）。
