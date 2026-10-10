@@ -75,6 +75,18 @@ func main() {
 	guard := security.NewURLGuard(allowPrivate)
 	broker := events.NewBroker()
 	workerMetrics := metrics.New()
+	// The worker publishes events but serves no console, so its relay is
+	// publish-only: subscribing here would fan every tenant's events into a
+	// process that has no subscribers for them.
+	broker.SetMetrics(workerMetrics)
+	if redisAddress := os.Getenv("REDIS_ADDR"); redisAddress != "" {
+		relay, relayErr := events.NewRedisRelay(ctx, redisAddress, nil, logger)
+		if relayErr != nil {
+			log.Fatal(relayErr)
+		}
+		broker.SetRelay(relay)
+		defer broker.Close()
+	}
 	// The same gate as the API's /metrics: empty token is the development
 	// default, production validation refuses to start without a real one.
 	metricsToken := env("METRICS_TOKEN", "")
