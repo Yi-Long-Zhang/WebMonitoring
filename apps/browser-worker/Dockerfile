@@ -1,7 +1,7 @@
 FROM mcr.microsoft.com/playwright:v1.63.0-noble
 WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
-COPY apps/browser-worker/package.json apps/browser-worker/tsconfig.json apps/browser-worker/
+COPY apps/browser-worker/package.json apps/browser-worker/tsconfig.json apps/browser-worker/tsconfig.build.json apps/browser-worker/
 RUN --mount=type=cache,id=webmonitoring-corepack,target=/root/.cache/node/corepack,sharing=locked \
     --mount=type=cache,id=webmonitoring-pnpm-store,target=/root/.local/share/pnpm/store/v11,sharing=locked \
     corepack enable && pnpm install --filter @webmonitoring/browser-worker... --frozen-lockfile
