@@ -43,8 +43,15 @@
 
 - 只允许明确协议和端口。
 - URL 解析、域名解析和实际连接之间**复核地址**（防止 DNS Rebinding）。
+  这一点在两条检测路径上的**强度不同**：HTTP Worker 用 `DialContext` 把连接钉在已校验的
+  IP 上（`internal/security/urlguard.go`），解析与连接之间没有窗口；浏览器 Worker 是
+  「先解析校验、再让 Chromium 自己解析」，两者之间仍留有一个 TOCTOU 窗口。
+  `状态：部分实现 —— 浏览器路径的 DNS Rebinding 防护只覆盖地址判定，未把连接钉到已校验 IP。`
 - **每次重定向重新执行授权与网络安全校验**。
-- 阻断 loopback、link-local、private、reserved 和 metadata 地址。
+- 阻断 loopback、link-local、private、reserved 和 metadata 地址。**地址判定在两条路径上
+  对齐**：IPv4 与 IPv6 都按同样的语义判，包括把 IPv4-mapped（`::ffff:127.0.0.1`）折叠成
+  它承载的 IPv4 再判——此前浏览器侧只做字符串前缀匹配，这一类地址是被放行的
+  （`apps/browser-worker/src/security.ts`）。
 - 限制重定向次数、连接时间、总时间、响应大小和并发数。
 - 私网检测只能在客户控制的检测节点和明确网络策略下启用（`ALLOW_PRIVATE_TARGETS`，
   默认 `false`）。

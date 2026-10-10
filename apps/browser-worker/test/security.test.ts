@@ -11,6 +11,41 @@ describe("browser target security", () => {
     expect(isBlockedAddress("192.168.1.10")).toBe(true);
   });
 
+  // An IPv4 address wearing IPv6 clothes is still that IPv4 address. Prefix
+  // matching let these through while their dotted forms were blocked, so a
+  // target whose AAAA record was ::ffff:169.254.169.254 reached the metadata
+  // service. Go folds the mapped form with netip.Addr.Unmap; these are the cases
+  // that prove the same fold happens here.
+  it("blocks private and metadata addresses written as IPv4-mapped IPv6", () => {
+    expect(isBlockedAddress("::ffff:127.0.0.1")).toBe(true);
+    expect(isBlockedAddress("::ffff:10.0.0.1")).toBe(true);
+    expect(isBlockedAddress("::ffff:192.168.1.10")).toBe(true);
+    expect(isBlockedAddress("::ffff:169.254.169.254")).toBe(true);
+    // The same address in its hexadecimal form: ::ffff:7f00:1 is ::ffff:127.0.0.1.
+    expect(isBlockedAddress("::ffff:7f00:1")).toBe(true);
+    // IPv4-compatible, deprecated but still accepted by some stacks.
+    expect(isBlockedAddress("::127.0.0.1")).toBe(true);
+  });
+
+  it("blocks the IPv6 ranges Go blocks, in any spelling", () => {
+    expect(isBlockedAddress("::1")).toBe(true);
+    expect(isBlockedAddress("0:0:0:0:0:0:0:1")).toBe(true);
+    expect(isBlockedAddress("::")).toBe(true);
+    expect(isBlockedAddress("fc00::1")).toBe(true);
+    expect(isBlockedAddress("fd12:3456:789a::1")).toBe(true);
+    expect(isBlockedAddress("fe80::1")).toBe(true);
+    // Multicast: the old code had no rule for ff00::/8 at all.
+    expect(isBlockedAddress("ff02::1")).toBe(true);
+  });
+
+  // The other half of the contract: a rule that blocks everything is not a
+  // security control, it is an outage.
+  it("leaves public addresses alone, including a mapped public one", () => {
+    expect(isBlockedAddress("8.8.8.8")).toBe(false);
+    expect(isBlockedAddress("2001:4860:4860::8888")).toBe(false);
+    expect(isBlockedAddress("::ffff:8.8.8.8")).toBe(false);
+  });
+
   it("rejects credentials and unsafe protocols", async () => {
     await expect(assertSafeTarget("file:///etc/passwd")).rejects.toThrow();
     await expect(assertSafeTarget("https://user:pass@example.com")).rejects.toThrow();
