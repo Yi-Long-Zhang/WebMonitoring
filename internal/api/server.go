@@ -1882,7 +1882,7 @@ func (s *Server) batchTransitionIncidents(writer http.ResponseWriter, request *h
 			s.logger.Error("persist incident timeline entry failed", "incident_id", incident.ID, "error", err)
 		}
 		s.appendAudit(request, session.User, "incident.transition", "incident", incident.ID, "SUCCESS", map[string]any{"status": input.Status, "batch": true})
-		s.broker.Publish("incident.updated", incident)
+		s.broker.Publish(incident.TenantID, "incident.updated", incident)
 		s.detection.NotifyIncident(request.Context(), incident, domain.AlertReasonTransitioned)
 		s.notifyAssignee(request.Context(), before, incident)
 		updated++
@@ -1942,7 +1942,7 @@ func (s *Server) addIncidentComment(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	s.appendAudit(request, session.User, "incident.comment", "incident", id, "SUCCESS", map[string]any{"length": length})
-	s.broker.Publish("incident.updated", incident)
+	s.broker.Publish(incident.TenantID, "incident.updated", incident)
 	// The note itself stays out of the notification, as it stays out of the
 	// audit record: what is sent says an incident was commented on, not what was
 	// said. A timeline note can carry customer detail, and a webhook destination
@@ -2037,7 +2037,7 @@ func (s *Server) transitionIncident(writer http.ResponseWriter, request *http.Re
 		s.logger.Error("persist incident timeline entry failed", "incident_id", incident.ID, "error", err)
 	}
 	s.appendAudit(request, session.User, "incident.transition", "incident", incident.ID, "SUCCESS", map[string]any{"status": input.Status})
-	s.broker.Publish("incident.updated", incident)
+	s.broker.Publish(incident.TenantID, "incident.updated", incident)
 	// A status change is exactly the thing an operator watching a channel wants
 	// to hear about -- an incident being acknowledged or resolved is the end of
 	// the loop they were paged into. It runs after the response is decided, so a
@@ -2986,10 +2986,20 @@ func (s *Server) streamEvents(writer http.ResponseWriter, request *http.Request)
 		writeError(writer, request, http.StatusNotImplemented, "SSE_UNSUPPORTED", "服务器不支持事件流", nil)
 		return
 	}
+	// The subscription is scoped to the caller's tenant, and the broker drops an
+	// empty tenant rather than treating it as a wildcard. A session that did not
+	// survive the middleware would therefore open a stream that silently receives
+	// nothing, so it is refused here instead -- a loud 401 beats a stream that
+	// looks connected and never updates.
+	tenantID := principal(request).User.TenantID
+	if tenantID == "" {
+		writeError(writer, request, http.StatusUnauthorized, "AUTH_REQUIRED", "请先登录", nil)
+		return
+	}
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("X-Accel-Buffering", "no")
-	channel, unsubscribe := s.broker.Subscribe()
+	channel, unsubscribe := s.broker.Subscribe(tenantID)
 	defer unsubscribe()
 	controller := http.NewResponseController(writer)
 	write := func(payload string) bool {

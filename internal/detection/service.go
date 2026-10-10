@@ -242,7 +242,7 @@ func (s *Service) Queue(ctx context.Context, tenantID, assetID, mode string) (do
 	if s.metrics != nil {
 		s.metrics.Inc("webmonitoring_detection_jobs_total", map[string]string{"mode": mode, "status": "QUEUED"})
 	}
-	s.broker.Publish("detection.job.queued", job)
+	s.broker.Publish(job.TenantID, "detection.job.queued", job)
 	if s.queue != nil {
 		if err := s.queue.Enqueue(ctx, job); err != nil {
 			_ = s.failJob(ctx, job, "QUEUE_FAILED", err) //nolint:errcheck // 此处返回给调用方的是入队失败本身，failJob 的错误只影响状态标记
@@ -297,7 +297,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 		s.metrics.Inc("webmonitoring_detection_jobs_total", map[string]string{"mode": job.Mode, "status": "RUNNING"})
 	}
 	job.StartedAt = &started
-	s.broker.Publish("detection.job.running", job)
+	s.broker.Publish(job.TenantID, "detection.job.running", job)
 
 	asset, err := s.repository.GetAsset(ctx, job.TenantID, job.AssetID)
 	if err != nil {
@@ -391,7 +391,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 		if err := s.repository.CreateBaseline(ctx, candidate); err != nil {
 			return s.failJob(ctx, job, "BASELINE_CREATE_FAILED", err)
 		}
-		s.broker.Publish("baseline.candidate.created", candidate)
+		s.broker.Publish(candidate.TenantID, "baseline.candidate.created", candidate)
 	} else if baselineErr != nil {
 		return s.failJob(ctx, job, "BASELINE_READ_FAILED", baselineErr)
 	} else {
@@ -426,9 +426,9 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 				return s.failJob(ctx, job, "INCIDENT_WRITE_FAILED", upsertErr)
 			}
 			if outcome == store.IncidentCreated {
-				s.broker.Publish("incident.created", saved)
+				s.broker.Publish(saved.TenantID, "incident.created", saved)
 			} else {
-				s.broker.Publish("incident.updated", saved)
+				s.broker.Publish(saved.TenantID, "incident.updated", saved)
 			}
 			if s.notifier != nil {
 				// A recurrence notifies too. The original code notified only on
@@ -477,7 +477,7 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 	if err := s.repository.UpdateJob(ctx, job); err != nil {
 		return fmt.Errorf("persist successful detection job: %w", err)
 	}
-	s.broker.Publish("detection.job.succeeded", job)
+	s.broker.Publish(job.TenantID, "detection.job.succeeded", job)
 	if s.metrics != nil {
 		s.metrics.Inc("webmonitoring_detection_jobs_total", map[string]string{"mode": job.Mode, "status": string(job.Status)})
 		s.observeJobDuration(job, finished)
@@ -519,7 +519,7 @@ func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code str
 				s.logger.Error("persist detection retry failed", "job_id", job.ID, "error", updateErr)
 				return updateErr
 			} else {
-				s.broker.Publish("detection.job.retrying", job)
+				s.broker.Publish(job.TenantID, "detection.job.retrying", job)
 				if s.metrics != nil {
 					s.metrics.Inc("webmonitoring_detection_jobs_total", map[string]string{"mode": job.Mode, "status": "RETRYING", "error_code": code})
 				}
@@ -550,9 +550,9 @@ func (s *Service) failJob(ctx context.Context, job domain.DetectionJob, code str
 	}
 	s.logger.Warn("detection job failed", "job_id", job.ID, "code", code, "error", err)
 	if job.Status == domain.JobTimedOut {
-		s.broker.Publish("detection.job.timed_out", job)
+		s.broker.Publish(job.TenantID, "detection.job.timed_out", job)
 	} else {
-		s.broker.Publish("detection.job.failed", job)
+		s.broker.Publish(job.TenantID, "detection.job.failed", job)
 	}
 	if s.metrics != nil {
 		s.metrics.Inc("webmonitoring_detection_jobs_total", map[string]string{"mode": job.Mode, "status": string(job.Status), "error_code": code})
