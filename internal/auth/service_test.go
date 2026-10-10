@@ -137,3 +137,72 @@ func TestGetUnknownSession(t *testing.T) {
 		t.Fatalf("expected ErrSessionNotFound for unknown session, got %v", err)
 	}
 }
+
+// A session issued before the password changed must stop resolving: a stolen
+// cookie is the reason someone rotates a credential, and before the fingerprint
+// existed it kept working for the rest of the 12-hour TTL.
+func TestGetRejectsASessionIssuedBeforeAPasswordChange(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	user := authTestUser(t, repo, "admin", domain.RoleAdmin)
+	service := NewService(repo, time.Hour)
+	ctx := context.Background()
+
+	session, err := service.Login(ctx, domain.DefaultTenantID, "admin", "a-long-password-for-testing")
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+
+	// Someone rotates the password -- an administrator reset, or the owner from
+	// another device. Either way this session was not part of it.
+	rotated, err := security.HashPassword("a-rotated-long-password-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user.PasswordHash = rotated
+	if err := repo.UpdateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.Get(ctx, session.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("a session predating the password change still resolved: %v", err)
+	}
+}
+
+// The other half: exactly one session survives a password change, and it is the
+// one that performed it. Signing the changer out of the browser they changed it
+// in would teach people to avoid the action that revokes a stolen cookie.
+func TestReissueCarriesOneSessionAcrossItsOwnPasswordChange(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	user := authTestUser(t, repo, "admin", domain.RoleAdmin)
+	service := NewService(repo, time.Hour)
+	ctx := context.Background()
+
+	changing, err := service.Login(ctx, domain.DefaultTenantID, "admin", "a-long-password-for-testing")
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	elsewhere, err := service.Login(ctx, domain.DefaultTenantID, "admin", "a-long-password-for-testing")
+	if err != nil {
+		t.Fatalf("second login: %v", err)
+	}
+
+	rotated, err := security.HashPassword("a-rotated-long-password-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user.PasswordHash = rotated
+	if err := repo.UpdateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	changing.User = user
+	if err := service.Reissue(ctx, changing); err != nil {
+		t.Fatalf("reissue: %v", err)
+	}
+	if _, err := service.Get(ctx, changing.ID); err != nil {
+		t.Fatalf("the session that changed the password did not survive: %v", err)
+	}
+	if _, err := service.Get(ctx, elsewhere.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("a second session survived the password change: %v", err)
+	}
+}

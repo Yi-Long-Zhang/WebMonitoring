@@ -224,3 +224,43 @@ func TestAdminCanResetOwnSuperAdminPasswordButNotAnotherAccount(t *testing.T) {
 		t.Fatalf("tenant admin resetting a platform account status=%d body=%s", tenantAttempt.Code, tenantAttempt.Body.String())
 	}
 }
+
+// A password reset is a revocation: the target's existing sessions stop
+// resolving on their next request, while the administrator who performed the
+// reset keeps their own. Without the fingerprint the target's cookie kept
+// working until its 12-hour TTL expired.
+func TestResettingAnotherUsersPasswordEndsTheirSessions(t *testing.T) {
+	repository, server := userMgmtServer(t)
+	admin := retentionUser(t, repository, "admin", domain.RoleAdmin)
+	adminCookie, adminCSRF := loginForTest(t, server, admin.Username)
+	target := retentionUser(t, repository, "target", domain.RoleOperator)
+	targetCookie, targetCSRF := loginForTest(t, server, target.Username)
+
+	if before := doJSON(t, server, http.MethodGet, "/api/v1/auth/session", targetCookie, targetCSRF, ""); before.Code != http.StatusOK {
+		t.Fatalf("the target's session did not work before the reset: %d", before.Code)
+	}
+
+	reset := doJSON(t, server, http.MethodPost, "/api/v1/users/"+target.ID+"/password", adminCookie, adminCSRF,
+		`{"password":"a-rotated-long-password-1"}`)
+	if reset.Code != http.StatusNoContent {
+		t.Fatalf("reset status=%d body=%s", reset.Code, reset.Body.String())
+	}
+
+	after := doJSON(t, server, http.MethodGet, "/api/v1/auth/session", targetCookie, targetCSRF, "")
+	if after.Code != http.StatusUnauthorized {
+		t.Fatalf("the reset user's session survived: status=%d body=%s", after.Code, after.Body.String())
+	}
+	// And the administrator is not signed out of their own session by having
+	// reset somebody else's password.
+	mine := doJSON(t, server, http.MethodGet, "/api/v1/auth/session", adminCookie, adminCSRF, "")
+	if mine.Code != http.StatusOK {
+		t.Fatalf("resetting another user ended the administrator's own session: %d", mine.Code)
+	}
+	// The new password is the one that works now.
+	if loginAs(t, server, "target", "a-rotated-long-password-1") != http.StatusCreated {
+		t.Fatal("login with the rotated password failed")
+	}
+	if loginAs(t, server, "target", "a-long-password-for-testing") != http.StatusUnauthorized {
+		t.Fatal("login with the old password unexpectedly succeeded")
+	}
+}

@@ -3,7 +3,9 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -66,11 +68,12 @@ func (s *Service) Login(ctx context.Context, tenantID, username, password string
 		ExpiresAt: time.Now().UTC().Add(s.ttl),
 	}
 	record := sessionRecord{
-		ID:        session.ID,
-		CSRFToken: session.CSRFToken,
-		UserID:    user.ID,
-		TenantID:  tenantID,
-		ExpiresAt: session.ExpiresAt,
+		ID:                  session.ID,
+		CSRFToken:           session.CSRFToken,
+		UserID:              user.ID,
+		TenantID:            tenantID,
+		ExpiresAt:           session.ExpiresAt,
+		PasswordFingerprint: passwordFingerprint(user.PasswordHash),
 	}
 	if err := s.store.Put(ctx, record); err != nil {
 		// Fail closed: a session the store cannot persist must not be reported
@@ -82,10 +85,10 @@ func (s *Service) Login(ctx context.Context, tenantID, username, password string
 }
 
 // Get resolves a session by id. It returns ErrSessionNotFound when the session
-// is absent, expired, or invalidated by a disabled user/tenant, and a wrapped
-// backend error when the store itself fails — callers must answer the former
-// with "not authenticated" and the latter with "try again later", so a store
-// outage cannot log everyone out.
+// is absent, expired, or invalidated by a disabled user/tenant or by a password
+// change, and a wrapped backend error when the store itself fails — callers must
+// answer the former with "not authenticated" and the latter with "try again
+// later", so a store outage cannot log everyone out.
 func (s *Service) Get(ctx context.Context, id string) (Session, error) {
 	record, err := s.store.Get(ctx, id)
 	if err != nil {
@@ -102,6 +105,17 @@ func (s *Service) Get(ctx context.Context, id string) (Session, error) {
 	if err != nil || user.Disabled {
 		// Deleted or disabled users lose their session immediately: the record
 		// is re-hydrated from the repository on every authenticated request.
+		_ = s.store.Delete(ctx, id)
+		return Session{}, ErrSessionNotFound
+	}
+	if record.PasswordFingerprint != passwordFingerprint(user.PasswordHash) {
+		// The password behind this session changed after it was issued. Ending
+		// the session here is what makes "change your password" also mean "sign
+		// the other party out": a stolen cookie is the reason someone rotates a
+		// credential, and until this check existed it kept working for the rest
+		// of the 12-hour TTL. HashPassword salts randomly, so any re-set --
+		// including setting the same password again -- produces a new hash, and
+		// therefore a new fingerprint.
 		_ = s.store.Delete(ctx, id)
 		return Session{}, ErrSessionNotFound
 	}
@@ -123,6 +137,39 @@ func (s *Service) Get(ctx context.Context, id string) (Session, error) {
 
 func (s *Service) Delete(ctx context.Context, id string) {
 	_ = s.store.Delete(ctx, id)
+}
+
+// Reissue rewrites the record behind an existing session so it survives the
+// password change that just happened in it.
+//
+// Without this the user who changes their own password is signed out of the very
+// session they changed it in: Get compares the record's fingerprint against the
+// hash it now reads, and a record written before the change is older than the
+// hash. Carrying one session across the change is also the whole point of the
+// design -- every *other* session of that user is expected to die, and calling
+// this for anything but the session that performed the change would undermine
+// exactly the revocation the fingerprint exists to provide.
+//
+// session.User.PasswordHash must already be the new hash.
+func (s *Service) Reissue(ctx context.Context, session Session) error {
+	return s.store.Put(ctx, sessionRecord{
+		ID:                  session.ID,
+		CSRFToken:           session.CSRFToken,
+		UserID:              session.User.ID,
+		TenantID:            session.User.TenantID,
+		ExpiresAt:           session.ExpiresAt,
+		PasswordFingerprint: passwordFingerprint(session.User.PasswordHash),
+	})
+}
+
+// passwordFingerprint is what a session records to notice that the password
+// behind it changed. It hashes the stored verifier rather than carrying it: the
+// record is read back on every authenticated request, and comparing for change
+// needs no more than a digest. The hash format already embeds a random salt, so
+// this changes whenever the password is re-set.
+func passwordFingerprint(passwordHash string) string {
+	sum := sha256.Sum256([]byte(passwordHash))
+	return hex.EncodeToString(sum[:])
 }
 
 func randomToken(size int) string {
