@@ -10,6 +10,120 @@
 
 ---
 
+## 阶段一缺陷清零（1.2 SSRF 判定 / 1.3 会话吊销 / 1.4 截图大小）— 2026-10-10
+
+- **脚本**：`go test ./...`、`scripts/integration-test.ps1`、`scripts/compose-smoke.ps1`（两次）、
+  `pnpm typecheck|lint|test|build`、六个 Dockerfile 各一次 `docker build`，以及四组 mutation 注入。
+- **专项档案**：`docs/security-model.md`（地址判定对齐与 DNS Rebinding 的状态标注）、
+  `docs/operations.md`（哪些升级会登出在线用户）、`docs/runbooks/browser-worker.md`（截图的
+  大小约束）。
+
+### 1. 1.2 浏览器 Worker 的 SSRF 地址判定与 Go 侧对齐
+
+**断言**：IPv6 判定不能靠字符串前缀；IPv4-mapped 必须折叠成它承载的 IPv4 再判。
+
+**结果**：
+
+- 改前 `apps/browser-worker/src/security.ts` 的 IPv6 分支只判 `::`、`::1`、`fc*`、`fd*`、
+  `fe8*`–`feb*`，于是 `::ffff:169.254.169.254`、`::ffff:127.0.0.1`、十六进制的 `::ffff:7f00:1`
+  与 IPv4-compatible 的 `::127.0.0.1` **一律放行**；`ff00::/8` 完全没有规则。Go 侧同一策略
+  是安全的（`netip.Addr.Unmap()`），**两侧不对称**。
+- 改后展开成 8 个 16 位组，mapped / compatible 折叠后交给**同一套** IPv4 规则；逐条对齐 Go
+  的谓词（unspecified、loopback、`fc00::/7`、`fe80::/10`、`ff00::/8`）；`net.isIPv6` 认了却
+  解析不出来的拒绝。**刻意比 Go 更严一处**：IPv4-compatible 在 Go 侧不被拦，这里判为不可信
+  （失败关闭，代码注释写明这处差异）。
+- **mutation 三处**：去掉折叠 → mapped 那组测试失败（原始缺陷复现）；去掉 `ff00::/8` → IPv6
+  那组失败；**去掉 loopback 规则 → 测试仍全绿**。第三处说明 unspecified 与 loopback 两条规则
+  **当前是冗余的**——`::1` 与展开写法都会落进 IPv4-compatible 折叠、被 `a === 0` 拦下。没有
+  删，也没有假装测试守住了它们：代码注释写明这是与折叠重叠的纵深防御，而重叠本身依赖
+  「`0.0.0.0/8` 被拦」这个巧合，IPv4 表一旦收窄，这两条就是兜底。
+
+### 2. 1.3 改密码与重置密码吊销该用户的其余会话
+
+**断言**：改密码之后，已经拿到的 Cookie 必须立刻失效，而不是等 12 小时 TTL。
+
+**结果**：
+
+- 改前会话记录没有凭据版本，`Get` 每次重水合用户却只检查 `Disabled`：停用用户/租户会立刻
+  踢掉，只有「改密码」这条路没覆盖——而它恰恰是凭据泄露后最常见的处置。
+- 改后记录里存 `sha256(密码哈希)` 作为指纹（哈希串自带随机盐，任何一次重设都变），`Get` 在
+  重水合之后比对，不一致即删会话并 401，与既有 disabled 分支同构。**零数据库迁移**，内存与
+  Redis 两套实现行为一致。
+- **只有执行改密的那个会话被保留**（`Service.Reissue`）。这条规则不是选的，是**既有测试逼出来
+  的**：`TestAdminCanResetOwnSuperAdminPasswordButNotAnotherAccount` 会在重置自己密码之后继续
+  用同一个 cookie 发请求并期望 403；mutation 去掉自重置重发后，该测试报
+  `401 SESSION_EXPIRED`，证明那段是承重的。
+- **运维后果**：该版本之前签发的会话没有这个字段，读出来是空串、与任何指纹都不匹配，因此
+  升级后第一次请求即失效——一次性的全体重新登录。已写进 `operations.md`，并补了
+  `TestSessionWrittenBeforeTheFingerprintExistsIsRejected` 钉住这个声明。
+- **mutation 两处**：去掉指纹比对 → 三条新测试全红，其中 API 那条的失败信息直接显示泄露的
+  会话返回 **200 并带完整会话体（含 csrfToken）**；去掉自重置重发 → 上条既有测试变红。
+
+### 3. 1.4 截图证据的读回上限与视口降级
+
+**断言**：任何被写进存储的证据对象都必须能被读回来。
+
+**结果**：
+
+- 改前读侧门禁 10 MiB（`internal/evidence/verify.go`），写侧（Browser Worker 的截图）**没有
+  门禁**，Go 读 Worker 响应的上限 15 MiB。落在约 10–11.25 MiB 窗口的截图**写得进、读不出**：
+  下载 404、报告 507。S3 部署下预签名直链绕过 `ReadVerified`，同一个对象在 S3 上能下、在本地
+  存储上下不了。
+- 改后 Worker 用 `screenshotBudget` 把**两道门**一起算（15 MiB 是对整个 JSON 响应的约束，而
+  HTML 与快照同在一个响应里、base64 膨胀 4/3）；整页超限退化为视口截图，视口也放不下则整张
+  不发，三种结果由 `screenshotMode` 显式标注。Go 侧加兜底：超限不存并记 `oversized`。
+- **快照记录覆盖范围**：`domain.Snapshot` 增加 `screenshotMode`（契约同步 + 重生成类型，实测
+  幂等），控制台的基线快照抽屉在非整页时显示一行。
+- **两个由实现逼出来的发现**：① 最初只断言「有没有存截图」，那样只有超限那条在测新逻辑
+  （VIEWPORT / OMITTED 的存储结果与 FULL 相同），补上指标断言后四个分支才都承重；② 「存不存」
+  原来在写截图那一刻决定，而快照证据在它**之前**就写完了——超限被拒时快照里会留下「有截图」
+  的描述和一个哈希，而磁盘上什么都没有。现在判定在任何写入之前定下，快照标注与指标从同一个
+  结论派生，OMITTED / oversized 时同时清掉 `screenshotHash`。
+- **mutation 四处**：去掉超限兜底、VIEWPORT 状态写死、OMITTED 状态写死、
+  `screenshotModeForStatus` 恒返回空——四处都被对应子测试抓到。
+
+### 4. 镜像输入集合审计（1.0 那条的同类风险）
+
+1.0 的机制是「本地构建与镜像构建编译的**文件集合**不同」（本地有 `test/`、镜像只 `COPY src`），
+TS 6 把这个差异从静默容忍变成硬错误。用同一只眼睛过一遍其余镜像：
+
+- **Go 的五个镜像**不会静默漂移：缺一个包就是编译失败，不是产物不同。逐个 `docker build`
+  全部 **exit 0**。
+- 比「缺文件」更隐蔽的一类是**平台后缀**（`x_windows.go` / `x_linux.go`）与 build tag：本地按
+  windows 编译、镜像按 linux 编译，会是**两套源码**。实测本仓库**没有**任何平台后缀文件、
+  也没有任何 `//go:build` 标签，这条路暂时不通。
+- **console** 用 `vite build`，Dockerfile 把整个 `apps/console` 都 COPY，不存在集合差异。
+  一处观察（未改）：`apps/console/vite.config.ts` 的 `cacheDir` 指向
+  `../../.cache/vite-console`，即**逃出应用目录**；镜像里以 root 构建所以能写，但换成非 root
+  的构建阶段就会失败。这不是现在的缺陷，是换基础镜像或加 `USER` 时会踩的点。
+
+### 5. 门禁结果
+
+| 检查 | 结果 |
+| --- | --- |
+| `go build` / `go vet` / `go test ./...` | 全绿（21 个包） |
+| `integration-test.ps1` | **通过**（退出码 0，**110.3s**） |
+| `compose-smoke.ps1` | **通过**（两次，退出码 0；含打开快照抽屉的控制台 E2E） |
+| `pnpm typecheck` / `lint` / `test` / `build` | 全绿（console 85 + browser-worker 14） |
+| `docker build`（六个 Dockerfile） | 全部退出码 0 |
+
+### 未覆盖
+
+- **`-race` 仍未跑**（本机无 C 工具链）。1.1 的 relay 与 1.3 的会话比对都在并发路径上。
+- **浏览器路径的 TOCTOU / DNS Rebinding 未修**：地址判定对齐了，但「先解析校验、再让 Chromium
+  自己解析」之间的窗口还在。已在 `security-model.md` 就地标注
+  `状态：部分实现 —— 未把连接钉到已校验 IP`。
+- **截图窗口没有端到端复现**：没有构造出 PNG 恰好落在 10–11.25 MiB 的真实页面（尺寸不可稳定
+  复现），窗口行为由预算算术的单测与 Go 侧兜底子测试覆盖。
+- **控制台「截图范围」那一行从未在浏览器里显示过**：只有截图非整页时才渲染，而 smoke 栈的页面
+  很小、走 FULL 分支。抽屉也没有组件级测试，`pnpm test` 不覆盖它。
+- **`internal/auth` 没有真实 Redis 的集成用例**（全部走 miniredis），密码指纹在真 Redis 上的
+  行为由 compose-smoke 间接覆盖。
+- **升级效应没有被真实升级观察到**：`operations.md` 说「现存会话一次性失效」，那条行为由单测
+  （写一条无指纹的记录再读）钉住，但没有在一次真实升级里观察过。
+
+---
+
 ## SSE 事件流租户隔离与跨进程投递 — 2026-10-10
 
 - **脚本**：`scripts/compose-smoke.ps1`（三次：一次红、一次通过、一次 `-KeepRunning` 供手工
