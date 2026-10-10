@@ -29,6 +29,20 @@ function shorten(value: string, max = 120) {
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
+// A screenshot that could not be sent whole is not the same evidence as one that
+// could, and the operator reviewing a candidate baseline is exactly who needs to
+// know which they are looking at. Absent means the capture predates the field
+// (full page); FULL is shown as nothing to say.
+const screenshotModeLabels: Record<string, string> = {
+  VIEWPORT: "仅视口（整页超出证据大小上限）",
+  OMITTED: "未保存（连视口都放不下）",
+};
+
+const screenshotModeLabel = computed(() => {
+  const mode = snapshot.value?.screenshotMode;
+  return mode ? screenshotModeLabels[mode] : undefined;
+});
+
 // Record<string, string[]> flattened to rows: responseHeaders is the only map
 // in the snapshot, and a table row per header name reads better than one cell
 // holding a joined list.
@@ -67,6 +81,7 @@ const downloadRows = computed(() => snapshot.value?.downloads ?? []);
             <el-descriptions-item label="内容哈希"><span class="mono">{{ snapshot?.contentHash }}</span></el-descriptions-item>
             <el-descriptions-item label="文本哈希"><span class="mono">{{ snapshot?.textHash }}</span></el-descriptions-item>
             <el-descriptions-item v-if="snapshot?.screenshotHash" label="截图哈希"><span class="mono">{{ snapshot.screenshotHash }}</span></el-descriptions-item>
+            <el-descriptions-item v-if="screenshotModeLabel" label="截图范围">{{ screenshotModeLabel }}</el-descriptions-item>
             <el-descriptions-item label="采集时间">{{ formatTime(snapshot?.capturedAt) }}</el-descriptions-item>
             <el-descriptions-item label="耗时">{{ snapshot?.durationMillis }} ms</el-descriptions-item>
             <el-descriptions-item v-if="snapshot?.tlsFingerprint" label="TLS 指纹"><span class="mono">{{ snapshot.tlsFingerprint }}</span></el-descriptions-item>

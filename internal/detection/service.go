@@ -328,6 +328,28 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 		return s.failJob(ctx, job, code, err)
 	}
 
+	// What happens to the screenshot is settled here, before anything is written:
+	// the snapshot evidence is stored first and must not describe a screenshot
+	// that never lands. The metric and the snapshot then both come from this one
+	// decision instead of being derived twice and drifting apart.
+	screenshotStatus := screenshotDisposition(result)
+	if screenshotStatus == "oversized" {
+		// The worker budgets against this same limit, so reaching here means it
+		// did not. Storing the object anyway would write evidence that every read
+		// path rejects -- downloads 404, reports fail -- so the cap is enforced on
+		// this side too. A worker cannot be the only thing standing between the
+		// store and an object nothing can read.
+		s.logger.Warn("browser worker sent an oversized screenshot; storing none",
+			"job_id", job.ID, "asset_id", asset.ID, "bytes", len(result.Screenshot),
+			"limit", evidence.MaxVerifiedBytes, "mode", result.ScreenshotMode)
+	}
+	result.Snapshot.ScreenshotMode = screenshotModeForStatus(screenshotStatus)
+	if screenshotStatus == "omitted" || screenshotStatus == "oversized" {
+		// A snapshot that says there is no screenshot should not also carry a
+		// fingerprint of one.
+		result.Snapshot.ScreenshotHash = ""
+	}
+
 	evidenceIDs := make([]string, 0, 3)
 	htmlEvidence, err := s.evidence.Put(asset.TenantID, asset.ID, job.ID, "page.html", "text/html", result.RawHTML)
 	if err != nil {
@@ -354,43 +376,21 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 	s.recordEvidenceWrite("snapshot.json", "success")
 	evidenceIDs = append(evidenceIDs, snapshotEvidence.ID)
 
-	if result.ScreenshotMode == "OMITTED" {
-		// The worker could not fit even a viewport screenshot into the room the
-		// response left. Recorded rather than passed over in silence: this run
-		// has no screenshot evidence, and that is a property of the check an
-		// operator may need to see.
-		s.recordEvidenceWrite("screenshot.png", "omitted")
-	} else if len(result.Screenshot) > 0 {
-		if int64(len(result.Screenshot)) > evidence.MaxVerifiedBytes {
-			// The worker budgets against this same limit, so reaching here means
-			// it did not. Storing the object anyway would write evidence that
-			// every read path rejects -- downloads 404, reports fail -- so the
-			// cap is enforced on this side too. A worker cannot be the only thing
-			// standing between the store and an unreadable object.
-			s.recordEvidenceWrite("screenshot.png", "oversized")
-			s.logger.Warn("browser worker sent an oversized screenshot; storing none",
-				"job_id", job.ID, "asset_id", asset.ID, "bytes", len(result.Screenshot),
-				"limit", evidence.MaxVerifiedBytes, "mode", result.ScreenshotMode)
-		} else {
-			screenshotEvidence, putErr := s.evidence.Put(
-				asset.TenantID, asset.ID, job.ID, "screenshot.png", "image/png", result.Screenshot,
-			)
-			if putErr != nil {
-				return s.failJob(ctx, job, "EVIDENCE_WRITE_FAILED", putErr)
-			}
-			screenshotRetainUntil := screenshotEvidence.CreatedAt.Add(s.evidenceRetention)
-			screenshotEvidence.RetainUntil = &screenshotRetainUntil
-			if createErr := s.repository.CreateEvidence(ctx, screenshotEvidence); createErr != nil {
-				return s.failJob(ctx, job, "EVIDENCE_METADATA_FAILED", createErr)
-			}
-			status := "success"
-			if result.ScreenshotMode == "VIEWPORT" {
-				status = "degraded_viewport"
-			}
-			s.recordEvidenceWrite("screenshot.png", status)
-			evidenceIDs = append(evidenceIDs, screenshotEvidence.ID)
-			result.Snapshot.ScreenshotHash = screenshotEvidence.SHA256
+	s.recordEvidenceWrite("screenshot.png", screenshotStatus)
+	if screenshotStatus == "success" || screenshotStatus == "degraded_viewport" {
+		screenshotEvidence, putErr := s.evidence.Put(
+			asset.TenantID, asset.ID, job.ID, "screenshot.png", "image/png", result.Screenshot,
+		)
+		if putErr != nil {
+			return s.failJob(ctx, job, "EVIDENCE_WRITE_FAILED", putErr)
 		}
+		screenshotRetainUntil := screenshotEvidence.CreatedAt.Add(s.evidenceRetention)
+		screenshotEvidence.RetainUntil = &screenshotRetainUntil
+		if createErr := s.repository.CreateEvidence(ctx, screenshotEvidence); createErr != nil {
+			return s.failJob(ctx, job, "EVIDENCE_METADATA_FAILED", createErr)
+		}
+		evidenceIDs = append(evidenceIDs, screenshotEvidence.ID)
+		result.Snapshot.ScreenshotHash = screenshotEvidence.SHA256
 	}
 
 	baseline, baselineErr := s.repository.GetApprovedBaseline(ctx, asset.TenantID, asset.ID)
@@ -738,6 +738,39 @@ func (s *Service) enqueueRetry(ctx context.Context, job domain.DetectionJob) err
 		}
 	}()
 	return nil
+}
+
+// screenshotDisposition decides what happens to the screenshot: stored as sent,
+// stored narrower than asked for, or not stored at all.
+//
+// It is one function because the snapshot and the metric both have to agree with
+// the write, and deriving them separately is how three answers to one question
+// drift apart.
+func screenshotDisposition(result CheckResult) string {
+	switch {
+	case len(result.Screenshot) == 0 || result.ScreenshotMode == "OMITTED":
+		return "omitted"
+	case int64(len(result.Screenshot)) > evidence.MaxVerifiedBytes:
+		return "oversized"
+	case result.ScreenshotMode == "VIEWPORT":
+		return "degraded_viewport"
+	default:
+		return "success"
+	}
+}
+
+// screenshotModeForStatus translates the disposition into the value stored on the
+// snapshot. Oversized and omitted are the same thing to whoever reads the
+// evidence later: there is no screenshot to look at.
+func screenshotModeForStatus(status string) string {
+	switch status {
+	case "degraded_viewport":
+		return "VIEWPORT"
+	case "omitted", "oversized":
+		return "OMITTED"
+	default:
+		return "FULL"
+	}
 }
 
 func (s *Service) recordEvidenceWrite(kind, status string) {
