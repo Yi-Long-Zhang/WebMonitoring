@@ -70,6 +70,19 @@ func main() {
 	allowPrivate, _ := strconv.ParseBool(env("ALLOW_PRIVATE_TARGETS", "false")) //nolint:errcheck // 解析失败会静默回落到 false；这一处已列入收尾项（配置静默回落）
 	guard := security.NewURLGuard(allowPrivate)
 	broker := events.NewBroker()
+	// A console attaches to whichever replica it reaches, while the events that
+	// matter most -- a detection run finding something new -- are published by
+	// the worker process. Without a transport between the two, those events went
+	// into a broker that had no subscribers at all, and the console only learned
+	// about them when someone refreshed by hand.
+	if redisAddress := os.Getenv("REDIS_ADDR"); redisAddress != "" {
+		relay, relayErr := events.NewRedisRelay(ctx, redisAddress, broker.DeliverRemote, logger)
+		if relayErr != nil {
+			log.Fatal(relayErr)
+		}
+		broker.SetRelay(relay)
+		defer broker.Close()
+	}
 	var secretCipher security.SecretBox
 	if secret := config.SecretKeyMaterial(os.Getenv); secret != "" {
 		if cipher, cipherErr := security.NewKeyring(secret); cipherErr == nil {
@@ -197,6 +210,7 @@ func main() {
 	}
 	detectionService.SetMetrics(server.Metrics())
 	notifier.SetMetrics(server.Metrics())
+	broker.SetMetrics(server.Metrics())
 	if detectionQueue != nil {
 		detectionQueue.SetMetrics(server.Metrics())
 	}

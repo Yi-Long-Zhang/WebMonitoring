@@ -130,7 +130,7 @@ internal/
 ├── metrics/        # 指标注册表与路径归并
 ├── telemetry/      # OpenTelemetry（默认 no-op）
 ├── rewrap/         # 存量密钥密文再加密
-├── events/         # SSE 广播
+├── events/         # 按租户的 SSE 广播与跨进程投递
 ├── identity/       # 标识生成
 ├── migrate/        # 迁移执行器
 ├── version/        # 构建标识（由 ldflags 注入）
@@ -279,6 +279,20 @@ W3C `traceparent`，Worker 的 span 与产生该任务的 API 请求因此不是
 管理操作使用 REST。告警和任务状态推送**优先使用 SSE**；只有需要双向实时交互时
 才考虑 WebSocket。
 
+**Q：控制台挂着的那个事件流，事件是从哪来的？**
+
+`GET /api/v1/events/stream` 订阅的是**本进程** broker 上该租户的事件。单进程运行时
+这就够了；分成 API 与 worker 之后不够——**检测跑在 http-worker 进程**，它发布的事件
+在那个进程里没有任何订阅者，控制台因此看不到新事件自己冒出来。
+
+所以配了 `REDIS_ADDR` 时每个进程都挂一个 relay（`internal/events/redis.go`）：按
+**每租户一个 channel**（`webmonitoring:events:<tenantID>`）收发，收到的消息只做本地
+扇出、**绝不回发**。投递是**尽力而为**的：Redis pub/sub 不持久化，丢一条等于控制台晚
+刷新一次——前端只把事件当「有变化，去重新拉取」的信号（`services/events/stream.ts`
+监听事件名、从不读 payload），所以不做补偿。未配 `REDIS_ADDR` 时不构造 relay，行为与
+单进程时逐字节相同。决策与取舍见
+[ADR-0006](adr/0006-cross-process-event-delivery.md)。
+
 **Q：队列消费者必须满足什么？**
 
 - 具备幂等键。
@@ -294,13 +308,14 @@ W3C `traceparent`，Worker 的 span 与产生该任务的 API 请求因此不是
 **Q：能横向扩容吗？**
 
 **能，且已实测。** 但横向扩容需要逐项满足条件，否则扩容会**在不报错的情况下**
-重复执行检测或重复删除证据。三处阻塞点都已解决：
+重复执行检测、重复删除证据，或让控制台看不到新事件。四处阻塞点都已解决：
 
 | 位置 | 机制 | 状态 |
 | --- | --- | --- |
 | `internal/detection/scheduler.go` | 每个副本各自跑 30 秒 tick，`due()` 先读任务表再决定是否入队 | 已解决：迁移 `000012` 的部分唯一索引 `detection_jobs_active_uidx` 限制每个 `(tenant_id, asset_id, mode)` 最多一个 `QUEUED`/`RUNNING` 任务，竞争失败方由 `store.ErrJobAlreadyActive` 静默吞掉 |
 | `apps/http-worker` 的消费者身份 | `WORKER_ID` 曾被 Compose 固定为 `http-worker-1` | 已解决：`config.WorkerIdentity` 在未显式配置时按 hostname + 随机后缀生成每进程身份，生产门禁拒绝两个历史固定值 |
 | `internal/maintenance/retention.go` | 无锁，且 `RunDaily` 启动时立即执行一次全量清理 | 已解决：`store.ReplicaLease` 提供 PostgreSQL 会话级 advisory lock，未取得租约的副本直接跳过本轮；定时清理会为实际发生的删除补写审计事件 |
+| `internal/events/` 的事件流 | 每个副本的 broker 只服务**本进程**的订阅者，而检测事件由 http-worker 发布——它那个 broker 一个订阅者都没有 | 已解决：配 `REDIS_ADDR` 时每个进程挂一个 relay，按租户 channel 跨进程投递。投递尽力而为，丢一条只是控制台晚刷新一次（见上一节的 Q） |
 
 **Q：怎么验证扩容是安全的？**
 
