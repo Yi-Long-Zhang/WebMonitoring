@@ -29,6 +29,11 @@ type sessionRecord struct {
 	UserID    string    `json:"userId"`
 	TenantID  string    `json:"tenantId"`
 	ExpiresAt time.Time `json:"expiresAt"`
+	// PasswordFingerprint ties the session to the password it was issued under.
+	// A record written before this field existed carries "" -- which matches no
+	// live fingerprint, so those sessions are ended on their next use rather
+	// than trusted. That is the intended migration for a credential change.
+	PasswordFingerprint string `json:"passwordFingerprint,omitempty"`
 }
 
 // SessionStore persists session records. It is implemented over an in-process

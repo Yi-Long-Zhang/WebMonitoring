@@ -1343,6 +1343,24 @@ func (s *Server) resetUserPassword(writer http.ResponseWriter, request *http.Req
 		s.repositoryFailure(writer, request, "reset user password", err)
 		return
 	}
+	// Resetting someone else's password *is* the revocation: their other sessions
+	// stop resolving on their next request, because the record they carry no
+	// longer matches the hash it is checked against.
+	//
+	// Resetting your own is the exception. The seeded SUPER_ADMIN rotates its
+	// password through this endpoint (it is the only administrator-facing channel
+	// that reaches that account), and signing the caller out of the console they
+	// just used to do it would be a regression, not a security gain.
+	if user.ID == session.User.ID {
+		session.User = user
+		if err := s.auth.Reissue(request.Context(), session); err != nil {
+			// The password did change, so this is not a failed request: a 500
+			// would tell the caller their change did not take, and they would
+			// retry with a password that no longer works. The session ends on its
+			// next use instead, and the log says why.
+			s.logger.Error("reissue session after own password reset failed", "user_id", user.ID, "error", err)
+		}
+	}
 	s.appendAudit(request, session.User, "user.password.reset", "user", user.ID, "SUCCESS", nil)
 	writeJSON(writer, http.StatusNoContent, nil)
 }
@@ -1374,6 +1392,16 @@ func (s *Server) changeOwnPassword(writer http.ResponseWriter, request *http.Req
 	if err := s.repository.UpdateUser(request.Context(), user); err != nil {
 		s.repositoryFailure(writer, request, "change password", err)
 		return
+	}
+	// The session that changed the password is carried across the change; every
+	// other session of this user dies on its next request. Changing your own
+	// password and being signed out of the browser you did it in would train
+	// people to avoid the one action that revokes a stolen cookie.
+	session.User = user
+	if err := s.auth.Reissue(request.Context(), session); err != nil {
+		// As in resetUserPassword: the password changed, so this is not a failure
+		// to report as one. The session ends on its next use.
+		s.logger.Error("reissue session after password change failed", "user_id", user.ID, "error", err)
 	}
 	s.appendAudit(request, session.User, "auth.password.change", "user", user.ID, "SUCCESS", nil)
 	writeJSON(writer, http.StatusNoContent, nil)
