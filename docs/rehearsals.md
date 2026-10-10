@@ -10,6 +10,126 @@
 
 ---
 
+## SSE 事件流租户隔离与跨进程投递 — 2026-10-10
+
+- **脚本**：`scripts/compose-smoke.ps1`（三次：一次红、一次通过、一次 `-KeepRunning` 供手工
+  观测）、`scripts/multi-replica-drill.ps1`（两次）、`scripts/integration-test.ps1`、
+  `docker build -f apps/browser-worker/Dockerfile`，以及一次手工的 SSE 观测。
+- **专项档案**：[ADR-0006](adr/0006-cross-process-event-delivery.md)。
+
+### 1. 修的是什么
+
+两条独立缺陷叠在同一个 broker 上：
+
+- **跨租户泄露**：订阅者是扁平的 `map[chan []byte]struct{}`，`Publish` 无差别广播，而
+  `streamEvents` 订阅时不带租户——任意已登录用户（含只读的 AUDITOR）都能收到其他租户的事件
+  转移与备注，载荷是完整 `domain.Incident`（含 `tenantId`/`title`/`signals`/`evidenceIds`）。
+- **跨进程到不了**：broker 是纯进程内的。Compose 恒设 `REDIS_ADDR`，检测跑在 http-worker
+  进程，它的 broker **一个订阅者都没有**，所以 worker 发布的
+  `detection.job.running/succeeded/…`、`baseline.candidate.created`，以及最要紧的检测产生的
+  新事件 `incident.created/updated`，全部投进虚空。能到达的只有 API 进程自己发布的两类
+  （调度器排队的 `detection.job.queued`、事件转移/备注的 `incident.updated`）。
+
+四个提交：`fd63d3b`（租户作用域）、`946c4b9`（relay 接缝）、`1796300`（Redis relay）、
+`89d52f2`（装配到两个 main）；合并 `0163313`、`fabe14e`、`e324699`、`ab79b5c`。
+
+### 2. 跨进程投递：真实栈上的手工观测
+
+`compose-smoke.ps1 -KeepRunning` 起栈后，用 admin 会话把一条 SSE 挂在 **API**（宿主 18080），
+再对 `fc19c1de-…`（Compose smoke target，VERIFIED）各排一个 HTTP 与一个 BROWSER 任务。
+流上收到：
+
+| 事件 | 次数 | 发布进程 |
+| --- | --- | --- |
+| `detection.job.queued` | 2 | API 的调度器（**修复前也能到**） |
+| `detection.job.running` | 2 | **http-worker** |
+| `detection.job.succeeded` | 2 | **http-worker** |
+| `incident.updated` | 2 | **http-worker** |
+
+后三行是判据：它们只在 `internal/detection/service.go` 的 `Process` 里发布，而 Compose 拓扑下
+`Process` 只跑在 worker。拓扑证据也补齐了：`docker inspect` 显示 **api 与 http-worker 两个容器
+都设了 `REDIS_ADDR`**（所以检测是投队列、不是 API 内联执行），worker 日志有
+`detection worker started` 与消费者身份。载荷抽查完整（含 `signals`、`evidenceIds`、
+`ruleVersion`、`severity`）。
+
+**修复前三类都到不了任何浏览器**——这正是「检测发现了新事件，控制台不会自己冒出来」那条。
+
+### 3. 租户隔离
+
+- 端到端负向（HTTP 层、两条真实 SSE 连接）由 `TestStreamEventsAreScopedToTenant` 覆盖：
+  A 的事件 B 收不到，反向再来一次。
+- **红→绿已验证**：把 broker 临时改回广播语义后，`TestPublishIsScopedToTenant`、
+  `TestPublishWithEmptyTenantDeliversToNobody` 与上面那条端到端测试全部失败，端到端那条报
+  `another tenant's stream received the event: received "update"`。
+- 跨进程侧同样做了 mutation 检验，三处逐个注入、对应测试都失败：去掉 origin 回显抑制、
+  去掉 channel/tenant 一致性检查、把投递租户写死。
+
+### 4. 顺带修掉的既有缺陷：browser-worker 镜像自 TS6 升级起就构建不了
+
+第一次 compose-smoke 在 `browser-worker stage-0 7/7` 失败：
+
+```
+tsconfig.json(9,5): error TS5011: The common source directory of 'tsconfig.json' is
+'./src'. The 'rootDir' setting must be explicitly set to this or another path to
+adjust your output's file layout.
+```
+
+`tsconfig.json` 的 `include` 含 `test/**/*.ts` 而**没有 `rootDir`**，Dockerfile 只 `COPY src`：
+本地（`test/` 在）公共源目录是包根、不报错；镜像里变成 `./src`，而 TypeScript 6 把它从
+「静默调整输出布局」升级成硬错误。**决定性验证**：本地把 `test/` 挪开再 `pnpm build`，复现出
+同一条错误。
+
+**它为什么没被 2.6 抓到**：2.6 的五个批次里，**只有 TypeScript 6 那一批（`f798def`）的门禁
+没有列 `compose-smoke`**（前三批都列了），而它正是弄坏镜像的那一批。2.6 第 2(a) 节甚至已经
+记下了同一机制的另一半——「`tsc` 构建会把测试源码也编译进 `dist/test/`」——只是当时修的是
+vitest 侧。**这是门禁覆盖面问题，不是门禁强度问题。**
+
+修法 `04d040f`（合并 `ec13fd1`）：build 专用 `tsconfig.build.json`（显式 `rootDir: "src"`、
+只 include `src`）+ Dockerfile 的 COPY 带上它。**顺带关掉了盲区**：本地与镜像现在编译同一
+文件集合，本地 `pnpm build` 就等于跑镜像里那一步。
+
+### 5. 门禁结果
+
+| 检查 | 结果 |
+| --- | --- |
+| `compose-smoke.ps1` | **通过**（退出码 0）。1.0 修复前同一脚本是红的 |
+| `multi-replica-drill.ps1` | **通过**（退出码 0），数字见下 |
+| `integration-test.ps1` | **通过**（退出码 0，**159.0s**）；`internal/events` 13.454s，含两条真实 Redis 用例 |
+| `go build` / `go vet` / `go test ./...` | 全绿（21 个包） |
+| `pnpm typecheck` / `test` / `build` | 全绿（console 85 例、browser-worker 8 例） |
+| `docker build`（browser-worker） | 退出码 0 |
+
+多副本演练（`--scale api=2 --scale http-worker=3`）：
+
+```
+  assets            : 40
+  detection jobs    : 40 (expected 40)
+  duplicate groups  : 0
+  succeeded         : 40
+  wall clock        : 8.2s
+  worker consumers  : 00f206cd5757-
+a1e85b10e6e2-
+4a8dfb05089b-
+```
+
+**一条与历史不符、值得记下的观察**：wall clock **8.2s**。此前三次落在 234–244s，roadmap 据此
+记为「已复现但根因未查清」并把预算放宽到 900s。这次那个平台期没有出现——说明它是**间歇的，
+不是恒定的**。单次 8.2s 不足以说根因消失，但足以否掉「240s 是常态」这个印象。
+
+### 未覆盖
+
+- **`-race` 没跑**：本机无 C 工具链（`gcc not found`）。本改动最需要它的地方恰是 sender 协程、
+  退避重建与并发 `Publish` 的交错，以 CI 为准。
+- **CI 上的 compose-smoke / drill job**：仍未在 GitHub 上验证（本机无 `gh`）。**推论**（非实测）：
+  CI 的 `node` job 跑的是带 `test/` 的完整检出，所以它是绿的；而 `compose-smoke` job 会构建
+  镜像，因此它在 main 上**大概率一直是红的**。这条需要推送后确认。
+- **drill 无法确定性覆盖跨进程 SSE**：drill 只发布一个入口端口，无法把 SSE 连接与产出事件的
+  副本确定性地分到不同实例上。跨进程那一条由第 2 节的手工观测，以及「两个 relay + 真实
+  Redis」的集成用例覆盖；drill 侧只作不回归的回归。
+- 真实 Redis 上的**断线重连**只在一次性容器里跑过，没做「停掉 Redis 再恢复」的时序演练。
+
+---
+
 ## 阶段二 2.6 依赖升级与供应链实测 — 2026-10-10
 
 - **脚本**：`go get` + `go mod tidy`（`GOPROXY=https://goproxy.cn,direct`）、
