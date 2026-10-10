@@ -250,13 +250,23 @@ type FormRef struct {
 }
 
 type Snapshot struct {
-	URL              string              `json:"url"`
-	FinalURL         string              `json:"finalUrl"`
-	StatusCode       int                 `json:"statusCode"`
-	Title            string              `json:"title"`
-	ContentHash      string              `json:"contentHash"`
-	TextHash         string              `json:"textHash"`
-	ScreenshotHash   string              `json:"screenshotHash,omitempty"`
+	URL            string `json:"url"`
+	FinalURL       string `json:"finalUrl"`
+	StatusCode     int    `json:"statusCode"`
+	Title          string `json:"title"`
+	ContentHash    string `json:"contentHash"`
+	TextHash       string `json:"textHash"`
+	ScreenshotHash string `json:"screenshotHash,omitempty"`
+	// ScreenshotMode says what the screenshot covers: FULL, or VIEWPORT when the
+	// whole page was too large to carry within the evidence limit, or OMITTED
+	// when even the viewport did not fit.
+	//
+	// It travels with the snapshot rather than living only in a metric, because
+	// the degradation outlives the process that recorded it: an auditor opening
+	// the evidence months later has to be able to tell a narrower capture from a
+	// complete one. Empty means the capture predates this field, which is the
+	// full-page behaviour of the time.
+	ScreenshotMode   string              `json:"screenshotMode,omitempty"`
 	Scripts          []ResourceRef       `json:"scripts"`
 	Links            []string            `json:"links"`
 	IFrames          []string            `json:"iframes"`

@@ -1625,6 +1625,11 @@ components:
         contentHash: { type: string }
         textHash: { type: string }
         screenshotHash: { type: string }
+        # Absent means the capture predates this field, which is the full-page
+        # behaviour of the time. VIEWPORT and OMITTED say the screenshot is
+        # narrower than the page, or missing, because the full page would not fit
+        # within the size the control plane can read back.
+        screenshotMode: { type: string, enum: [FULL, VIEWPORT, OMITTED] }
         scripts:
           type: array
           items:

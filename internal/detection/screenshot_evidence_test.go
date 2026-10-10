@@ -2,6 +2,7 @@ package detection
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"strconv"
@@ -20,6 +21,28 @@ type stubBrowserChecker struct{ result CheckResult }
 
 func (s stubBrowserChecker) Check(context.Context, domain.Asset, domain.MonitorPolicy) (CheckResult, error) {
 	return s.result, nil
+}
+
+// readSnapshotEvidence reads the stored snapshot back the way a reader of the
+// evidence would: through the verified read path, not from the in-memory result.
+func readSnapshotEvidence(t *testing.T, ctx context.Context, evidenceStore evidence.Store, items []domain.Evidence) domain.Snapshot {
+	t.Helper()
+	for _, item := range items {
+		if item.Kind != "snapshot.json" {
+			continue
+		}
+		content, err := evidence.ReadVerified(ctx, evidenceStore, item)
+		if err != nil {
+			t.Fatalf("read snapshot evidence: %v", err)
+		}
+		var snapshot domain.Snapshot
+		if err := json.Unmarshal(content, &snapshot); err != nil {
+			t.Fatalf("decode snapshot evidence: %v", err)
+		}
+		return snapshot
+	}
+	t.Fatal("no snapshot.json evidence was stored")
+	return domain.Snapshot{}
 }
 
 // evidenceWriteCount reads one series out of the registry's exposition text, so
@@ -57,13 +80,14 @@ func TestScreenshotEvidenceRespectsTheReadLimit(t *testing.T) {
 		screenshot []byte
 		wantStored bool
 		wantStatus string
+		wantMode   string
 	}{
-		{"full-page screenshot inside the limit is stored", "FULL", []byte("png-bytes"), true, "success"},
-		{"viewport fallback is stored too, and says so", "VIEWPORT", []byte("png-bytes"), true, "degraded_viewport"},
-		{"omitted screenshot stores nothing, and says so", "OMITTED", nil, false, "omitted"},
+		{"full-page screenshot inside the limit is stored", "FULL", []byte("png-bytes"), true, "success", "FULL"},
+		{"viewport fallback is stored too, and says so", "VIEWPORT", []byte("png-bytes"), true, "degraded_viewport", "VIEWPORT"},
+		{"omitted screenshot stores nothing, and says so", "OMITTED", nil, false, "omitted", "OMITTED"},
 		{
 			"a screenshot above the limit is refused even though the worker sent it",
-			"FULL", make([]byte, evidence.MaxVerifiedBytes+1), false, "oversized",
+			"FULL", make([]byte, evidence.MaxVerifiedBytes+1), false, "oversized", "OMITTED",
 		},
 	}
 
@@ -132,6 +156,15 @@ func TestScreenshotEvidenceRespectsTheReadLimit(t *testing.T) {
 			// operator reading the run's history has to go on.
 			if got := evidenceWriteCount(t, registry, testCase.wantStatus); got <= 0 {
 				t.Fatalf("no evidence write recorded with status %q", testCase.wantStatus)
+			}
+
+			// And the same fact has to be in the stored snapshot, not only in the
+			// metric: the metric lives as long as the process, while the snapshot
+			// is what someone opens months later to judge the capture.
+			storedSnapshot := readSnapshotEvidence(t, ctx, evidenceStore, stored)
+			if storedSnapshot.ScreenshotMode != testCase.wantMode {
+				t.Fatalf("stored snapshot screenshotMode=%q, want %q",
+					storedSnapshot.ScreenshotMode, testCase.wantMode)
 			}
 		})
 	}

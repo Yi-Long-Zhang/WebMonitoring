@@ -1199,6 +1199,8 @@ export interface components {
             contentHash: string;
             textHash: string;
             screenshotHash?: string;
+            /** @enum {string} */
+            screenshotMode?: "FULL" | "VIEWPORT" | "OMITTED";
             scripts?: {
                 url?: string;
                 inlineHash?: string;
