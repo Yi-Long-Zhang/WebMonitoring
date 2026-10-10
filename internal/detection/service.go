@@ -354,21 +354,43 @@ func (s *Service) Process(ctx context.Context, job domain.DetectionJob) error {
 	s.recordEvidenceWrite("snapshot.json", "success")
 	evidenceIDs = append(evidenceIDs, snapshotEvidence.ID)
 
-	if len(result.Screenshot) > 0 {
-		screenshotEvidence, putErr := s.evidence.Put(
-			asset.TenantID, asset.ID, job.ID, "screenshot.png", "image/png", result.Screenshot,
-		)
-		if putErr != nil {
-			return s.failJob(ctx, job, "EVIDENCE_WRITE_FAILED", putErr)
+	if result.ScreenshotMode == "OMITTED" {
+		// The worker could not fit even a viewport screenshot into the room the
+		// response left. Recorded rather than passed over in silence: this run
+		// has no screenshot evidence, and that is a property of the check an
+		// operator may need to see.
+		s.recordEvidenceWrite("screenshot.png", "omitted")
+	} else if len(result.Screenshot) > 0 {
+		if int64(len(result.Screenshot)) > evidence.MaxVerifiedBytes {
+			// The worker budgets against this same limit, so reaching here means
+			// it did not. Storing the object anyway would write evidence that
+			// every read path rejects -- downloads 404, reports fail -- so the
+			// cap is enforced on this side too. A worker cannot be the only thing
+			// standing between the store and an unreadable object.
+			s.recordEvidenceWrite("screenshot.png", "oversized")
+			s.logger.Warn("browser worker sent an oversized screenshot; storing none",
+				"job_id", job.ID, "asset_id", asset.ID, "bytes", len(result.Screenshot),
+				"limit", evidence.MaxVerifiedBytes, "mode", result.ScreenshotMode)
+		} else {
+			screenshotEvidence, putErr := s.evidence.Put(
+				asset.TenantID, asset.ID, job.ID, "screenshot.png", "image/png", result.Screenshot,
+			)
+			if putErr != nil {
+				return s.failJob(ctx, job, "EVIDENCE_WRITE_FAILED", putErr)
+			}
+			screenshotRetainUntil := screenshotEvidence.CreatedAt.Add(s.evidenceRetention)
+			screenshotEvidence.RetainUntil = &screenshotRetainUntil
+			if createErr := s.repository.CreateEvidence(ctx, screenshotEvidence); createErr != nil {
+				return s.failJob(ctx, job, "EVIDENCE_METADATA_FAILED", createErr)
+			}
+			status := "success"
+			if result.ScreenshotMode == "VIEWPORT" {
+				status = "degraded_viewport"
+			}
+			s.recordEvidenceWrite("screenshot.png", status)
+			evidenceIDs = append(evidenceIDs, screenshotEvidence.ID)
+			result.Snapshot.ScreenshotHash = screenshotEvidence.SHA256
 		}
-		screenshotRetainUntil := screenshotEvidence.CreatedAt.Add(s.evidenceRetention)
-		screenshotEvidence.RetainUntil = &screenshotRetainUntil
-		if createErr := s.repository.CreateEvidence(ctx, screenshotEvidence); createErr != nil {
-			return s.failJob(ctx, job, "EVIDENCE_METADATA_FAILED", createErr)
-		}
-		s.recordEvidenceWrite("screenshot.png", "success")
-		evidenceIDs = append(evidenceIDs, screenshotEvidence.ID)
-		result.Snapshot.ScreenshotHash = screenshotEvidence.SHA256
 	}
 
 	baseline, baselineErr := s.repository.GetApprovedBaseline(ctx, asset.TenantID, asset.ID)

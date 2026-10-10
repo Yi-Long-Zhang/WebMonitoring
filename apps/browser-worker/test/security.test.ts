@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { chromium } from "playwright";
-import { extractSnapshot } from "../src/index.js";
+import { extractSnapshot, screenshotBudget } from "../src/index.js";
 import { assertSafeTarget, isBlockedAddress, probeTLSFingerprint } from "../src/security.js";
 
 describe("browser target security", () => {
@@ -102,4 +102,33 @@ describe("browser target security", () => {
       await browser.close();
     }
   }, 15_000);
+});
+
+// The screenshot budget is the arithmetic that decides whether a screenshot is
+// sent whole, sent as a viewport, or dropped. It is tested here rather than
+// through a real page because producing a page whose PNG lands in the narrow
+// window between the two limits is not something a test can do repeatably -- and
+// the arithmetic is the part that can be wrong.
+describe("screenshot budget", () => {
+  it("is the evidence limit when the response has room to spare", () => {
+    // A small page: the response is nearly empty, so the 10 MiB evidence gate is
+    // what binds -- beyond it the control plane could never read the object back.
+    expect(screenshotBudget(64 * 1024, 8 * 1024)).toBe(10 * 1024 * 1024);
+  });
+
+  it("shrinks as the page grows, because the HTML shares the response", () => {
+    // 10 MiB of HTML leaves the 15 MiB response almost full, so what remains for
+    // a screenshot is well under the evidence limit -- and is what actually
+    // applies.
+    const budget = screenshotBudget(Math.floor(10 * 1024 * 1024 * (4 / 3)), 8 * 1024);
+    expect(budget).toBeGreaterThan(0);
+    expect(budget).toBeLessThan(2 * 1024 * 1024);
+  });
+
+  it("goes negative rather than being clamped when the page fills the response", () => {
+    // Negative is the honest answer ("no room"), and the caller's comparison
+    // turns it into OMITTED. Clamping to zero would hide that the page, not the
+    // screenshot, is what used the room.
+    expect(screenshotBudget(15 * 1024 * 1024, 1024)).toBeLessThanOrEqual(0);
+  });
 });
