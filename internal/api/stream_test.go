@@ -124,7 +124,7 @@ func TestStreamEventsSurvivesPastServerWriteTimeout(t *testing.T) {
 
 	// Pass the server's absolute WriteTimeout before anything else is written.
 	time.Sleep(600 * time.Millisecond)
-	broker.Publish("incident.created", map[string]any{"id": "incident-1"})
+	broker.Publish(defaultTenant, "incident.created", map[string]any{"id": "incident-1"})
 
 	select {
 	case got, ok := <-received:
@@ -167,6 +167,11 @@ func TestStreamEventsStopsOnWriteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A principal has to be present or the tenant guard returns before the first
+	// write, and this test would pass without ever exercising the write path it
+	// exists to cover.
+	request = request.WithContext(context.WithValue(request.Context(), principalKey{},
+		auth.Session{User: domain.User{TenantID: defaultTenant}}))
 
 	done := make(chan struct{})
 	go func() {
@@ -179,4 +184,139 @@ func TestStreamEventsStopsOnWriteFailure(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("streamEvents kept running after the first write failed")
 	}
+}
+
+// tenantBID is a second tenant, distinct from defaultTenant. It exists so the
+// stream tests can prove an event reaches exactly one tenant.
+const tenantBID = "00000000-0000-4000-8000-000000000002"
+
+// startStreamServer serves the API on a loopback port, so the tests below drive
+// the real SSE path -- cookies, streaming, the flusher -- rather than a recorder
+// that cannot stream.
+func startStreamServer(t *testing.T, server *Server) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := &http.Server{Handler: server, ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = httpServer.Serve(listener) }()
+	t.Cleanup(func() { _ = httpServer.Close() })
+	return "http://" + listener.Addr().String()
+}
+
+// loginOverHTTP signs in over the wire so the cookie is the real one. The body
+// carries the optional tenant slug, which is what selects a non-default tenant.
+func loginOverHTTP(t *testing.T, address, body string) *http.Cookie {
+	t.Helper()
+	response, err := http.Post(address+"/api/v1/auth/session", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close() //nolint:errcheck // 测试收尾，失败不影响断言
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("login status: %d", response.StatusCode)
+	}
+	cookies := response.Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("login returned no session cookie")
+	}
+	return cookies[0]
+}
+
+// openStream opens an SSE connection and reports the event names it receives.
+func openStream(t *testing.T, address string, cookie *http.Cookie) (<-chan string, func()) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodGet, address+"/api/v1/events/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.AddCookie(cookie)
+	stream, err := (&http.Client{}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream.StatusCode != http.StatusOK {
+		_ = stream.Body.Close() //nolint:errcheck // 上面已经失败，这里只是收尾
+		t.Fatalf("stream status: %d", stream.StatusCode)
+	}
+	events := make(chan string, 16)
+	go func() {
+		defer close(events)
+		reader := bufio.NewReader(stream.Body)
+		for {
+			line, readErr := reader.ReadString('\n')
+			if readErr != nil {
+				return
+			}
+			if name, ok := strings.CutPrefix(strings.TrimSpace(line), "event: "); ok {
+				events <- name
+			}
+		}
+	}()
+	return events, func() { _ = stream.Body.Close() } //nolint:errcheck // 测试收尾
+}
+
+func expectEvent(t *testing.T, events <-chan string, want, who string) {
+	t.Helper()
+	select {
+	case got, open := <-events:
+		if !open {
+			t.Fatalf("%s: the stream closed before the event arrived", who)
+		}
+		if got != want {
+			t.Fatalf("%s: expected %q, got %q", who, want, got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("%s: no %q event arrived", who, want)
+	}
+}
+
+func expectNoEvent(t *testing.T, events <-chan string, message string) {
+	t.Helper()
+	select {
+	case got := <-events:
+		t.Fatalf("%s: received %q", message, got)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestStreamEventsAreScopedToTenant is the negative test for the leak. Before
+// the broker was scoped to a tenant, any authenticated user -- an AUDITOR
+// included -- received every other tenant's incident transitions, carrying
+// tenantId, title, signals and evidenceIds. Opening two streams and publishing
+// to one tenant is what proves the scoping, in both directions.
+func TestStreamEventsAreScopedToTenant(t *testing.T) {
+	server, broker := newStreamTestServer(t)
+	repository, ok := server.repository.(*store.MemoryRepository)
+	if !ok {
+		t.Fatalf("newStreamTestServer built a %T, want *store.MemoryRepository", server.repository)
+	}
+	retentionUserInTenant(t, repository, tenantBID, "tenantb-admin", domain.RoleAdmin)
+
+	address := startStreamServer(t, server)
+	ownerCookie := loginOverHTTP(t, address,
+		`{"username":"admin","password":"a-long-password-for-testing"}`)
+	otherCookie := loginOverHTTP(t, address,
+		`{"tenant":"ttenantb-admin","username":"tenantb-admin","password":"a-long-password-for-testing"}`)
+
+	ownerEvents, closeOwner := openStream(t, address, ownerCookie)
+	defer closeOwner()
+	otherEvents, closeOther := openStream(t, address, otherCookie)
+	defer closeOther()
+
+	if got := <-ownerEvents; got != "ready" {
+		t.Fatalf("owner stream: expected ready, got %q", got)
+	}
+	if got := <-otherEvents; got != "ready" {
+		t.Fatalf("other stream: expected ready, got %q", got)
+	}
+
+	broker.Publish(defaultTenant, "incident.created", map[string]any{"id": "owner-incident"})
+	expectEvent(t, ownerEvents, "update", "the publishing tenant")
+	expectNoEvent(t, otherEvents, "another tenant's stream received the event")
+
+	broker.Publish(tenantBID, "incident.created", map[string]any{"id": "other-incident"})
+	expectEvent(t, otherEvents, "update", "the second publishing tenant")
+	expectNoEvent(t, ownerEvents, "the first tenant's stream received the second tenant's event")
 }

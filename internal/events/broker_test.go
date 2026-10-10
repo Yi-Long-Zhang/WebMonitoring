@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+// Two tenants that are never equal: one shared by the existing tests, one used
+// to prove that a publish reaches exactly one of them.
+const (
+	testTenant  = "tenant-1"
+	otherTenant = "tenant-2"
+)
+
 func decodeEvent(t *testing.T, raw []byte) (string, map[string]any) {
 	t.Helper()
 	var envelope struct {
@@ -22,12 +29,12 @@ func decodeEvent(t *testing.T, raw []byte) (string, map[string]any) {
 
 func TestPublishReachesEverySubscriber(t *testing.T) {
 	broker := NewBroker()
-	first, closeFirst := broker.Subscribe()
+	first, closeFirst := broker.Subscribe(testTenant)
 	defer closeFirst()
-	second, closeSecond := broker.Subscribe()
+	second, closeSecond := broker.Subscribe(testTenant)
 	defer closeSecond()
 
-	broker.Publish("incident.created", map[string]string{"incidentId": "incident-1"})
+	broker.Publish(testTenant, "incident.created", map[string]string{"incidentId": "incident-1"})
 
 	for index, channel := range []<-chan []byte{first, second} {
 		select {
@@ -45,9 +52,57 @@ func TestPublishReachesEverySubscriber(t *testing.T) {
 	}
 }
 
+// A publish must reach only the subscribers of the tenant it names. Before the
+// broker was scoped, one tenant's incident carried tenantId, title, signals and
+// evidenceIds into every other tenant's open console stream.
+func TestPublishIsScopedToTenant(t *testing.T) {
+	broker := NewBroker()
+	mine, closeMine := broker.Subscribe(testTenant)
+	defer closeMine()
+	theirs, closeTheirs := broker.Subscribe(otherTenant)
+	defer closeTheirs()
+
+	broker.Publish(testTenant, "incident.created", map[string]string{"incidentId": "incident-1"})
+
+	select {
+	case raw := <-mine:
+		if eventType, _ := decodeEvent(t, raw); eventType != "incident.created" {
+			t.Fatalf("owner got type %q", eventType)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the publishing tenant's subscriber received nothing")
+	}
+	select {
+	case raw := <-theirs:
+		t.Fatalf("another tenant's subscriber received %q", raw)
+	default:
+	}
+}
+
+// An empty tenant must deliver to nobody rather than to everybody. This is the
+// failure-closed end of the scoping: a caller that loses the tenant gets a
+// dropped event, never a broadcast.
+func TestPublishWithEmptyTenantDeliversToNobody(t *testing.T) {
+	broker := NewBroker()
+	empty, closeEmpty := broker.Subscribe("")
+	defer closeEmpty()
+	named, closeNamed := broker.Subscribe(testTenant)
+	defer closeNamed()
+
+	broker.Publish("", "incident.created", map[string]string{"incidentId": "incident-1"})
+
+	for name, channel := range map[string]<-chan []byte{"empty tenant": empty, "named tenant": named} {
+		select {
+		case raw := <-channel:
+			t.Fatalf("%s subscriber received %q", name, raw)
+		default:
+		}
+	}
+}
+
 func TestUnsubscribeClosesTheChannelAndStopsDelivery(t *testing.T) {
 	broker := NewBroker()
-	channel, unsubscribe := broker.Subscribe()
+	channel, unsubscribe := broker.Subscribe(testTenant)
 
 	unsubscribe()
 	if _, open := <-channel; open {
@@ -55,17 +110,26 @@ func TestUnsubscribeClosesTheChannelAndStopsDelivery(t *testing.T) {
 	}
 	// Publishing after unsubscribe must neither panic (send on a closed channel)
 	// nor resurrect the subscriber.
-	broker.Publish("incident.created", map[string]string{"incidentId": "ignored"})
+	broker.Publish(testTenant, "incident.created", map[string]string{"incidentId": "ignored"})
 	if _, open := <-channel; open {
 		t.Fatal("a closed channel must stay empty")
 	}
 	// Unsubscribing twice must not close the channel twice.
 	unsubscribe()
+	// Nor may it take another tenant's subscriber down with it.
+	survivor, closeSurvivor := broker.Subscribe(otherTenant)
+	defer closeSurvivor()
+	broker.Publish(otherTenant, "incident.created", map[string]string{"incidentId": "survives"})
+	select {
+	case <-survivor:
+	case <-time.After(time.Second):
+		t.Fatal("unsubscribing one tenant removed another tenant's subscriber")
+	}
 }
 
 func TestSlowSubscriberIsDroppedWithoutBlockingThePublisher(t *testing.T) {
 	broker := NewBroker()
-	channel, unsubscribe := broker.Subscribe()
+	channel, unsubscribe := broker.Subscribe(testTenant)
 	defer unsubscribe()
 
 	const published = 500
@@ -73,7 +137,7 @@ func TestSlowSubscriberIsDroppedWithoutBlockingThePublisher(t *testing.T) {
 	go func() {
 		defer close(done)
 		for index := range published {
-			broker.Publish("detection.job.succeeded", map[string]int{"index": index})
+			broker.Publish(testTenant, "detection.job.succeeded", map[string]int{"index": index})
 		}
 	}()
 	select {
@@ -104,11 +168,11 @@ func TestSlowSubscriberIsDroppedWithoutBlockingThePublisher(t *testing.T) {
 
 func TestPublishWithUnmarshalablePayloadIsIgnored(t *testing.T) {
 	broker := NewBroker()
-	channel, unsubscribe := broker.Subscribe()
+	channel, unsubscribe := broker.Subscribe(testTenant)
 	defer unsubscribe()
 
 	// A channel cannot be marshalled, so the event never reaches the wire.
-	broker.Publish("incident.created", make(chan int))
+	broker.Publish(testTenant, "incident.created", make(chan int))
 
 	select {
 	case raw := <-channel:
@@ -140,7 +204,7 @@ func TestConcurrentPublishAndSubscribe(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					broker.Publish("detection.job.queued", map[string]string{"jobId": "job-1"})
+					broker.Publish(testTenant, "detection.job.queued", map[string]string{"jobId": "job-1"})
 				}
 			}
 		}()
@@ -150,7 +214,7 @@ func TestConcurrentPublishAndSubscribe(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			for range 200 {
-				channel, unsubscribe := broker.Subscribe()
+				channel, unsubscribe := broker.Subscribe(testTenant)
 				// Blocking rather than non-blocking: publishers are running flat
 				// out until stop closes, so a fresh subscriber receives a frame
 				// rather than being tested for luck.
@@ -174,15 +238,16 @@ func TestConcurrentPublishAndSubscribe(t *testing.T) {
 		t.Fatal("no subscriber received anything while four publishers were running")
 	}
 	// Every unsubscribe must have taken effect: a subscription left behind would
-	// leak a channel and, in the SSE handler, a goroutine.
+	// leak a channel and, in the SSE handler, a goroutine. The outer map is
+	// counted too, so a tenant key that outlives its last subscriber fails here.
 	if leaked := len(broker.subscribers); leaked != 0 {
-		t.Fatalf("%d subscription(s) survived the storm", leaked)
+		t.Fatalf("%d tenant(s) survived the storm", leaked)
 	}
 	// And the broker still works afterwards -- publishing to a closed subscriber
 	// set would panic on a closed channel, which the loop above could hide.
-	channel, unsubscribe := broker.Subscribe()
+	channel, unsubscribe := broker.Subscribe(testTenant)
 	defer unsubscribe()
-	broker.Publish("incident.created", map[string]string{"id": "incident-1"})
+	broker.Publish(testTenant, "incident.created", map[string]string{"id": "incident-1"})
 	select {
 	case <-channel:
 	case <-time.After(time.Second):
