@@ -55,19 +55,48 @@ function Invoke-Required([string]$Command, [string[]]$Arguments) {
     }
 }
 
-# The MinIO client runs as an ephemeral Compose service on the Compose network, so
-# the rehearsal needs no host `mc` installation and no published MinIO port. The
-# credentials are handed over through MC_HOST_backup rather than argv so they do
-# not appear in the process list.
-function Invoke-Mc([string]$Command, [string]$Mount) {
-    $env:MC_HOST_backup = "http://$($env:S3_ACCESS_KEY):$($env:S3_SECRET_KEY)@$minioEndpoint"
-    $arguments = @("compose") + $composeArgs + @(
-        "run", "--rm", "-T", "--no-deps", "--entrypoint", "sh", "-e", "MC_HOST_backup"
-    )
+# rclone runs as an ephemeral Compose service on the Compose network, so the
+# rehearsal needs no host rclone installation and no published object-store port.
+# The credentials are exported into this process and handed to the container by
+# name (`-e NAME`) rather than by value, so they never appear in the process list.
+#
+# The remote is described entirely by RCLONE_CONFIG_<REMOTE>_* environment
+# variables. FORCE_PATH_STYLE is required: the Compose network has no DNS entry
+# for the virtual-host form `bucket.objectstore`, which is what rclone would
+# otherwise address. NO_CHECK_BUCKET is deliberately NOT set -- with the check
+# left on, a backup aimed at a bucket that does not exist fails loudly instead of
+# quietly producing an empty backup, and `rclone mkdir` performs a real
+# MakeBucket (with the check off it is a silent no-op, which would leave a
+# restore into an empty store failing later with NoSuchBucket and no explanation).
+$objectStoreRemoteVariables = @(
+    "RCLONE_CONFIG_BACKUP_TYPE",
+    "RCLONE_CONFIG_BACKUP_PROVIDER",
+    "RCLONE_CONFIG_BACKUP_ENDPOINT",
+    "RCLONE_CONFIG_BACKUP_ACCESS_KEY_ID",
+    "RCLONE_CONFIG_BACKUP_SECRET_ACCESS_KEY",
+    "RCLONE_CONFIG_BACKUP_FORCE_PATH_STYLE"
+)
+
+function Invoke-Rclone([string[]]$Command, [string]$Mount) {
+    $env:RCLONE_CONFIG_BACKUP_TYPE = "s3"
+    # "Other" is rclone's label for any S3-compatible server that is not one of
+    # the named clouds; the Ceph profile it would otherwise pick among is for a
+    # different quirk set.
+    $env:RCLONE_CONFIG_BACKUP_PROVIDER = "Other"
+    $env:RCLONE_CONFIG_BACKUP_ENDPOINT = "http://$objectStoreEndpoint"
+    $env:RCLONE_CONFIG_BACKUP_ACCESS_KEY_ID = $env:S3_ACCESS_KEY
+    $env:RCLONE_CONFIG_BACKUP_SECRET_ACCESS_KEY = $env:S3_SECRET_KEY
+    $env:RCLONE_CONFIG_BACKUP_FORCE_PATH_STYLE = "true"
+
+    $arguments = @("compose") + $composeArgs + @("run", "--rm", "-T", "--no-deps")
+    foreach ($variable in $objectStoreRemoteVariables) {
+        $arguments += @("-e", $variable)
+    }
     if ($Mount) {
         $arguments += @("-v", $Mount)
     }
-    $arguments += @("mc", "-c", $Command)
+    # The image's entrypoint is already `rclone`, so the command follows directly.
+    $arguments += @("rclone") + $Command
     Invoke-Required "docker" $arguments
 }
 
@@ -91,9 +120,10 @@ if (-not $env:S3_ACCESS_KEY -or -not $env:S3_SECRET_KEY) {
     throw "S3_ACCESS_KEY and S3_SECRET_KEY are required for evidence backup"
 }
 $s3Bucket = if ($env:S3_BUCKET) { $env:S3_BUCKET } else { "evidence" }
-# The mc container talks to MinIO over the Compose network, not through the host
-# port mapping. Override for a deployment whose object store lives elsewhere.
-$minioEndpoint = if ($env:S3_INTERNAL_ENDPOINT) { $env:S3_INTERNAL_ENDPOINT } else { "minio:9000" }
+# The rclone container talks to the object store over the Compose network, not
+# through the host port mapping. Override for a deployment whose object store
+# lives elsewhere.
+$objectStoreEndpoint = if ($env:S3_INTERNAL_ENDPOINT) { $env:S3_INTERNAL_ENDPOINT } else { "objectstore:9000" }
 
 # pg_dump writes the dump inside the container and docker copies it out, so no
 # binary stream crosses the PowerShell pipeline.
@@ -108,7 +138,10 @@ $copyArguments = @("compose") + $composeArgs + @("cp", "postgres:/tmp/webmonitor
 Invoke-Required "docker" $copyArguments
 
 $mount = "$((Resolve-Path -LiteralPath $evidenceRoot).Path):/backup"
-Invoke-Mc "mc mirror --overwrite backup/$s3Bucket /backup" $mount
+# --ignore-times reproduces `mc mirror --overwrite`: without it rclone skips any
+# object whose size and mtime already match, which would leave a re-run against a
+# non-empty destination silently holding the previous run's bytes.
+Invoke-Rclone @("copy", "--ignore-times", "backup:$s3Bucket", "/backup") $mount
 
 # Best-effort Redis snapshot. The streams are transient work queues whose source
 # of truth is the jobs table, so the restore path never replays this file; it is

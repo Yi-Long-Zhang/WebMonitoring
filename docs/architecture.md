@@ -23,7 +23,7 @@ Go HTTP Worker       Playwright Browser Worker
   |                         |
   +------ Signal & Evidence Result ------+
                     |
-          PostgreSQL + S3/MinIO
+          PostgreSQL + S3
 ```
 
 **Q：为什么不直接上微服务？**
@@ -200,7 +200,7 @@ Browser Worker（[ADR-0004](adr/0004-browser-login-credentials.md)）：凭据�
 | --- | --- |
 | PostgreSQL | 租户、资产、策略、基线、任务、信号、事件、审计 |
 | Redis Streams | 检测任务、结果消费、重试和削峰 |
-| S3/MinIO | HTML、截图、HAR、差异文件等大对象 |
+| S3 兼容对象存储 | HTML、截图、差异文件等大对象 |
 | Prometheus | 指标 |
 | OpenTelemetry | Trace 和跨 Worker 关联 |
 | 结构化日志 | 运行排障，不保存敏感原文 |

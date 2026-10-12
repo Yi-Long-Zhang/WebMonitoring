@@ -103,7 +103,7 @@ docker compose -f deployments/compose/docker-compose.yml run --rm migrate baseli
 
 **Q：备份应该包含什么？**
 
-不只是 PostgreSQL。**MinIO 证据对象不能只备份元数据**，必须同时备份：
+不只是 PostgreSQL。**对象存储里的证据对象不能只备份元数据**，必须同时备份：
 
 1. PostgreSQL custom dump。
 2. evidence bucket。
@@ -114,7 +114,9 @@ docker compose -f deployments/compose/docker-compose.yml run --rm migrate baseli
 ```powershell
 $env:S3_ACCESS_KEY = "..."
 $env:S3_SECRET_KEY = "..."
-$env:S3_ENDPOINT = "http://localhost:9000"
+# 端点不用设：客户端跑在 Compose 网络里，默认就是 objectstore:9000。
+# 只有对象存储不在本 Compose 项目内时才覆盖它：
+# $env:S3_INTERNAL_ENDPOINT = "objectstore:9000"
 .\scripts\compose-backup.ps1 -OutputRoot .data-backups
 ```
 
@@ -165,12 +167,29 @@ docker compose -f deployments/compose/docker-compose.yml exec -T postgres `
 
 **Q：手工备份 evidence bucket 怎么做？**
 
-使用客户批准的 S3 兼容备份工具，并保留对象校验和。以 MinIO Client 为例：
+使用客户批准的 S3 兼容备份工具，并保留对象校验和。以 `rclone` 为例——注意宿主机上
+**没有**可用的对象存储端口（Compose 不发布它），所以客户端要跑在 Compose 网络里，
+端点写 `objectstore:9000`：
 
 ```powershell
-mc alias set local http://localhost:9000 $env:S3_ACCESS_KEY $env:S3_SECRET_KEY
-mc mirror --overwrite local/evidence D:\backups\webmonitoring\evidence
+# 与 scripts/compose-backup.ps1 里的 Invoke-Rclone 建立的是同一个 remote；
+# 凭据以变量名而非值的形式传入，因此不出现在命令行参数里
+$env:RCLONE_CONFIG_BACKUP_TYPE = "s3"
+$env:RCLONE_CONFIG_BACKUP_PROVIDER = "Other"
+$env:RCLONE_CONFIG_BACKUP_ENDPOINT = "http://objectstore:9000"
+$env:RCLONE_CONFIG_BACKUP_ACCESS_KEY_ID = $env:S3_ACCESS_KEY
+$env:RCLONE_CONFIG_BACKUP_SECRET_ACCESS_KEY = $env:S3_SECRET_KEY
+$env:RCLONE_CONFIG_BACKUP_FORCE_PATH_STYLE = "true"
+docker compose -f deployments/compose/docker-compose.yml run --rm -T --no-deps `
+  -e RCLONE_CONFIG_BACKUP_TYPE -e RCLONE_CONFIG_BACKUP_PROVIDER `
+  -e RCLONE_CONFIG_BACKUP_ENDPOINT -e RCLONE_CONFIG_BACKUP_ACCESS_KEY_ID `
+  -e RCLONE_CONFIG_BACKUP_SECRET_ACCESS_KEY -e RCLONE_CONFIG_BACKUP_FORCE_PATH_STYLE `
+  rclone copy --ignore-times backup:evidence D:\backups\webmonitoring\evidence
 ```
+
+`--ignore-times` 不是可选项：rclone 默认按“大小 + mtime 相同就跳过”的启发式，实测中
+一个同大小、同 mtime、内容不同的对象确实被静默跳过。带 manifest 与逐文件 SHA-256 的
+成品备份用 `scripts/compose-backup.ps1`，不要手工拼装。
 
 **Q：恢复的顺序是什么？**
 
@@ -386,20 +405,21 @@ nginx 只在启动时解析一次，`restart api` 换了容器 IP 之后就指�
 
 **Q：首次运行要拉哪些镜像？**
 
-`golang`、`node`、`nginx`、`postgres`、`redis`、`gcr.io/distroless` 和
-`mcr.microsoft.com/playwright` 基础镜像。
+`golang`、`node`、`nginx`、`postgres`、`redis`、`versity/versitygw`、
+`rclone/rclone`、`gcr.io/distroless` 和 `mcr.microsoft.com/playwright` 基础镜像。
 
-⚠️ **对象存储的镜像现在拉不到，栈在干净机器上起不来。** 本文件此前把 `minio` 也列在这个
-清单里，但它按 digest 钉在 quay.io（`deployments/compose/docker-compose.yml:139`、`:171`），
-而该仓库已不对匿名读者开放：`docker compose up` 会以
+⚠️ **本节此前记录的「对象存储镜像拉不到、栈在干净机器上起不来」已在 2026-10-12 解决。**
+`minio` 曾按 digest 钉在 quay.io（旧 `docker-compose.yml:139`、`:171`），而该仓库已不对匿名
+读者开放：`docker compose up` 会以
 `minio Error unauthorized: access to the requested resource is not authorized` 退出，
 Docker Hub 的同名仓库是 `object not found`，`dl.min.io` 的二进制返回 **410 Gone**，上游已声明
 community edition **只发源码**。**本机之所以一直没撞上，是因为本地缓存里的镜像是 13 个月前
 拉的**——它不构成「干净机器也能起来」的证据。
 
-换用哪个仍在维护的 S3 兼容服务、以及验收判据，见
-[roadmap.md 的 2.8](roadmap.md) 与总账「CI 门禁首次诚实运行与对象存储镜像下架」（2026-10-12）。
-在那一项做完之前，**本节的镜像清单只有去掉 `minio` 之后的部分是可用的**。
+上面清单里的 `versity/versitygw` 与 `rclone/rclone` 都来自公开 registry。选型理由、实测
+结果与回滚路径见 [adr/0007](adr/0007-object-store-replacement.md)；这次下架是怎么被发现的、
+以及它如何让 `compose-smoke` 与 `multi-replica-drill` 两个作业一次都没跑成，见
+[rehearsals.md](rehearsals.md)。
 
 **Q：拉 playwright 镜像失败怎么办？**
 
@@ -539,7 +559,7 @@ destructive`，说明有待应用的破坏性迁移而确认变量未设——�
 **Q：从哪里看状态？**
 
 - `GET /healthz`：进程是否存活。
-- `GET /readyz`：PostgreSQL、Redis、MinIO 和 Browser Worker 是否就绪。
+- `GET /readyz`：PostgreSQL、Redis、对象存储和 Browser Worker 是否就绪。
 - `GET /metrics`：请求、任务、告警、事件和数据库连接池指标。设了
   `METRICS_TOKEN` 后需带 `Authorization: Bearer <token>`；生产校验强制要求
   设置（至少 16 字节），空值只在开发环境保持开放。
@@ -683,7 +703,7 @@ docker compose -f deployments/compose/docker-compose.yml exec -T postgres `
 扩容副本时要同步降低单副本上限（或抬高服务端的 `max_connections`），否则副本数
 乘上 `POSTGRES_MAX_CONNS` 会超过服务端额度，超出部分表现为建连被拒。
 
-**Q：对象存储（MinIO/S3）没响应会拖住控制面吗？**
+**Q：对象存储（S3 兼容）没响应会拖住控制面吗？**
 
 请求会失败，但**正在传输中的对象不会被切断**——这两件事是分开的。
 

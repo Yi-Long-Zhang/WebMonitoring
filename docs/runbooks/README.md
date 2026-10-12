@@ -30,7 +30,7 @@
 | --- | --- |
 | [postgres.md](postgres.md) | PostgreSQL 不可用，或连接池被占满 |
 | [redis.md](redis.md) | Redis 内存耗尽，或任务/告警队列堆积 |
-| [object-storage.md](object-storage.md) | MinIO 不可达，或证据卷写满 |
+| [object-storage.md](object-storage.md) | 对象存储（VersityGW）不可达，或证据卷写满 |
 | [browser-worker.md](browser-worker.md) | 浏览器 Worker 崩溃，或 Chromium 需要更新 |
 | [alert-delivery.md](alert-delivery.md) | 告警渠道投递失败 |
 
@@ -53,7 +53,7 @@ curl -s -i http://localhost:8080/readyz
 | `postgres` | PostgreSQL 连接池（`Ping`） | [postgres.md](postgres.md) |
 | `redis` | Redis detection Stream | [redis.md](redis.md) |
 | `alert_redis` | Redis alert Stream | [redis.md](redis.md) |
-| `evidence` | 对象存储（Compose 下即 MinIO） | [object-storage.md](object-storage.md) |
+| `evidence` | 对象存储（Compose 下即 VersityGW） | [object-storage.md](object-storage.md) |
 | `browser_worker` | 浏览器 Worker `/healthz` | [browser-worker.md](browser-worker.md) |
 
 > `/readyz` **不覆盖**告警投递链路：投递失败时 API 和 worker 都仍然就绪。
@@ -71,8 +71,8 @@ curl -s -i http://localhost:8080/readyz
 | `/readyz` 的 `redis` 或 `alert_redis` 不可用；`/metrics` 里 `webmonitoring_queue_read_failures_total` 上涨 | Redis 停机或达到 `maxmemory` | [redis.md](redis.md) |
 | `/metrics` 的 `webmonitoring_queue_pending` 持续增长、不再回落 | 队列堆积（消费者不够或单个任务变慢） | [redis.md](redis.md) |
 | `/metrics` 里 `webmonitoring_queue_dead_letters_total` 增长 | 消息耗尽重试次数被丢弃 | [redis.md](redis.md) |
-| `/readyz` 的 `evidence` 不可用；`webmonitoring_evidence_failures_total` 上涨；任务以 `EVIDENCE_WRITE_FAILED` 失败 | MinIO 不可达 | [object-storage.md](object-storage.md) |
-| 宿主或卷使用率持续上涨，`minio-data` / `postgres-data` 卷写满 | 保留任务没跑或跑失败 | [object-storage.md](object-storage.md)、[postgres.md](postgres.md) |
+| `/readyz` 的 `evidence` 不可用；`webmonitoring_evidence_failures_total` 上涨；任务以 `EVIDENCE_WRITE_FAILED` 失败 | 对象存储不可达 | [object-storage.md](object-storage.md) |
+| 宿主或卷使用率持续上涨，`objectstore-data` / `postgres-data` 卷写满 | 保留任务没跑或跑失败 | [object-storage.md](object-storage.md)、[postgres.md](postgres.md) |
 | 证据下载 404 `EVIDENCE_MISSING`，但事件里仍有该证据 | 对象与元数据不一致 | [object-storage.md](object-storage.md) |
 | `/readyz` 的 `browser_worker` 不可用；只有 `BROWSER` 模式任务失败 `CHECK_FAILED` | 浏览器 Worker 崩溃 | [browser-worker.md](browser-worker.md) |
 | 浏览器 Worker 反复 OOM（`exit 137`） | `mem_limit` / `shm_size` 不足或页面过大 | [browser-worker.md](browser-worker.md) |
@@ -99,7 +99,7 @@ docker compose -f deployments/compose/docker-compose.yml logs --tail=200 <servic
 # 3. 依赖自身的健康检查
 docker inspect --format '{{.State.Health.Status}}' \
   $(docker compose -f deployments/compose/docker-compose.yml ps -q postgres)
-# 同理替换为 redis / minio / browser-worker / console
+# 同理替换为 redis / objectstore / browser-worker / console
 
 # 4. 指标（Prometheus 文本格式；设了 METRICS_TOKEN 时需带 Bearer 头，否则 401。
 #    生产校验强制要求设置它，下面的命令假定它已导出到环境）

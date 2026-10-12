@@ -254,7 +254,7 @@ $aliases
     depends_on:
       - api
 
-  minio:
+  objectstore:
     ports: !reset []
 
   api:
@@ -276,12 +276,12 @@ $aliases
 try {
     Invoke-Compose @("config") | Out-Null
     $upArguments = @("up", "-d", "--build")
-    foreach ($service in @("postgres", "redis", "minio", "migrate", "browser-worker", "smoke-target", "api", "api-entry", "http-worker")) {
+    foreach ($service in @("postgres", "redis", "objectstore", "migrate", "browser-worker", "smoke-target", "api", "api-entry", "http-worker")) {
         $upArguments += $service
     }
     $upArguments += "--scale", "api=$ApiReplicas", "--scale", "http-worker=$HttpWorkers"
     Invoke-Compose $upArguments | Out-Null
-    foreach ($service in @("postgres", "redis", "minio", "browser-worker", "migrate", "smoke-target", "api", "http-worker")) {
+    foreach ($service in @("postgres", "redis", "objectstore", "browser-worker", "migrate", "smoke-target", "api", "http-worker")) {
         Wait-Healthy $service
     }
 

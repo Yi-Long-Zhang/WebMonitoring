@@ -321,4 +321,4 @@ commit -> review/merge -> release
 - `.idea/` 等个人 IDE 配置默认不属于产品提交。
 - 测试夹具应使用合成数据和脱敏页面。
 - 生成代码必须注明来源和生成命令，源文件变更后重新生成。
-- 本地 MinIO、PostgreSQL 和 Redis 数据目录不得进入 Git。
+- 本地对象存储、PostgreSQL 和 Redis 数据目录不得进入 Git。

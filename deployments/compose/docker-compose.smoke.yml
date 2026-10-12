@@ -7,10 +7,13 @@ services:
     volumes:
       - ${SMOKE_DATA_ROOT}/redis:/data
 
-  minio:
+  # The overlay merges by service name, so this key has to track the base file's
+  # service name. A stale name here does not fail loudly: it would create a
+  # second, image-less `objectstore` service that `up objectstore` then refuses.
+  objectstore:
     ports: !reset []
     volumes:
-      - ${SMOKE_DATA_ROOT}/minio:/data
+      - ${SMOKE_DATA_ROOT}/objectstore:/data
 
   smoke-target:
     image: nginx:1.29-alpine

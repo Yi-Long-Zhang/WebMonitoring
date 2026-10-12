@@ -67,7 +67,7 @@
   无跨租户管理员视图。
 - **外部 KMS/Vault**：当前未接入。主密钥以明文环境变量注入。
   `状态：部分实现 —— 版本化轮换与存量密文再加密的扫描（dry-run）与执行路径均已实现并在一次性容器上验证；尚未在真实部署的数据上执行过再加密。`
-- **外部对象存储**：`状态：部分实现 —— MinIO 已实测跑通（其镜像现已在公网不可获取，见 docs/roadmap.md 的 2.8），外部 S3 演练尚未执行。`
+- **外部对象存储**：`状态：部分实现 —— Compose 对象存储路径已实测跑通（VersityGW，见 docs/adr/0007），外部 S3 演练尚未执行。`
 - **Kubernetes**：当前只有单机 Docker Compose，无 K8s 清单与 Helm chart。
 
 **Q：部署形态为什么是单机 Compose？**
@@ -125,7 +125,7 @@ corepack pnpm dev:console
 
 ### 完整 Compose 模式
 
-需要 Docker Compose，会启用 PostgreSQL、Redis、MinIO、独立 HTTP Worker 和
+需要 Docker Compose，会启用 PostgreSQL、Redis、对象存储、独立 HTTP Worker 和
 Playwright Worker。首次启动前复制环境文件。`POSTGRES_PASSWORD`、
 `S3_ACCESS_KEY`、`S3_SECRET_KEY`、`BROWSER_WORKER_TOKEN`、`ALERT_SECRET_KEY`
 和 `ADMIN_PASSWORD` **必须显式提供**——清单文件里没有任何默认值，缺一个
@@ -159,7 +159,7 @@ docker compose -f deployments/compose/docker-compose.yml up --build
 | --- | --- |
 | `POSTGRES_DSN` | 业务元数据持久化；未设置时使用进程内存 |
 | `REDIS_ADDR` | 检测任务队列；未设置时 API 进程内执行 |
-| `S3_ENDPOINT`、`S3_*` | MinIO/S3 证据存储；未设置时写入 `DATA_DIR` |
+| `S3_ENDPOINT`、`S3_*` | S3 兼容证据存储；未设置时写入 `DATA_DIR` |
 | `BROWSER_WORKER_URL`、`BROWSER_WORKER_TOKEN` | 浏览器检测服务与认证 |
 | `ALERT_SECRET_KEY` | 告警地址和签名密钥的 AES-256-GCM 主密钥（32 字节 Base64） |
 | `ALERT_SECRET_KEYS` | 版本化轮换形式（`v1:<key>,v2:<key>`），设置后优先于上一项 |

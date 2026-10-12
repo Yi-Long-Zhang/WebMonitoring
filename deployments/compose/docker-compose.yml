@@ -128,7 +128,10 @@ services:
     restart: "no"
     logging: *default-logging
 
-  minio:
+  # S3-compatible object store. VersityGW (Apache-2.0) with its posix backend
+  # keeps evidence in the volume as ordinary files. It replaced MinIO, whose
+  # published images were withdrawn; see docs/adr/0007 for the evaluation.
+  objectstore:
 
     # PID 1 must reap orphaned children (browser-worker spawns chromium
     # per check); without init the runtime leaves them to accumulate.
@@ -136,42 +139,57 @@ services:
     # In-flight work drains on SIGTERM (see the worker's drain log);
     # the grace period must exceed the longest check plus the drain log.
     stop_grace_period: 30s
-    image: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-    command: server /data --console-address ":9001"
+    image: versity/versitygw:v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499
+    # Omitting --iam-dir puts VersityGW in single-account mode, where the
+    # credentials come from ROOT_ACCESS_KEY/ROOT_SECRET_KEY instead of a user
+    # database. That is the shape this stack wants -- one credential pair, which
+    # is already what S3_ACCESS_KEY/S3_SECRET_KEY carry -- and it keeps the .env
+    # contract unchanged. Region is pinned rather than defaulted so the value the
+    # server signs with is visible here.
+    command: ["--port", ":9000", "--region", "us-east-1", "posix", "/data"]
     environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY, or copy deployments/compose/.env.example into .env}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?set S3_SECRET_KEY, or copy deployments/compose/.env.example into .env}
+      ROOT_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY, or copy deployments/compose/.env.example into .env}
+      ROOT_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY, or copy deployments/compose/.env.example into .env}
     volumes:
-      - minio-data:/data
-    # No published ports. Everything that talks to MinIO -- the API, the workers
-    # and the mc client used by the backup rehearsal -- runs inside the Compose
-    # network, so exposing the object store, and especially its admin console, to
-    # the host served no purpose. The three drill overlays already reset these
-    # ports; this makes the base file agree with them.
+      - objectstore-data:/data
+    # No published ports. Everything that talks to the object store -- the API,
+    # the workers and the rclone client used by the backup rehearsal -- runs
+    # inside the Compose network, so exposing it to the host served no purpose.
+    # The three drill overlays already reset these ports; this makes the base
+    # file agree with them.
     mem_limit: 1g
     cpus: 1
     restart: unless-stopped
     logging: *default-logging
+    # VersityGW serves no dedicated health endpoint: an unauthenticated GET /
+    # answers 403, and a complete status line is proof the listener is serving.
+    # Two details are deliberate. `curl` is absent from this image (Alpine +
+    # busybox), so the request is written by hand over nc; and an HTTP reply is
+    # required rather than a bare `nc -z`, which would also pass for a socket
+    # that accepts connections but never answers. 5xx is rejected, so this is no
+    # weaker than the `curl -f` check it replaces.
+    # The single quotes around the test keep \r\n literal for printf; in a
+    # double-quoted YAML scalar they would become a real CR and LF and printf
+    # would never emit a complete request line.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD-SHELL", 'printf "GET / HTTP/1.0\r\n\r\n" | nc -w 2 127.0.0.1 9000 | head -n1 | grep -qE "HTTP/1\.[01] [234]"']
       interval: 5s
       timeout: 3s
       retries: 20
 
-  # MinIO client used by the backup/restore rehearsal. It lives behind a profile
-  # so `up` never starts it, and it runs inside the Compose network so the scripts
-  # need neither a host `mc` install nor a published MinIO port.
-  # Publish the object store's console the same way if an operator needs it:
-  # add a service with the same image and `profiles: ["tools"]`.
-  mc:
+  # rclone serves the backup/restore rehearsal's object-store client. It lives
+  # behind a profile so `up` never starts it, and it runs inside the Compose
+  # network so the scripts need neither a host rclone install nor a published
+  # object-store port.
+  rclone:
 
     # PID 1 must reap orphaned children (browser-worker spawns chromium
     # per check); without init the runtime leaves them to accumulate.
     init: true
-    image: quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    image: rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5
     profiles: ["tools"]
     depends_on:
-      minio: { condition: service_healthy }
+      objectstore: { condition: service_healthy }
 
   # Key-rotation pass. Behind a profile so `up` never starts it, and given the
   # same key material and DSN the API uses so it re-seals under exactly the key
@@ -309,14 +327,14 @@ services:
       <<: [*postgres-pool-env, *queue-alert-env]
       # Set REDIS_ADDR to redis://:password@redis:6379 when REDIS_PASSWORD is set.
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
-      S3_ENDPOINT: http://minio:9000
+      S3_ENDPOINT: http://objectstore:9000
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY, or copy deployments/compose/.env.example into .env}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY, or copy deployments/compose/.env.example into .env}
       S3_BUCKET: evidence
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
-      minio: { condition: service_healthy }
+      objectstore: { condition: service_healthy }
       browser-worker: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
     ports:
@@ -355,7 +373,7 @@ services:
       <<: [*postgres-pool-env, *queue-alert-env]
       # Set REDIS_ADDR to redis://:password@redis:6379 when REDIS_PASSWORD is set.
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
-      S3_ENDPOINT: http://minio:9000
+      S3_ENDPOINT: http://objectstore:9000
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY, or copy deployments/compose/.env.example into .env}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY, or copy deployments/compose/.env.example into .env}
       S3_BUCKET: evidence
@@ -390,7 +408,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
-      minio: { condition: service_healthy }
+      objectstore: { condition: service_healthy }
       browser-worker: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
     mem_limit: 1g
@@ -437,4 +455,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
-  minio-data:
+  objectstore-data:
