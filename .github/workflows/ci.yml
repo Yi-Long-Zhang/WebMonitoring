@@ -105,6 +105,20 @@ jobs:
         run: git diff --exit-code apps/console/src/types/generated/api.d.ts
       - run: pnpm lint
       - run: pnpm typecheck
+      # Four tests in apps/browser-worker/test drive a real Chromium
+      # (login.test.ts x3, security.test.ts x1). This job installed the
+      # `playwright` npm package but never downloaded the browser, so those
+      # four failed with `browserType.launch: Executable doesn't exist` --
+      # from 2026-09-13 until it was noticed, which also held compose-smoke
+      # and multi-replica-drill behind `needs: [backend, node]`. They had
+      # never run once.
+      #
+      # Deliberately placed after lint/typecheck: those are cheap and should
+      # fail fast rather than behind a browser download. The browser comes
+      # from the package's own version so it cannot drift from the lockfile
+      # (the browser-worker image tag v1.63.0-noble has to match it too).
+      - name: Install the browser the worker tests drive
+        run: pnpm --filter @webmonitoring/browser-worker exec playwright install --with-deps chromium
       - run: pnpm test
       - run: pnpm build
 
