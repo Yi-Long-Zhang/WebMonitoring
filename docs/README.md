@@ -191,10 +191,13 @@ CI 的 backend 任务通过服务容器设置这两个变量（`.github/workflow
 外部对象存储（S3）演练**尚未执行**，方案见
 [object-storage-rehearsal.md](object-storage-rehearsal.md)。
 
-⚠️ 另外，Compose 路径用的对象存储镜像**已在公网不可获取**（2026-10-12 发现，见
-[roadmap.md](roadmap.md) 的 2.8）。**上面这几条 Compose 演练跑的都是本机 13 个月前的镜像
-缓存**，干净机器目前无法 `docker compose up`；这不影响它们当时测出的结论，但意味着
-「本机跑通」不再等于「干净机器跑通」。
+⚠️ **2026-10-12 已修正**：此处原先记「Compose 路径用的对象存储镜像已在公网不可获取，干净机器
+无法 `docker compose up`」。该镜像已换为公开可拉取的 VersityGW（服务端）+ rclone（备份客户端），
+见 [roadmap.md](roadmap.md) 的 2.8 与
+[adr/0007-object-store-replacement.md](adr/0007-object-store-replacement.md)；并在**无镜像缓存的
+CI runner** 上实测拉到（run `38206727165`，日志里 `objectstore Pulling` → `objectstore Pulled`）。
+上面那几条 Compose 演练当时确实跑在本机 13 个月前的镜像缓存上，这不影响它们测出的结论；
+「本机跑通不等于干净机器跑通」这个局限现在已由该次 CI 运行解除。
 
 ---
 
