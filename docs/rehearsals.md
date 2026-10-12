@@ -10,6 +10,136 @@
 
 ---
 
+## CI 门禁首次诚实运行与对象存储镜像下架 — 2026-10-12
+
+- **脚本**：`.github/workflows/ci.yml`（run `38198384564`，SHA
+  `ffbd2e192b630deabf8420a0d7613e994f0f79ba`，分支 `codex/ci-gate-repair`，attempt 1）；
+  用只读凭据拉作业结论与逐 job 日志；`docker pull`；quay.io 与 Docker Hub 的注册表 API 直查。
+- **关键断言**：(1) 门禁「红了」与门禁「根本没跑」是两种状态，后者在 UI 上不比成功刺眼；
+  (2) 本机演练通过 ≠ 依赖仍可获取；(3) 数字以 CI 的实际输出为准，不按机制推断。
+- **专项档案**：`docs/operations.md`「镜像准备」一节、`docs/roadmap.md` 的 2.8。
+
+### 1. 推送前：32 次运行、32 次 `failure`，而两个作业一次都没执行过
+
+逐次拉取全部 32 次运行的作业结论（**不是在 `needs` 机制上推断**）：
+
+| 作业 | 结论分布 |
+| --- | --- |
+| `backend` | `success` **30** / `failure` **2** |
+| `node` | `failure` **31** / `success` **1**（即本次） |
+| `compose-smoke` | `skipped` **30** / `failure` **1**（即本次） |
+| `multi-replica-drill` | `skipped` **28** / `failure` **1**（即本次） |
+
+（两个作业的作业记录条数少于运行数 32——`compose-smoke` 31 条、`multi-replica-drill` 29 条，
+说明更早的运行里它们还不在这份工作流里；**没有逐次定位是哪些运行**。）
+
+**结论**：本次之前，`compose-smoke` 与 `multi-replica-drill` **从未执行过一次**——它们的状态是
+`skipped`，而不是红。这两个作业里的检查代码从未在 CI 上运行过，尽管路线图一直把它们当作
+「推送后由 GitHub 验证」的待办。
+
+### 2. 这更正了 2026-10-10 那节写下的推论
+
+「SSE 事件流租户隔离与跨进程投递」一节（写于 2026-10-10）的 `### 未覆盖` 里有一条明标为
+**推论（非实测）**的判断，原文两句话都不成立（按小节名定位，不引行号——追加会让行号漂移）：
+
+| 推论原文 | 实测 |
+| --- | --- |
+| 「CI 的 `node` job 跑的是带 `test/` 的完整检出，所以它是绿的」 | `node` 31 次里红了 31 次（见第 3 节根因） |
+| 「`compose-smoke` job 会构建镜像，因此它在 main 上**大概率一直是红的**」 | 它不是红的，是 `skipped`：30 次跳过、0 次执行 |
+
+这正是 append-only 的用处：错误的推论与它的更正在同一份文件里并排存着。历史小节不改写。
+
+### 3. `node` 的根因与修复（红 → 绿，同日证据）
+
+**根因**（既有缺陷，与阶段一无关）：`apps/browser-worker/test/` 有 **4 个测试真的启动
+Chromium**（`login.test.ts:73/95/118` 三个 + `security.test.ts:68` 一个），而 `node` 作业只装
+`playwright` 这个 **npm 包**、从不下载浏览器二进制——全仓只有 `compose-smoke` 作业里有
+`playwright install`。失败签名完全一致，3 秒内结束（而修好之后 `pnpm test` 这一步实测跑了
+15 秒，所以那个时长本身就在说明它没跑到断言）：
+
+```
+browserType.launch: Executable doesn't exist at
+/home/runner/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell
+```
+
+**修复**：在 `node` 作业里加一步（置于 `pnpm lint`/`typecheck` 之后，那两个便宜门禁不该排在
+一次浏览器下载后面；用包内版本装，保证与 lockfile 解析出的 playwright 一致）：
+
+```
+pnpm --filter @webmonitoring/browser-worker exec playwright install --with-deps chromium
+```
+
+**绿了的证据**（同一次运行的日志，不是「这次碰巧绿了」）：
+
+- 新步骤的输出出现了此前缺失的那个目录本身：
+  `Chrome for Testing 153.0.8010.12 (playwright chromium v1243)` →
+  `downloaded to /home/runner/.cache/ms-playwright/chromium-1243`；
+- `apps/browser-worker`：**2 文件 / 14 用例全过**（5.80s），其中 `login.test.ts` 3 个
+  （`submits the form so the shared context keeps the session` 1680ms 等，4878ms 总量）与
+  `security.test.ts` 11 个（含此前失败的第 4 个 `removes ignored nodes before calculating
+  snapshot fields` 737ms）——**真浏览器，不是 mock**；
+- `apps/console`：**15 文件 / 85 用例全过**（13.37s）——**CI 上第一次跑完**（此前每次被 pnpm
+  遇错即停杀掉）；
+- `pnpm build` **CI 上第一次执行**：`vite v8.3.4` 转译 2396 个模块、`✓ built in 1.65s`，
+  以及 `tsc -p tsconfig.build.json`（1.0 那个 `tsconfig.build.json` 修复此前只在本机验过）。
+
+**同一次运行顺带关掉的两处验证空白**（阶段一遗留）：
+
+- `-race` 此前从未在 CI 上跑过：`backend` 作业 146s（03:05:32→03:07:58）通过，含
+  `go test -race -count=1 -covermode=atomic`、golangci-lint v2.14.0、覆盖率下限 55%、
+  govulncheck v1.8.0；
+- 「集成用例真的在容器里跑」而不是被跳过：`Configure integration test services` 步骤成功，
+  postgres:17-alpine 与 redis:8-alpine 服务容器在场。
+
+### 4. 但两个作业首次执行即失败：对象存储的镜像已经不存在
+
+两个作业这次真的被创建并执行了（作业时长 32s / 11s），失败点是同一处、也是瞬间：
+
+```
+minio Error unauthorized: access to the requested resource is not authorized
+Error response from daemon: unauthorized: access to the requested resource is not authorized
+docker compose failed: up -d --build postgres redis minio migrate ...
+```
+
+`minio` 不是从 Docker Hub 拉的，而是 **quay.io 上按 digest 钉死**的
+（`deployments/compose/docker-compose.yml:139` 与 `:171`）。五条独立探测结论一致：
+
+| 路径 | 结果 |
+| --- | --- |
+| CI 干净机器（`docker compose up`） | `unauthorized`，且该机器**没有任何本地缓存** |
+| 本机 daemon（`docker pull quay.io/minio/minio@sha256:14cea493…`） | `401 UNAUTHORIZED` |
+| quay.io 注册表 API（匿名 token 已签发的情况下查 manifest） | 两个 digest 一律 `401`；tag 列表 API 返回 `{"detail": "Requires authentication"}` |
+| Docker Hub `minio/minio`、`minio/mc` | 仓库 API `{"message": "object not found"}`；manifest `401` |
+| `dl.min.io` 的二进制 | **HTTP 410 Gone** |
+
+上游 README 原文（`raw.githubusercontent.com/minio/minio/master/README.md`）：
+
+> **Important:** The MinIO community edition is now distributed as source code only. We will
+> no longer provide pre-compiled binary releases for the community version.
+
+它自带的 `Dockerfile` 第一行却是 `FROM minio/minio:latest`，且 `COPY ./minio-${TARGETARCH}.${RELEASE}`
+——所谓「照上游指引自己 build」是循环依赖，走不通。GitHub Releases 里最新的
+`RELEASE.2025-10-15T17-29-55Z`（标题即 `Security/CVE RELEASE`）**assets 数为 0**：旧二进制还能
+下到（2025-09-07 那次有 48 个 asset），**那个安全补丁下不到**。
+
+**这不是 CI 基础设施问题，是投产阻塞**，而且本机一直看不见它：`docker images` 里那两份
+`quay.io/minio/{minio,mc}` 的 `created` 都是 **13 个月前**，所有「compose-smoke 通过」「备份/
+恢复通过」的记录都建立在**镜像缓存**之上——**从来没有验证过一次拉取**。今天任何干净机器克隆
+这个仓库都无法 `docker compose up`。同一个来源的 `mc` 客户端也拿不到，因此
+`scripts/compose-backup.ps1` 与 `scripts/compose-restore.ps1` 一并受影响。
+
+### 未覆盖
+
+- **两个演练作业仍未成功执行过一次**：本次是首次执行，11s / 32s 即因拉镜像失败退出。作业内
+  的断言**一条都没有被验证**。
+- **60 分钟的挂起保护仍是未实测代码**：它是为本轮首次执行加的，而两次失败都在 32s 内结束，
+  触发不到。
+- **`multi-replica-drill` 的 wall-clock 现象**没有获得新的观察：本次没有进入轮询阶段就退出了。
+- **本地演练的可复现性**：本机所有通关记录都依赖 13 个月前的镜像缓存；在换掉对象存储之前，
+  「本机跑通」不再是「干净机器上跑通」的证据。
+
+---
+
 ## 阶段一缺陷清零（1.2 SSRF 判定 / 1.3 会话吊销 / 1.4 截图大小）— 2026-10-10
 
 - **脚本**：`go test ./...`、`scripts/integration-test.ps1`、`scripts/compose-smoke.ps1`（两次）、

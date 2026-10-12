@@ -4,7 +4,7 @@
 一次——接手的人（或 agent）得先把「还剩什么」从历史记录里重建一遍，才能知道下一步做
 什么。条目清单落进仓库，人和 agent 才都能看见。
 
-- **条目**：21 项，分三个阶段。阶段的定义与判据见
+- **条目**：22 项，分三个阶段。阶段的定义与判据见
   [adr/0005-post-mvp-stage.md](adr/0005-post-mvp-stage.md)；产品边界见
   [product-scope.md](product-scope.md)。
 - **状态的唯一事实来源仍是 [rehearsals.md](rehearsals.md)**（append-only 的验收总账）：
@@ -42,6 +42,7 @@
 | 2 | 2.5 | 内存态有界化 | **规划中**（路线图已判定低优先，可不排期） | 见「阶段 2 剩余量」 |
 | 2 | 2.6 | 依赖升级与供应链 | 已实现 · 已记账 · 已在 main（**有一处补记**） | `d54e9d1`…`f798def`，merge `c290c4b`；总账 2.6。**补记**：TS6 那一批（`f798def`）打断了 browser-worker 镜像构建，2026-10-10 才修（`04d040f`，merge `ec13fd1`）——见总账「SSE 事件流租户隔离与跨进程投递」第 4 节 |
 | 2 | 2.7 | 结构治理（拆 `server.go`、拆 `Process`） | **规划中**（可选，收益是维护速度而非正确性） | 见「阶段 2 剩余量」 |
+| 2 | 2.8 | 对象存储镜像的供应链 | **规划中**（2026-10-12 定为下一项，**阻塞投产**） | 见 2.8 与总账「CI 门禁首次诚实运行与对象存储镜像下架」 |
 
 另外两件不在路线图条目里、但属于「已交付」的事实：0.1 与 0.10 的总账小节是**主题式
 标题**（不带编号），所以按编号检索总账找不到这两节；表里的对应关系是核出来的。
@@ -96,6 +97,43 @@ overclaim 已全部修复并合并——1.0 browser-worker 镜像构建被 TS6 �
 `internal/api/server.go` 仍是单文件（3526 行，含 68 条路由与 38 个 handler）。
 `internal/detection/service.go` 的 `Process` 仍是单函数。拆分的收益是后续维护速度。
 
+### 2.8 对象存储镜像的供应链 — 2026-10-12 新立，阻塞投产
+
+**这是一条投产阻塞，不是测试基础设施问题。** `deployments/compose/docker-compose.yml:139`
+与 `:171` 把对象存储与其客户端按 digest 钉死在 **quay.io**，而这两个仓库已不再对匿名读者开放：
+
+| 探测路径 | 结果 |
+| --- | --- |
+| CI 干净机器 `docker compose up` | `minio Error unauthorized` |
+| 本机 `docker pull quay.io/minio/minio@sha256:14cea493…` | `401 UNAUTHORIZED` |
+| quay.io 注册表 API（匿名 token 已签发） | manifest `401`；tag 列表 `{"detail": "Requires authentication"}` |
+| Docker Hub `minio/minio`、`minio/mc` | 仓库 API `{"message": "object not found"}`；manifest `401` |
+| `dl.min.io` 的二进制 | **HTTP 410 Gone** |
+
+上游 README 已声明 community edition **只发源码**、不再提供预编译二进制；而它自带的
+`Dockerfile` 第一行是 `FROM minio/minio:latest`——「照指引自己 build」是循环依赖。GitHub
+Releases 里最新的 `RELEASE.2025-10-15T17-29-55Z`（标题即 `Security/CVE RELEASE`）**assets=0**。
+
+**为什么一直没被发现**：本机 `docker images` 里那两份是 **13 个月前**拉的缓存，所有本地演练
+都跑在缓存上，**从未验证过一次拉取**。「本机跑通」与「干净机器跑通」在这里是两件事。
+
+**下一步的判据**（选定服务后按此验收，不按「CI 变绿」验收）：
+
+1. `compose-smoke` 与 `multi-replica-drill` 两个作业在 GitHub 上**真正执行完并全绿**——
+   它们此前的全部记录是 `skipped`（30 次 / 28 次），本次才第一次被执行；
+2. `scripts/compose-backup.ps1` 与 `scripts/compose-restore.ps1` 依赖的 `mc` 客户端有替代
+   （两者同源，一起拿不到）；
+3. 健康检查、凭据变量名（`MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`）、console 端口等
+   MinIO 专有假设一并迁移或明确保留；
+4. `docs/operations.md` 的「镜像准备」清单，与 `docs/runbooks/object-storage.md`（整篇都是
+   MinIO 专有假设：`minio/health/live` 健康端点、`mc` 客户端、`MC_HOST_*` 写法）同步更新；
+5. 在一台**没有镜像缓存**的机器上验证一次完整 `docker compose up`。
+
+**已排除的一条**：把本地那份冻结的旧二进制自建镜像推到自己的注册表——它拿不到 2025-10-15
+那个 CVE 补丁，对安全产品是净降级。**已验证公开可拉**的候选是 SeaweedFS
+（`chrislusf/seaweedfs`）与 VersityGW（`versity/versitygw`）；Garage 的 Docker Hub 仓库只发
+commit-hash 标签，作为候选需要额外确认发布节奏。
+
 ---
 
 ## 从未实测的场景
@@ -109,9 +147,11 @@ overclaim 已全部修复并合并——1.0 browser-worker 镜像构建被 TS6 �
 - **产物与发布**：带真实版本号的镜像构建（`APP_VERSION=v1.2.3` 是否真进二进制）、
   release 流程的构建参数。
 - **报告**：在真实浏览器里把报告打印成 PDF（分页与中文字体）。
-- **CI 门禁自身**：`-race`、覆盖率与 golangci-lint v2 的 CI 步骤（本机无 C 工具链，
-  以 CI 为准）、CI 里的 `compose-smoke` 与 `multi-replica-drill` 两个 job
-  （推送后由 GitHub 验证）。
+- **CI 门禁自身**：**2026-10-12 已实测**（SHA `ffbd2e1`，run `38198384564`）。`-race`、覆盖率
+  下限 55% 与 golangci-lint v2.14.0 在 CI 上通过，且 `Configure integration test services`
+  步骤成功、postgres:17/redis:8 容器确实在场——但两个演练作业**本次是史上第一次被执行**，
+  且立即因对象存储镜像下架而失败：作业内的断言**一条都还没验证过**。见 2.8 与总账
+  「CI 门禁首次诚实运行与对象存储镜像下架」。
 - **数据库边界**：`pg_sleep` 慢查询与连接池边界、S3 中途停住的对象、迁移「旧镜像 vs
   新库」的真实组合、多租户大表下的查询计划。
 - **导出与数据量**：导出在十万级记录下的内存占用。

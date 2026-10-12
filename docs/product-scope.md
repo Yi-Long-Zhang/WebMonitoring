@@ -259,7 +259,8 @@ Webhook、企业微信、钉钉和邮件。投递有记录、重试和事件级�
 **Q：支持 AWS S3 这类外部对象存储吗？**
 
 代码支持 S3 兼容接口。
-`状态：部分实现 —— MinIO 已实测跑通，外部 S3 演练尚未执行`
+`状态：部分实现 —— MinIO 已实测跑通（其镜像现已在公网不可获取，见
+[roadmap.md](roadmap.md) 的 2.8），外部 S3 演练尚未执行`
 （方案见 [object-storage-rehearsal.md](object-storage-rehearsal.md)）。
 区域解析与预签名 URL 这两条路径在 AWS S3 上可能不同，未验证前不应假定可用。
 
