@@ -125,6 +125,13 @@ jobs:
   compose-smoke:
     runs-on: ubuntu-latest
     needs: [backend, node]
+    # These two jobs build six images -- the browser-worker sits on a 3.55 GB
+    # Playwright base -- and then wait on service health. Nothing else bounds
+    # them, so without this a stuck pull or a wedged container sits on the
+    # 360-minute default. 60 is a hang guard, not a budget: it is deliberately
+    # far above the expected runtime so it cannot turn a slow runner into a
+    # false failure.
+    timeout-minutes: 60
     env:
       SMOKE_PROJECT_NAME: webmonitoring-smoke-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -149,6 +156,10 @@ jobs:
   multi-replica-drill:
     runs-on: ubuntu-latest
     needs: [backend, node]
+    # Same hang guard as compose-smoke. The drill's own -TimeoutSeconds (900)
+    # bounds only its polling loop; image builds, pulls and the health waits
+    # all sit outside it.
+    timeout-minutes: 60
     env:
       MRDRILL_PROJECT_NAME: webmonitoring-drill-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
