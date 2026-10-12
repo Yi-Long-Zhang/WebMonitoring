@@ -136,7 +136,8 @@ CI 的 backend 任务通过服务容器设置这两个变量（`.github/workflow
 - **外部 KMS/Vault**：当前未接入。主密钥以明文环境变量注入。
   `状态：部分实现 —— 版本化轮换与存量密文再加密的扫描（dry-run）与执行路径均已实现并在一次性容器上验证；尚未在真实部署的数据上执行过再加密。`
 - **Kubernetes**：当前只有单机 Docker Compose，无 K8s 清单与 Helm chart。
-- **外部对象存储**：`状态：部分实现 —— MinIO 已实测跑通，外部 S3 演练尚未执行`
+- **外部对象存储**：`状态：部分实现 —— MinIO 已实测跑通（其镜像现已在公网不可获取，见
+  [roadmap.md](roadmap.md) 的 2.8），外部 S3 演练尚未执行`
   （方案见 [object-storage-rehearsal.md](object-storage-rehearsal.md)）。
 
 ---
@@ -171,8 +172,9 @@ CI 的 backend 任务通过服务容器设置这两个变量（`.github/workflow
 ## 已经实测过什么？
 
 以下是压测与演练这类「大件」；路线图**每一项**的实测记录见验收总账
-[rehearsals.md](rehearsals.md)（最近一次 2026-10-10：阶段二的 2.6，以及一次不在路线图
-条目内的修复——SSE 事件流的租户隔离与跨进程投递），
+[rehearsals.md](rehearsals.md)（最近一次 2026-10-12：CI 门禁首次诚实运行——`backend` 与
+`node` 转绿并关掉两处验证空白，同时查出对象存储的镜像已在公网下架、两个演练作业首次执行
+即失败），
 条目与剩余量的索引见 [roadmap.md](roadmap.md)。
 
 - **多副本（HA）**（2026-09-20）：`--scale api=2 --scale http-worker=3`，
@@ -188,6 +190,11 @@ CI 的 backend 任务通过服务容器设置这两个变量（`.github/workflow
 
 外部对象存储（S3）演练**尚未执行**，方案见
 [object-storage-rehearsal.md](object-storage-rehearsal.md)。
+
+⚠️ 另外，Compose 路径用的对象存储镜像**已在公网不可获取**（2026-10-12 发现，见
+[roadmap.md](roadmap.md) 的 2.8）。**上面这几条 Compose 演练跑的都是本机 13 个月前的镜像
+缓存**，干净机器目前无法 `docker compose up`；这不影响它们当时测出的结论，但意味着
+「本机跑通」不再等于「干净机器跑通」。
 
 ---
 

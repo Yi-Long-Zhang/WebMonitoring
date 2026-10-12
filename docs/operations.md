@@ -386,8 +386,20 @@ nginx 只在启动时解析一次，`restart api` 换了容器 IP 之后就指�
 
 **Q：首次运行要拉哪些镜像？**
 
-`golang`、`node`、`nginx`、`postgres`、`redis`、`minio`、`gcr.io/distroless` 和
+`golang`、`node`、`nginx`、`postgres`、`redis`、`gcr.io/distroless` 和
 `mcr.microsoft.com/playwright` 基础镜像。
+
+⚠️ **对象存储的镜像现在拉不到，栈在干净机器上起不来。** 本文件此前把 `minio` 也列在这个
+清单里，但它按 digest 钉在 quay.io（`deployments/compose/docker-compose.yml:139`、`:171`），
+而该仓库已不对匿名读者开放：`docker compose up` 会以
+`minio Error unauthorized: access to the requested resource is not authorized` 退出，
+Docker Hub 的同名仓库是 `object not found`，`dl.min.io` 的二进制返回 **410 Gone**，上游已声明
+community edition **只发源码**。**本机之所以一直没撞上，是因为本地缓存里的镜像是 13 个月前
+拉的**——它不构成「干净机器也能起来」的证据。
+
+换用哪个仍在维护的 S3 兼容服务、以及验收判据，见
+[roadmap.md 的 2.8](roadmap.md) 与总账「CI 门禁首次诚实运行与对象存储镜像下架」（2026-10-12）。
+在那一项做完之前，**本节的镜像清单只有去掉 `minio` 之后的部分是可用的**。
 
 **Q：拉 playwright 镜像失败怎么办？**
 
