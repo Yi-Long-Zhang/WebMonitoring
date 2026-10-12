@@ -23,9 +23,17 @@ COPY internal/store ./internal/store
 COPY internal/domain ./internal/domain
 COPY internal/identity ./internal/identity
 COPY internal/config ./internal/config
-# The build identity the /api/v1/version endpoint reports. Defaults are the
-# truth for an image built without them, which is what a local `docker compose
-# build` produces.
+# This course of COPY lines is the build inputs of this binary, and every
+# internal package main.go imports has to appear in it: `go build` sees only
+# what was copied, so a missing line fails the build with
+#   apps/rewrap/main.go:32:2: package webmonitoring/internal/version is not in std
+# which is exactly what happened on 2026-10-12, when main.go started importing
+# internal/version to log the build identity.
+COPY internal/version ./internal/version
+# The build identity the binary logs before it touches customer data (these
+# images have no HTTP endpoint to report it on). Defaults are the truth for an
+# image built without them, which is what a local `docker compose build`
+# produces.
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
