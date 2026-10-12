@@ -37,7 +37,7 @@
 
 | 想知道 | 看 |
 | --- | --- |
-| 怎么部署、升级、备份、恢复、配 TLS | [operations.md](operations.md) |
+| 怎么部署、升级、发版、备份、恢复、配 TLS | [operations.md](operations.md) |
 | 出故障了怎么办 | [runbooks/](runbooks/README.md) |
 | 备份恢复到底验过没有 | [backup-restore-rehearsal.md](backup-restore-rehearsal.md) |
 | 哪些功能真的实测过、结果如何 | [rehearsals.md](rehearsals.md)（全部实测的唯一事实来源） |
@@ -172,9 +172,9 @@ CI 的 backend 任务通过服务容器设置这两个变量（`.github/workflow
 ## 已经实测过什么？
 
 以下是压测与演练这类「大件」；路线图**每一项**的实测记录见验收总账
-[rehearsals.md](rehearsals.md)（最近一次 2026-10-12：CI 门禁首次诚实运行——`backend` 与
-`node` 转绿并关掉两处验证空白，同时查出对象存储的镜像已在公网下架、两个演练作业首次执行
-即失败），
+[rehearsals.md](rehearsals.md)（最近一次 2026-10-12：**发布链路接通**——上路前读出的两处
+静默缺陷（`migrate`/`rewrap` 的镜像构建、GHCR 镜像名大小写）已修复并在 CI 上转绿，
+§8 发布规则也逐条对了一遍；同日的「CI 首次全绿」记的是两个演练作业第一次真正执行到底），
 条目与剩余量的索引见 [roadmap.md](roadmap.md)。
 
 - **多副本（HA）**（2026-09-20）：`--scale api=2 --scale http-worker=3`，
