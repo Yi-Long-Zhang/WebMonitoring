@@ -44,17 +44,32 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # A local `docker compose build` leaves these at their defaults ("dev",
-      # "unknown") and that is honest; a release is the one build where they are
-      # known, so the args are composed here rather than left to the Dockerfile's
-      # defaults. BUILD_TIME is the *commit's* time, not `date`: six parallel
-      # jobs calling date would stamp six different build times onto one release.
-      # VERSION is the tag verbatim, which is what `make release-check`
-      # (git describe --tags --exact-match) prints as well.
-      - name: Resolve the build identity
+      # One image name, resolved once. Docker refuses an uppercase repository
+      # name outright -- `docker create ghcr.io/Yi-Long-Zhang/WebMonitoring/api@…`
+      # answers "invalid reference format: repository name … must be lowercase"
+      # -- and this repository's owner is mixed case. GitHub expressions have no
+      # lowercase function, so it happens in bash (${VAR,,}).
+      #
+      # The same step resolves the build identity, because both belong to "the
+      # one name for this release". A local `docker compose build` leaves the
+      # identity at its defaults ("dev", "unknown") and that is honest; a release
+      # is the one build where it is known. BUILD_TIME is the *commit's* time,
+      # not `date`: six parallel jobs calling date would stamp six different
+      # build times onto one release. VERSION is the tag verbatim, which is what
+      # `make release-check` (git describe --tags --exact-match) prints as well.
+      #
+      # console and browser-worker have no `binary`: their Dockerfiles declare no
+      # VERSION/COMMIT/BUILD_TIME ARG, so passing them would only log "unused
+      # build arg" six times over. They still get an image name.
+      - name: Resolve the image name and the build identity
         id: identity
-        if: matrix.app.binary
+        env:
+          BINARY: ${{ matrix.app.binary }}
         run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.app.name }}" >> "$GITHUB_OUTPUT"
+          if [ -z "$BINARY" ]; then
+            exit 0
+          fi
           build_time="$(git show -s --format=%cI "$GITHUB_SHA")"
           {
             echo "version=${GITHUB_REF_NAME}"
@@ -70,7 +85,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}/${{ matrix.app.name }}
+          images: ${{ steps.identity.outputs.image }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -107,7 +122,7 @@ jobs:
       - name: The published binary must carry this release's identity
         if: matrix.app.binary
         run: |
-          image="ghcr.io/${{ github.repository }}/${{ matrix.app.name }}@${{ steps.build.outputs.digest }}"
+          image="${{ steps.identity.outputs.image }}@${{ steps.build.outputs.digest }}"
           container="$(docker create "$image")"
           trap 'docker rm -f "$container" >/dev/null' EXIT
           docker cp "$container:${{ matrix.app.binary }}" ./published-binary
@@ -132,7 +147,7 @@ jobs:
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
       - uses: sigstore/cosign-installer@v3
       - name: Sign the published image
-        run: cosign sign --yes ghcr.io/${{ github.repository }}/${{ matrix.app.name }}@${{ steps.build.outputs.digest }}
+        run: cosign sign --yes ${{ steps.identity.outputs.image }}@${{ steps.build.outputs.digest }}
       # Scans the published image rather than the build context, so base-image
       # packages are covered too. ignore-unfixed keeps the gate actionable: the
       # bases are golang, node, nginx, distroless and the Playwright image, and
@@ -143,7 +158,7 @@ jobs:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         with:
-          image-ref: ghcr.io/${{ github.repository }}/${{ matrix.app.name }}:${{ steps.meta.outputs.version }}
+          image-ref: ${{ steps.identity.outputs.image }}:${{ steps.meta.outputs.version }}
           format: sarif
           output: trivy-${{ matrix.app.name }}.sarif
           severity: CRITICAL,HIGH
