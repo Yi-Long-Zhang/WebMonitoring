@@ -1,6 +1,6 @@
 # Compose 运维手册
 
-本文用问答形式说明部署、升级、备份、恢复、验收和故障处理。命令都可直接复制。
+本文用问答形式说明部署、升级、发版、备份、恢复、验收和故障处理。命令都可直接复制。
 
 ---
 
@@ -96,6 +96,70 @@ Invoke-WebRequest http://localhost:8080/readyz
 ```powershell
 docker compose -f deployments/compose/docker-compose.yml run --rm migrate baseline --version 3
 ```
+
+---
+
+## 发版
+
+> **状态：链路已接通，尚未真实运行过。** 本节写于第一次打 tag 之前——2026-10-12 之前
+> `git tag` 一直是空的，`on: push: tags: ['v*']` 从未匹配过。已实测的只有构建参数的注入
+> 与镜像名的解析（见总账「发布链路接通」两处缺陷），**工作流整体一次都没跑完**。照本节
+> 操作前，先确认总账里已经有对应的实测小节。
+
+**Q：怎么发一个版本？**
+
+打一个 `v*` 标签并推送，`.github/workflows/release.yml` 接手其余：
+
+```bash
+git switch main && git pull
+git tag v0.1.0                          # 轻量标签即可
+git describe --tags --exact-match       # 现在才为真：HEAD 已带发布 tag；等价于 make release-check
+git push origin v0.1.0
+```
+
+**Q：会产出什么？**
+
+六个镜像推到 GHCR：`api`、`http-worker`、`browser-worker`、`console`、`migrate`、
+`rewrap`。注册表路径是 `ghcr.io/<owner>/<repo>/<app>`，**全小写**——docker 的引用
+语法不接受大写仓库名（`repository name … must be lowercase`），工作流用 bash 的
+`${GITHUB_REPOSITORY,,}` 转一次后由各步骤共用。每个镜像三个 tag：`0.1.0`、`0.1`、
+`sha-<短 SHA>`。
+
+四个 Go 镜像（`api`/`http-worker`/`migrate`/`rewrap`）的二进制里会被写进这次发布的
+版本、commit 与**提交时间**（不是构建时刻——六个并行作业各自取 `date`，会给同一次
+发布盖上六个不同的时间）。没有端点的三个在**启动日志**里报出来，`api` 另有
+`GET /api/v1/version`。工作流在推送前把二进制从镜像里取出来，逐个 grep 这三个串，
+缺一个即失败：标识没进二进制时，没有别的作业会因此变红。
+
+签名是 cosign **无密钥**（OIDC 身份即签名者，不需要保管密钥），并附 buildx 生成的
+SPDX SBOM 与 SLSA provenance。Trivy 按 CRITICAL/HIGH 扫每个镜像（`ignore-unfixed`
+只放过上游还没修的），**扫到问题即让作业失败**，报告以 SARIF 传到 code scanning。
+
+**Q：怎么验证一个已发布的镜像？**
+
+```bash
+git describe --tags --exact-match     # 本地 HEAD 是否已带发布 tag（= make release-check）
+docker run --rm ghcr.io/sigstore/cosign/cosign:v2.4.1 verify \
+  ghcr.io/<owner>/<repo>/api@<digest> \
+  --certificate-identity-regexp '^https://github.com/<owner>/<repo>/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+**Q：GHCR 上的包需要设成公开吗？**
+
+需要。首次发布创建的 package 默认是**私有**的，未登录的机器 `docker pull` 会 401；
+到该 package 的设置里改成 public。这是网页操作，工作流代劳不了。
+
+**Q：发布失败或者要回退怎么办？**
+
+tag 推出去就收不回来，镜像同样收不回来——所以**发布前**先把 CI 走完。回退按
+「升级失败怎么办」那一节的规矩：换回上一版镜像 + 用备份把库恢复到升级前，
+**不要**逆向执行迁移。
+
+注意目前 `deployments/compose/docker-compose.yml` 默认**本地构建**镜像，用发布产物
+起栈要另写一份把 `build` 换成 `image: …@sha256:…` 的 overlay（尚未提供，登记在总账
+「发布链路接通」一节）。**在那之前，「本地 `docker compose up` 跑通」不等于
+「发布产物跑通」**——与 2.8 那条「本机跑通不等于干净机器跑通」是同一类区别。
 
 ---
 

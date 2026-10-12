@@ -10,6 +10,132 @@
 
 ---
 
+## 发布链路接通：两处静默缺陷与发布规则对照 — 2026-10-12
+
+- **脚本**：本节**不是**一次演练通过，因此没有脚本成绩可记。材料是
+  `.github/workflows/release.yml`（**尚未真实运行**）、本机 `docker build` /
+  `docker create` / `docker cp` / `grep -qaF`，判据来自 `docs/operations.md`「发版」一节
+  自身与 `docs/engineering.md` §8。
+- **关键断言**：读配置能发现的缺陷与跑一遍才能发现的缺陷是**两类**。本节两处都属于
+  前者，而且都属于同一条纪律——**「门禁红了」与「门禁根本没跑」是两种状态**，后者更
+  隐蔽：这两处都不会因为「功能不对」而变红（第 1 处**红了，但红在上游一层**；第 2 处
+  按最坏情况也不会红在推镜像那一步）。
+
+### 1. `migrate` 与 `rewrap` 的镜像从 `7ba1839` 起根本构建不出来
+
+- **现象**：`main` 上的 `7ba1839`，run `38212063384`，四个作业里两个红：
+
+| 作业 | 结论 | 起止（UTC） |
+| --- | --- | --- |
+| `backend` | success | 06:20:43 → 06:23:13 |
+| `node` | success | 06:20:43 → 06:21:47 |
+| `compose-smoke` | **failure** | 06:23:16 → 06:24:41 |
+| `multi-replica-drill` | **failure** | 06:23:16 → 06:23:50 |
+
+- **根因（具体行，不猜）**：`compose-smoke` 作业日志第 1037 行原文——
+
+  ```
+  apps/migrate/main.go:12:2: package webmonitoring/internal/version is not in std
+  (/usr/local/go/src/webmonitoring/internal/version)
+  ```
+
+  失败步骤是 `[migrate build 8/8] RUN CGO_ENABLED=0 go build … ./apps/migrate`。
+  `apps/migrate/Dockerfile` 在 `7ba1839` 时只有三行 `COPY`：`apps/migrate`、
+  `db/migrations`、`internal/migrate`——**这种窄式 COPY 列表就是该二进制的构建输入
+  集合**（`go build` 只看得见被 COPY 进来的东西，这也是本仓库两种 Dockerfile 写法的
+  分野）。同一次改动让 `apps/migrate/main.go:12` 开始 import `internal/version`，
+  却没有把该包加进列表。`api` 与 `http-worker` 用的是 `COPY internal ./internal`，
+  所以同一处缺陷在它们身上不出现。
+- **它为什么没在上一轮暴露**：上一轮的本机构建只覆盖了 `http-worker` ——**恰好是两种
+  写法里不会出事的那一种**。缺陷因此从本机溜过去，直到干净 runner 上才显形。
+- **`rewrap` 是同一处缺陷的同一形态，但 CI 上没有观察到**：`apps/rewrap/main.go:32`
+  同样 import 了 `internal/version`，它的 COPY 列表同样没有这一行。CI 上 `migrate`
+  先失败，`rewrap` 根本没轮到。**这一条是读代码判定的，不是观察到的**——修法与验证
+  一并做过，但「CI 上 rewrap 曾经红过」不是事实。
+- **修法**：两个 Dockerfile 各加一行 `COPY internal/version ./internal/version`
+  （现为 `apps/migrate/Dockerfile:25`、`apps/rewrap/Dockerfile:32`），并在注释里写明
+  规则：**窄式 COPY 列表必须覆盖 `main.go` 的每一个 `internal/*` 依赖**。
+- **验证（两条，都通过）**：
+  - **CI**：`3c3f44b`，run `38212963700`，四个作业全 success——原先红的两个都转绿
+    （`compose-smoke` 06:34:15 → 06:38:26，`multi-replica-drill` 06:34:17 → 06:37:24）。
+  - **本机**：用真实值构建**四个** Go 镜像（`api`/`http-worker`/`migrate`/`rewrap`），
+    逐个 `docker create` → `docker cp` 取出二进制，`grep -qaF` 版本号、完整 commit SHA、
+    构建时间三个串**都能找到**；`migrate`/`rewrap`/`http-worker` 的启动首行确实打印该
+    标识。镜像都是 distroless（没有 shell），所以「取出来读」是唯一可靠的读法；
+    commit SHA 是其中最硬的一条：`.dockerignore` 排除了 `.git`，`-X` 是这些字节唯一
+    的来源。
+  - 顺带结掉 1.5 与 2.6 里那条「没有实测过带真实版本号的镜像构建」（见下方两处回填）。
+
+### 2. `release.yml` 里有四处拼出了一个 docker 不接受的名字
+
+- **现象**：从未运行过，是读配置读出来的。
+- **判定（离线，一行命令就够了）**：
+
+  ```
+  docker create ghcr.io/Yi-Long-Zhang/WebMonitoring/api@sha256:000…0
+  → invalid reference format: repository name (Yi-Long-Zhang/WebMonitoring/api@sha256)
+    must be lowercase
+  ```
+
+  同一串改成全小写则能通过解析（随后在注册表侧被拒，说明「解析」这一关过了）。仓库
+  owner 是混合大小写，而工作流四处直接拼 `${{ github.repository }}`。
+- **为什么必须在上路前修**：按最坏情况，即使 `docker/metadata-action` 自己会把名字转
+  小写、**推镜像那一步照旧成功**，红的是它下游两步（「验证产物」与 `cosign sign`）
+  ——而那时镜像**已经推到公开注册表，收不回来**。这不是「等第一次跑报错再修」的场景。
+- **修法**：新增一个 step，用 bash 的 `${GITHUB_REPOSITORY,,}` 生成一次镜像名（GitHub
+  表达式没有小写函数），Image metadata、验证产物、cosign 签名、Trivy 扫描四处共用同一个
+  output；发布标识（版本 / commit / 提交时间）由同一个 step 一并产出，`BUILD_TIME` 取
+  **commit 时间**而非 `date`（六个并行作业各取 `date` 会给同一次发布盖上六个时间戳）。
+- **验证**：该 step 的两个分支（`BINARY` 有值 / 无值）在本机以真实环境变量跑过一遍，
+  确认小写化与 `GITHUB_OUTPUT` 的多行 heredoc 输出正确；CI `824c3b2`，run
+  `38213618721`，四个作业全 success。**这次绿证明的是「没碰坏别的」，不是「发布链路
+  已验证」**——本次改动只碰 `release.yml`，而 `ci.yml` 根本不跑它。
+
+### 3. `docs/engineering.md` §8 发布规则的对照（自检）
+
+§8 要求一次发布具备六项材料。逐条找仓库里现有的材料，并标明它**是否随发布物走**：
+
+| §8 要求 | 仓库里的材料 | 随发布物走？ |
+| --- | --- | --- |
+| 明确版本或构建标识 | `internal/version` + `GET /api/v1/version`（`operations.md:624`）+ 控制台总览页 + 四个 Go 镜像的构建参数与启动日志 | **本次接上一半**：`release.yml` 从 tag/commit/提交时间注入，并在推送前 grep 二进制确认；尚未真实运行 |
+| 数据库迁移顺序和回滚策略 | `db/migrations/`；`migrate up/status/baseline`；`operations.md:580`「升级失败怎么办」（只前进不回滚）与总账 0.6 | ❌ 没有任何载体挂在 tag 上 |
+| 配置和密钥变更清单 | `.env.example`；`operations.md:783`「密钥轮换（`ALERT_SECRET_KEYS`）」 | ❌ |
+| 关键健康检查 | `GET /healthz`、`GET /readyz`（`operations.md:619-620`，`/readyz` 查 PG / Redis / 对象存储 / Browser Worker） | 部分：镜像自带 `HEALTHCHECK` |
+| 监控和告警确认 | `GET /metrics` 与 `operations.md` 的运行验收一节；`docs/runbooks/alert-delivery.md` | ❌ |
+| 失败后的停止和回滚方案 | `operations.md:580`；`docs/backup-restore-rehearsal.md` | ❌ |
+
+**结论**：六项材料在仓库里都能找到，但**没有一项挂在发布物上**——没有 GitHub Release、
+没有 release notes、没有可下载产物（工作流是 `permissions: contents: read`，也没有
+release 步骤）。「这个 tag 对应哪几步迁移、哪几处配置改动、怎么回滚」目前只能靠 tag
+指向的 commit 去人肉回溯。**登记在案，本轮不做。**
+
+### 未覆盖
+
+- **发布工作流本身一次都没有真实运行过**：`git tag` 一直是空的，
+  `on: push: tags: ['v*']` 从未匹配；六个镜像的构建与推送、`cosign` 无密钥签名、Trivy
+  扫描、SARIF 上传**全部是纸面**。本节两条验证覆盖的是「构建这两个二进制的 Dockerfile」
+  与「解析镜像名的那段 bash」，**不是工作流整体**。
+- **`make` 在开发机上没有安装**：文档里的 `make release-check` 本轮用等价的
+  `git describe --tags --exact-match` 跑（`Makefile:59-60` 就是这个命令）。命令能跑通
+  不等于「照 Makefile 跑过」。
+- **只出 amd64**：工作流没有 `platforms:`，也没有 QEMU。
+- **action 的 pin 是浮动 tag**（`actions/checkout@v4`、`aquasecurity/trivy-action@0.28.0`
+  等），而本仓库对对象存储镜像按 digest 钉死（ADR 0007）——两套标准不一致。
+- **GHCR 首次创建的 package 默认私有**，需要在包设置里改成 public，未登录的机器才拉得
+  到；这是网页操作，工作流代劳不了。
+- **发布产物起栈的 overlay 不存在**：`docker-compose.yml` 默认本地构建，所以「本地
+  `docker compose up` 跑通」目前仍不等于「发布产物跑通」。
+
+### 回填
+
+- **1.5「版本与构建标识」的未覆盖**（原「没有实测过带真实版本号的镜像构建……release
+  流程也未接上这些构建参数」）：前半句 2026-10-12 已实测（四个 Go 镜像、真实值、读二进制
+  确认三个串都在）；后半句已修（构建参数接进 `release.yml` 与本地 compose）。**仍未
+  实测的是「按 tag 发布的产物」**。
+- **2.6 的未覆盖**（原「`APP_VERSION` 等构建参数仍未实测注入真实版本号」）：同上。
+
+---
+
 ## CI 首次全绿：两个演练作业第一次真正执行完 — 2026-10-12
 
 - **脚本**：`.github/workflows/ci.yml`（推送触发，非手动）。
@@ -1085,6 +1211,8 @@ drill 五次里两次随机报 **0/40**，两次 wall clock 都恰好落在它�
     **耗时波动在调度器排队阶段**；同一现象在改动之前已出现（1.6 那次 191.4s）。
 - **未覆盖**：`APP_VERSION` 等构建参数仍未实测注入真实版本号（沿用默认 `dev`）；
   首次构建需下载工具链，受限网络下必须先配好 `GOPROXY`。
+  ⚠️ **2026-10-12 已修正前半句**：真实版本号已实测注入并读出（四个 Go 镜像）；后半句
+  仍然成立。见总账「发布链路接通」。
 
 ---
 
@@ -1135,6 +1263,10 @@ drill 五次里两次随机报 **0/40**，两次 wall clock 都恰好落在它�
 - **未覆盖**：**没有实测过带真实版本号的镜像构建**——smoke 用的是默认值，因此它
   验证的是「接口可用且字段非空」，不是「`APP_VERSION=v1.2.3` 真的进了二进制」。
   release 流程（`.github/workflows/release.yml`）也未接上这些构建参数。
+  ⚠️ **2026-10-12 已修正**：前半句已实测——用真实值构建四个 Go 镜像并逐个读二进制，
+  `VERSION`/`COMMIT`/`BUILD_TIME` 三个串都在；后半句已修（构建参数接进 `release.yml`
+  与本地 compose 的三个服务）。**仍未实测的是「按 tag 发布的产物」**。见总账
+  「发布链路接通」。
 
 ---
 
