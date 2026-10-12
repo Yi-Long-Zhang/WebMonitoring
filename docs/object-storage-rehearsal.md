@@ -8,11 +8,13 @@
 实际跑通并回填结果。
 
 已在本机验证的部分：`NewS3Store` 对畸形 endpoint 的拒绝
-（`internal/evidence/s3_test.go`）。创建 bucket、预签名 URL 和真实读写**未**验证。
+（`internal/evidence/s3_test.go`）。创建 bucket、预签名 URL 和真实读写**未在外部 S3 上**验证
+——这三条已在 Compose 的 VersityGW 上实测过（[adr/0007](adr/0007-object-store-replacement.md)），
+但「在 VersityGW 上成立」不等于「在 AWS S3 上成立」，本演练要验的正是后者。
 
 ## 为什么单独演练
 
-Compose 里的 MinIO 与 AWS S3 在大面上等价，但在三条路径上行为可能不同，而这三条
+Compose 里的 VersityGW 与 AWS S3 在大面上等价，但在三条路径上行为可能不同，而这三条
 都在关键路径上：
 
 1. **创建 bucket**。`NewS3Store` 会尝试 `MakeBucket`；最小权限策略通常没有
@@ -22,7 +24,7 @@ Compose 里的 MinIO 与 AWS S3 在大面上等价，但在三条路径上行为
    代价是多一次往返，且策略必须允许该操作。为此本仓库已支持 `S3_REGION`
    （`internal/evidence/s3.go` 的 `S3Options.Region`），演练应在固定区域上跑。
 3. **预签名 URL**。`PresignedGetURL` 是本地证据路径下 `signedEvidenceURL` 用的那条
-   （控制面 `/api/v1/evidence/{id}/signed-url`）。MinIO 与 AWS 在签名规范上最可能
+   （控制面 `/api/v1/evidence/{id}/signed-url`）。VersityGW 与 AWS 在签名规范上最可能
    表现不同的就是这条，所以断言必须包含**一次真实的签名下载**，而不只是元数据列表。
 
 ## 前置条件
@@ -30,11 +32,11 @@ Compose 里的 MinIO 与 AWS S3 在大面上等价，但在三条路径上行为
 - 一个 S3 兼容 endpoint，其中一个**已存在**的 bucket（或允许 `s3:CreateBucket` 的凭据）。
 - 凭据具备：`s3:PutObject`、`s3:GetObject`、`s3:ListBucket`、`s3:DeleteObject`，
   以及不设 `S3_REGION` 时的 `s3:GetBucketLocation`。
-- Docker 可运行栈；本演练不需要 MinIO 服务。
+- Docker 可运行栈；本演练不需要 Compose 里的 `objectstore` 服务。
 
 ## 步骤
 
-用真实凭据覆盖对象存储相关变量，并**省略 minio 服务**（它仍留在 compose 文件里，
+用真实凭据覆盖对象存储相关变量，并**省略 `objectstore` 服务**（它仍留在 compose 文件里，
 但因为 `S3_ENDPOINT` 指向外部而不会被使用；若要彻底不启动，用
 `docker compose up` 时逐个列服务而不是 `up` 全部）：
 

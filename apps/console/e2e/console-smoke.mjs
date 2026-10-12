@@ -69,7 +69,7 @@ try {
 
   // The short-lived link is minted on demand and is the one credential this
   // screen hands out. It is deliberately NOT fetched from here: the API signs
-  // it for S3_ENDPOINT (http://minio:9000 in this stack), a name that only
+  // it for S3_ENDPOINT (http://objectstore:9000 in this stack), a name that only
   // resolves inside the compose network, so a request from outside it fails
   // with ENOTFOUND no matter how correct the link is. What can be asserted
   // from the browser is that a link was minted, that it is a credential rather

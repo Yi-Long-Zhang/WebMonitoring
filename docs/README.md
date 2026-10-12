@@ -136,8 +136,8 @@ CI 的 backend 任务通过服务容器设置这两个变量（`.github/workflow
 - **外部 KMS/Vault**：当前未接入。主密钥以明文环境变量注入。
   `状态：部分实现 —— 版本化轮换与存量密文再加密的扫描（dry-run）与执行路径均已实现并在一次性容器上验证；尚未在真实部署的数据上执行过再加密。`
 - **Kubernetes**：当前只有单机 Docker Compose，无 K8s 清单与 Helm chart。
-- **外部对象存储**：`状态：部分实现 —— MinIO 已实测跑通（其镜像现已在公网不可获取，见
-  [roadmap.md](roadmap.md) 的 2.8），外部 S3 演练尚未执行`
+- **外部对象存储**：`状态：部分实现 —— Compose 对象存储路径已实测跑通（VersityGW，见
+  [adr/0007](adr/0007-object-store-replacement.md)），外部 S3 演练尚未执行`
   （方案见 [object-storage-rehearsal.md](object-storage-rehearsal.md)）。
 
 ---
@@ -160,7 +160,7 @@ CI 的 backend 任务通过服务容器设置这两个变量（`.github/workflow
 - 登录防爆破与账户锁定、Redis 会话持久化、用户/角色管理、keyset 真分页、
   任务取消/超时终态、优雅停机和批量导入/导出。
 - 登录态检测（HTTP 与浏览器两条路径），凭据 AES-GCM 加密、两侧 SSRF 复核。
-- 内存/本地证据开发模式，以及 PostgreSQL、Redis、MinIO 的 Compose 路径。
+- 内存/本地证据开发模式，以及 PostgreSQL、Redis、S3 兼容对象存储的 Compose 路径。
 - 生产配置门禁、90 天证据/365 天审计保留策略、dry-run 清理和备份恢复校验脚本。
 - 可重复的验收演练脚本（Compose smoke、100 资产压测、多副本演练、备份恢复）。
 - OpenTelemetry Trace（env 门控、默认 no-op）与单元/集成测试。
@@ -191,10 +191,13 @@ CI 的 backend 任务通过服务容器设置这两个变量（`.github/workflow
 外部对象存储（S3）演练**尚未执行**，方案见
 [object-storage-rehearsal.md](object-storage-rehearsal.md)。
 
-⚠️ 另外，Compose 路径用的对象存储镜像**已在公网不可获取**（2026-10-12 发现，见
-[roadmap.md](roadmap.md) 的 2.8）。**上面这几条 Compose 演练跑的都是本机 13 个月前的镜像
-缓存**，干净机器目前无法 `docker compose up`；这不影响它们当时测出的结论，但意味着
-「本机跑通」不再等于「干净机器跑通」。
+⚠️ **2026-10-12 已修正**：此处原先记「Compose 路径用的对象存储镜像已在公网不可获取，干净机器
+无法 `docker compose up`」。该镜像已换为公开可拉取的 VersityGW（服务端）+ rclone（备份客户端），
+见 [roadmap.md](roadmap.md) 的 2.8 与
+[adr/0007-object-store-replacement.md](adr/0007-object-store-replacement.md)；并在**无镜像缓存的
+CI runner** 上实测拉到（run `38206727165`，日志里 `objectstore Pulling` → `objectstore Pulled`）。
+上面那几条 Compose 演练当时确实跑在本机 13 个月前的镜像缓存上，这不影响它们测出的结论；
+「本机跑通不等于干净机器跑通」这个局限现在已由该次 CI 运行解除。
 
 ---
 

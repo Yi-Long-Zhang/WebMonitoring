@@ -10,6 +10,210 @@
 
 ---
 
+## CI 首次全绿：两个演练作业第一次真正执行完 — 2026-10-12
+
+- **脚本**：`.github/workflows/ci.yml`（推送触发，非手动）。
+- **触发**：推送 `codex/object-store-swap`，SHA `ab18f43`，run `38206727165`。
+- **关键断言**：四个作业全部 `success`，其中 `compose-smoke` 与 `multi-replica-drill`
+  是**本仓库历史上第一次真正执行到底**——此前它们只有两类结局：从未被触发，或启动后
+  因拉镜像失败在 32s 内退出。
+- **结果**：
+
+| 作业 | 结论 | 起止（UTC） | 日志里的关键输出 |
+| --- | --- | --- | --- |
+| `backend` | success | 05:09:35 → 05:11:55 | — |
+| `node` | success | 05:09:35 → 05:11:44 | — |
+| `compose-smoke` | success | 05:11:58 → 05:16:21 | `Compose smoke test passed` |
+| `multi-replica-drill` | success | 05:11:59 → 05:15:08 | `replicas: api=2 http-worker=3`、`verified+enabled: 40`、`detection jobs : 40 (expected 40)`、`duplicate groups : 0`、`succeeded : 40`、`wall clock : 3.6s`、`Multi-replica drill passed` |
+
+### 这一节结掉了什么
+
+- **roadmap 2.8 的判据 1 与判据 5**：两者本来就是同一个实验的两面——GitHub runner 正是
+  那台「没有镜像缓存」的机器。两个作业的日志里都有 `objectstore Pulling` →
+  `objectstore Pulled`，即**在无缓存的干净机器上确实从公开注册表拉到了镜像**。在此之前，
+  本仓库全部 Compose 通关记录都跑在本机 13 个月前的镜像缓存上。
+- **「CI 门禁自身」整条未实测项**（`roadmap.md`「从未实测的场景」）：两个演练作业内的
+  断言终于被真实执行过一次，不再是「一条都没验证过」。
+- **「本地演练的可复现性」**：镜像换成公开可拉取的 VersityGW + rclone 之后，本机缓存
+  不再是被依赖的前提。
+
+### 顺带得到的一条新观察
+
+`multi-replica-drill` 的 wall clock 是 **3.6s**。历史序列：2026-09-20 三次落在
+234.5–244.1s（记为「已复现但根因未查清」，预算放宽到 900s）、2026-10-10 复跑 8.2s、
+本机本轮 28.4s、CI 本轮 3.6s。平台期已连续三次没有出现，**「240s 是常态」这个印象可以
+彻底否掉**；但这仍不足以说根因已消失，仍按间歇现象对待。
+
+### 未覆盖
+
+- **外部 S3 路径仍未演练**：CI 上跑的仍是 Compose 里的 VersityGW，
+  `docs/object-storage-rehearsal.md` 状态保持「尚未执行」。在 VersityGW 上成立不等于在
+  AWS S3 上成立。
+- **60 分钟的挂起保护仍是未实测代码**：本次作业正常运行并在 3 分钟内结束，没有进入挂起
+  路径，因此它只是被确认「不会误触」，仍未验证过它真能中止一次挂起。
+- **`-race` 之外**：本节的结论只覆盖上面四个作业；CI 的其它能力（覆盖率下限、lint）不在
+  本轮结论范围，它们此前已有独立记录。
+
+---
+
+## 对象存储镜像下架与替换（MinIO → VersityGW + rclone）— 2026-10-12
+
+- **脚本**：`scripts/compose-smoke.ps1`（`-KeepRunning`）、`scripts/compose-backup.ps1`、
+  `scripts/compose-restore.ps1 -Execute -ConfirmText RESTORE`、`scripts/multi-replica-drill.ps1`；
+  另有一组**一次性容器探针**直接驱动 `internal/evidence`（跑完即删，未入库）。CI 结论来自
+  GitHub check-runs API（只读凭据）。
+- **关键断言**：(1) 换存储必须用**仓库自己的代码路径**证明，「新服务能起来」不算；
+  (2) 「同名子命令」不等于「同语义」——每条 `mc` → `rclone` 的等价关系都要有**对照实验**；
+  (3) 判据「无缓存机器」不能用「本机跑通」代替，而这恰好是这条缺陷藏了 13 个月的原因。
+- **专项档案**：[adr/0007-object-store-replacement.md](adr/0007-object-store-replacement.md)、
+  `docs/runbooks/object-storage.md`（整篇重写）、`docs/operations.md` 的「镜像准备」、
+  `docs/roadmap.md` 的 2.8。
+
+### 1. 起点：main 上的合并提交红在同一处
+
+上一轮（`codex/ci-gate-repair`）合并为 `3f4e09b` 之后，main 上这次运行的四个作业：
+
+| 作业 | 结论 | 起止（UTC） | 时长 |
+| --- | --- | --- | --- |
+| `backend` | success | 03:31:17 → 03:33:46 | 149s |
+| `node` | success | 03:31:17 → 03:32:31 | 74s |
+| `compose-smoke` | **failure** | 03:33:49 → 03:34:37 | 48s |
+| `multi-replica-drill` | **failure** | 03:33:50 → 03:33:58 | 8s |
+
+对照上一轮分支 SHA `ffbd2e1` 的 run `38198384564`（backend 03:05:32→03:07:58、
+node 03:05:32→03:06:36、compose-smoke 03:08:04→03:08:36、multi-replica-drill
+03:08:05→03:08:16）：`node` 的修复在 main 上保持有效，而两个演练作业**从 `skipped`
+变成了真实的 `failure`**——这既是那轮修复的成果（它们终于被执行了），也正是本轮要清掉的
+阻塞：它们失败的原因不是脚本，是**镜像已经不存在**。
+
+### 2. 探针直接驱动 `internal/evidence`，而不是「新服务能起」
+
+在真实容器上跑仓库自己的代码路径，`Region` 留空（生产实际设置，走 `GetBucketLocation`）
+与显式 `us-east-1` **两种都过**：
+
+| 代码路径 | 结果 |
+| --- | --- |
+| `NewS3Store`（含在空存储上 `MakeBucket`） | 通过 |
+| `Ready`（`HeadBucket`，`/readyz` 用它） | 通过 |
+| `Put`（`PutObject` + `Content-MD5`） | 通过 |
+| `Open`（`GetObject` + `Stat`） | 通过 |
+| `Delete`（`RemoveObject`） | 通过 |
+| `PresignedGetURL` | **真的把对象字节取回来了**，不是「URL 长得像」 |
+
+**分片上传单独验过**：40 MiB 载荷经 `GetObject` 与预签名 URL 两条路取回，逐字节一致；
+服务端访问日志确认走的是真分片路径（`POST ?uploads=` → 三次 `PUT ?partNumber=N` →
+`POST ?uploadId=`），不是单片 PUT——否则这条对分片什么也没证明。
+
+**healthcheck 红绿两侧都在真实容器上验过**：健康时探针 exit 0，把服务停掉后 exit 1。
+（探针是 `printf "GET / HTTP/1.0\r\n\r\n" | nc -w 2 127.0.0.1 9000 | head -n1 | grep -qE
+"HTTP/1\.[01] [234]"`：VersityGW 没有专用健康端点，未认证的 `GET /` 返回 403，所以判据是
+「有完整的 HTTP 状态行且不是 5xx」，不弱于它替换掉的 `curl -f`。）
+
+### 3. 四条 `mc` → `rclone` 语义等价值，每条都带对照实验
+
+不看文档宣称，做对照：
+
+| 原写法 | 新写法 | 对照实验 |
+| --- | --- | --- |
+| `mc mirror --overwrite` | `rclone copy --ignore-times` | 造一个**同大小、同 mtime、内容不同**的对象：默认 `copy` 跳过了它（桶里仍是旧内容），加 `--ignore-times` 才覆盖——所以这个标志不是风格选择 |
+| `mc mirror --overwrite --remove` | `rclone sync --ignore-times` | `sync` 删掉了桶里多出来的对象，同时保留了其余对象 |
+| `mc mb --ignore-existing` | `rclone mkdir`（**不设** `--s3-no-check-bucket`） | 设上该标志后 `mkdir` 退化成**静默空操作**，「目标桶不存在时先建桶」这条保证会无声消失 |
+| （无对应） | — | 备份指向不存在的桶时 rclone **exit 3 报错退出**，而不是静默产出空备份；这比 `mc` 时期更严 |
+
+**凭据不出现在 argv**：传给容器的是**变量名**（`-e RCLONE_CONFIG_BACKUP_...`）而不是值，
+用正则把容器 argv 与密钥本身比对过，确认查不到。
+
+### 4. 端到端：四条演练全部退出码 0
+
+| 演练 | 结论（脚本实际输出） |
+| --- | --- |
+| `compose-smoke.ps1 -KeepRunning` | `Compose smoke test passed`，退出码 0 |
+| `compose-backup.ps1` | `Backup created at .data-backups\20261012-121012`，退出码 0 |
+| `compose-restore.ps1 -Execute -ConfirmText RESTORE` | `Restore verification passed: ready, evidence SHA-256, job states, detection pending=0, alert pending=0`，退出码 0 |
+| `multi-replica-drill.ps1` | `Multi-replica drill passed`，退出码 0 |
+
+`multi-replica-drill` 的完整数字（本次新跑，用于取得未被 `tail` 截断的输出）：
+
+```
+replicas: api=2 http-worker=3
+verified+enabled: 40
+  assets            : 40
+  detection jobs    : 40 (expected 40)
+  duplicate groups  : 0
+  succeeded         : 40
+  wall clock        : 28.4s
+  worker consumers  : 8bfd02ae0f72-
+0fbd9ae909e3-
+972e79a5d967-
+```
+
+备份产物的 manifest 经逐条核对：`files` 数组 **19 条**——17 个证据对象（`evidence/` 前缀）
++ `webmonitoring.dump` + `redis/dump.rdb`，每条带 SHA-256；对象树里另有 `manifest.json`
+本身，目录下共 20 个文件。
+
+### 5. 选型记录（为什么不是另外两个）
+
+| 选项 | 结论 | 依据 |
+| --- | --- | --- |
+| 自建冻结的 MinIO 二进制 | 否决 | 对安全产品是净降级：上游已停发版，等于钉进一个**不会再修的安全组件** |
+| Garage v2.4.1 | 否决 | 运行时镜像 `FROM scratch`（无 shell / 无 curl / 无 nc），且实例可用前必须手工 `garage layout assign` + `layout apply` |
+| **VersityGW v1.8.0** | **采纳** | Apache-2.0；运行时 `alpine`（busybox 的 `sh`/`nc`/`head`/`grep`）；`posix` 后端把证据存成卷里的普通文件；启动无需引导步骤 |
+
+### 6. 运行手册与运维文档里的命令原样跑过一遍
+
+文档里的命令必须实跑，不能只验证「改动生效」。为此用**基础 compose 文件**另起一套栈
+（`docker compose --env-file deployments/compose/.env -f
+deployments/compose/docker-compose.yml up -d --build postgres redis objectstore migrate api
+http-worker`，项目名 `compose`，即手册假定的那套拓扑），把
+`docs/runbooks/object-storage.md` 与 `docs/operations.md` 新增或改写的命令块**逐条原样执行**：
+
+| 命令 | 结果 |
+| --- | --- |
+| `curl -s http://localhost:8080/readyz` | `{"status":"ready"}` |
+| `docker compose … exec -T objectstore sh -c 'printf "GET / HTTP/1.0\r\n\r\n" \| nc -w 2 127.0.0.1 9000 \| head -n1'` | `HTTP/1.1 403 Forbidden`（与手册所述一致） |
+| `docker inspect --format '{{.State.Health.Status}} restarts={{.RestartCount}}' …` | `healthy restarts=0` |
+| `docker compose … config \| grep -E 'S3_ENDPOINT\|S3_BUCKET'` | `S3_ENDPOINT: http://objectstore:9000`、`S3_BUCKET: evidence` |
+| `rclone_in_compose lsd backup:` | 列出桶 `evidence` |
+| `rclone_in_compose size backup:evidence` | `Total objects: 1` |
+| `rclone_in_compose lsjson backup:evidence` | 逐对象 JSON |
+| `rclone_in_compose cat "backup:evidence/<key>"` | 取回对象内容 |
+| `docker run --rm -v compose_objectstore-data:/data alpine du -sh /data/evidence` | 返回目录体积（Git Bash 下需 `MSYS_NO_PATHCONV=1`） |
+| `docker system df -v \| grep -iE 'objectstore-data\|postgres-data\|redis-data'` | 列出卷 |
+| `docker compose … ps --format 'table {{.Service}}\t{{.Status}}'` | 六个服务全部 `healthy` |
+| `operations.md` 里 `rclone copy --ignore-times backup:evidence <目录>` 的完整展开式 | 对象被复制到本地目录，退出码 0 |
+| 两条 `psql` 计数查询（`evidence` 行数/逻辑体积、`retain_until IS NULL` 分组） | 均返回结果 |
+
+**由此改掉的一处手册错误**：`rclone` 把「对象不存在」当作**空结果**而不是错误——实测
+`lsjson`、`lsf`、`cat`、`size` 四条命令在对象不存在时**全部退出 0**，与对象存在时一模一样。
+原处置 C 让操作员「用 `lsjson` 判断对象是否存在」，若按退出码判断会一律得出「存在」。
+手册已改为**看输出**判别（`lsjson` 返回 `[]`、`cat` 无输出即不存在），并写明这与「桶不存在」
+（exit 3）的区别。
+
+### 未覆盖
+
+- **判据 1 与 5 未做** —— 写本节时这两个演练作业**一次都没有成功执行过**（当时该分支尚未
+  推送）。CI 的 runner 正是那台「没有镜像缓存」的机器，所以判据 1 与 5 是同一个实验。
+  → **同日稍后已结清**：分支推送后 run `38206727165` 四门全绿，两个演练作业首次执行到底，
+  日志里有 `objectstore Pulling` → `objectstore Pulled`。见本文最前「CI 首次全绿」。
+- **本机不是干净机器**：本机 daemon 里仍有 13 个月前那两份 MinIO 缓存，所以**本机**的通关
+  记录不能单独充当判据 5。→ 干净机器上的那一半**已由 CI 完成**（同上）；本节能说的是
+  「栈已经不再依赖本机缓存」（compose 文件里的镜像全部来自公开 registry 且按 digest 钉死），
+  这句话在 CI 上得到了验证。
+- **外部 S3 路径仍未演练**：`docs/object-storage-rehearsal.md` 状态保持「尚未执行」。
+  在 VersityGW 上成立不等于在 AWS S3 上成立。
+- **备份/恢复脚本只吃基础 compose 文件**（既有现象，本轮未修）：两者都只加
+  `-f deployments/compose/docker-compose.yml`，没有传 overlay 的入口。用
+  `-ProjectName webmonitoring-smoke` 对着 `compose-smoke -KeepRunning` 留下的栈跑，
+  重建出来的 `api` 落在 **8080**（基础文件的端口）而不是 smoke overlay 的 18080，
+  本节第 4 节的恢复演练因此是用 `API_BASE_URL=http://localhost:8080` 跑完的；断言本身
+  照常执行并通过。同时会在项目里多出一个空的 `webmonitoring-smoke_objectstore-data` 卷。
+  **这条与 `mc` → `rclone` 的替换无关，是既有的脚本/overlay 缺口**，修它需要给两个脚本
+  加一个 overlay 参数，属于另一项改动。
+- **轮换密钥的停机时间未在真实数据上验**：单账户模式没有 IAM，轮换必然是「改 `.env` +
+  重启 objectstore/api/http-worker」的一次短停机，路径只在一次性容器上验过。
+
+---
+
 ## CI 门禁首次诚实运行与对象存储镜像下架 — 2026-10-12
 
 - **脚本**：`.github/workflows/ci.yml`（run `38198384564`，SHA
@@ -131,12 +335,16 @@ docker compose failed: up -d --build postgres redis minio migrate ...
 ### 未覆盖
 
 - **两个演练作业仍未成功执行过一次**：本次是首次执行，11s / 32s 即因拉镜像失败退出。作业内
-  的断言**一条都没有被验证**。
+  的断言**一条都没有被验证**。→ **2026-10-12 稍后已结清**：镜像替换后推送 `ab18f43`
+  （run `38206727165`）两个作业首次执行到底并全绿，断言被真实执行过，见本文最前
+  「CI 首次全绿」。
 - **60 分钟的挂起保护仍是未实测代码**：它是为本轮首次执行加的，而两次失败都在 32s 内结束，
-  触发不到。
+  触发不到。→ 本轮成功的那次同样没有进入挂起路径，**这一条依然未实测**。
 - **`multi-replica-drill` 的 wall-clock 现象**没有获得新的观察：本次没有进入轮询阶段就退出了。
+  → 稍后获得两次新观察：本机 28.4s、CI 上 3.6s，见「CI 首次全绿」。
 - **本地演练的可复现性**：本机所有通关记录都依赖 13 个月前的镜像缓存；在换掉对象存储之前，
-  「本机跑通」不再是「干净机器上跑通」的证据。
+  「本机跑通」不再是「干净机器上跑通」的证据。→ **2026-10-12 稍后解除**：镜像已换为公开
+  可拉取的 VersityGW + rclone，且在无缓存的 CI runner 上实测拉到。
 
 ---
 
@@ -366,7 +574,11 @@ a1e85b10e6e2-
   退避重建与并发 `Publish` 的交错，以 CI 为准。
 - **CI 上的 compose-smoke / drill job**：仍未在 GitHub 上验证（本机无 `gh`）。**推论**（非实测）：
   CI 的 `node` job 跑的是带 `test/` 的完整检出，所以它是绿的；而 `compose-smoke` job 会构建
-  镜像，因此它在 main 上**大概率一直是红的**。这条需要推送后确认。
+  镜像，因此它在 main 上**大概率一直是红的**。→ **2026-10-12 已确认，推论只对了一半**：
+  `node` 为绿，与推论一致；但 `compose-smoke` / `multi-replica-drill` 不是「一直是红的」，
+  而是**从未真正执行过**（唯一的执行尝试因对象存储镜像下架在 32s 内退出）。根因也不是
+  「会构建镜像」。实测输出见本文最前「CI 首次全绿」，逐条定位见「CI 门禁首次诚实运行与
+  对象存储镜像下架」。
 - **drill 无法确定性覆盖跨进程 SSE**：drill 只发布一个入口端口，无法把 SSE 连接与产出事件的
   副本确定性地分到不同实例上。跨进程那一条由第 2 节的手工观测，以及「两个 relay + 真实
   Redis」的集成用例覆盖；drill 侧只作不回归的回归。

@@ -261,7 +261,7 @@ function Test-EvidenceArchive([string]$Path, $Incident, $EvidenceItems) {
 try {
     Invoke-Compose @("config") | Out-Null
     Invoke-Compose @("up", "-d", "--build")
-    foreach ($service in @("postgres", "redis", "minio", "browser-worker", "migrate", "api", "http-worker", "console", "smoke-target")) {
+    foreach ($service in @("postgres", "redis", "objectstore", "browser-worker", "migrate", "api", "http-worker", "console", "smoke-target")) {
         Wait-Healthy $service
     }
     Invoke-RestMethod -Method Get -Uri "$apiBase/readyz" | Out-Null

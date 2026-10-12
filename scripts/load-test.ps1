@@ -200,7 +200,7 @@ $aliases
       timeout: 3s
       retries: 20
 
-  minio:
+  objectstore:
     ports: !reset []
 
   # Same topology as the production Compose file (including the Playwright browser
@@ -224,12 +224,12 @@ $assetsByLabel = @{}
 try {
     Invoke-Compose @("config") | Out-Null
     $upArguments = @("up", "-d", "--build",
-        "postgres", "redis", "minio", "migrate", "browser-worker", "smoke-target", "api", "http-worker")
+        "postgres", "redis", "objectstore", "migrate", "browser-worker", "smoke-target", "api", "http-worker")
     if ($HttpWorkers -gt 1) {
         $upArguments += @("--scale", "http-worker=$HttpWorkers")
     }
     Invoke-Compose $upArguments | Out-Null
-    foreach ($service in @("postgres", "redis", "minio", "browser-worker", "migrate", "smoke-target", "api", "http-worker")) {
+    foreach ($service in @("postgres", "redis", "objectstore", "browser-worker", "migrate", "smoke-target", "api", "http-worker")) {
         Wait-Healthy $service
     }
     Invoke-RestMethod -Method Get -Uri "$apiBase/readyz" | Out-Null

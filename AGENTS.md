@@ -82,7 +82,7 @@ WebMonitoring 是网页篡改监测与安全事件处置平台，面向经授权
 - 浏览器检测：Node.js、TypeScript、Playwright。
 - 数据库：PostgreSQL。
 - 任务队列：Redis Streams。
-- 证据存储：S3 兼容对象存储，开发和私有化部署使用 MinIO。
+- 证据存储：S3 兼容对象存储，开发和私有化部署使用 VersityGW。
 - 可观测性：OpenTelemetry、Prometheus、结构化日志。
 - 部署：开发和小规模部署使用 Docker Compose，确有规模依据后使用 Kubernetes。
 
