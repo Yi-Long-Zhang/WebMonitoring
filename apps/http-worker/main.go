@@ -28,6 +28,7 @@ import (
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
 	"webmonitoring/internal/telemetry"
+	"webmonitoring/internal/version"
 )
 
 func main() {
@@ -40,6 +41,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	logger := slog.New(security.NewRedactingHandler(slog.NewJSONHandler(os.Stdout, nil)))
+	// The api answers /api/v1/version; a worker has no such endpoint, so its
+	// build identity goes in the log where an operator pastes it into a ticket.
+	// This import is also what puts internal/version into the binary: without it
+	// the image's -X webmonitoring/internal/version.* build args have nothing to
+	// set, and the args are silently inert.
+	logger.Info("http-worker build",
+		"version", version.Version, "commit", version.Commit, "build_time", version.BuildTime)
 	if err := config.ValidateProductionWorker(os.Getenv); err != nil {
 		log.Fatalf("invalid production configuration: %v", err)
 	}

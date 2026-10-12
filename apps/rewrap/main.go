@@ -29,6 +29,7 @@ import (
 	"webmonitoring/internal/rewrap"
 	"webmonitoring/internal/security"
 	"webmonitoring/internal/store"
+	"webmonitoring/internal/version"
 )
 
 // leaseName serializes the pass across processes. It is distinct from the
@@ -41,6 +42,12 @@ func main() {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// The build identity of the process that touched customer data, recorded
+	// before it touches anything. Importing the package is what makes the
+	// image's -X webmonitoring/internal/version.* build args effective; without
+	// it they are silently inert.
+	logger.Info("rewrap build",
+		"version", version.Version, "commit", version.Commit, "build_time", version.BuildTime)
 	dsn := os.Getenv("POSTGRES_DSN")
 	if dsn == "" {
 		logger.Error("POSTGRES_DSN is required: rewrap reads the deployed rows, so it cannot run without a database")

@@ -22,11 +22,20 @@ jobs:
       fail-fast: false
       matrix:
         app:
-          - { name: api, dockerfile: apps/api/Dockerfile }
-          - { name: http-worker, dockerfile: apps/http-worker/Dockerfile }
+          # `binary` names the images whose Dockerfile stamps a build identity
+          # into the executable (ARG VERSION/COMMIT/BUILD_TIME plus -ldflags -X
+          # webmonitoring/internal/version.*) and where that executable lands.
+          # apps/console/Dockerfile declares only CONSOLE_SOURCEMAP and
+          # apps/browser-worker/Dockerfile declares no ARG at all, so stamping
+          # those would log "unused build arg" and do nothing else.
+          - { name: api, dockerfile: apps/api/Dockerfile, binary: /app/webmonitoring-api }
+          - { name: http-worker, dockerfile: apps/http-worker/Dockerfile, binary: /app/webmonitoring-worker }
           - { name: browser-worker, dockerfile: apps/browser-worker/Dockerfile }
           - { name: console, dockerfile: apps/console/Dockerfile }
-          - { name: migrate, dockerfile: apps/migrate/Dockerfile }
+          - { name: migrate, dockerfile: apps/migrate/Dockerfile, binary: /app/webmonitoring-migrate }
+          # rewrap runs from `docker compose run --rm rewrap` in the operations
+          # manual, so its image has to be published alongside the rest.
+          - { name: rewrap, dockerfile: apps/rewrap/Dockerfile, binary: /app/webmonitoring-rewrap }
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -35,6 +44,28 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # A local `docker compose build` leaves these at their defaults ("dev",
+      # "unknown") and that is honest; a release is the one build where they are
+      # known, so the args are composed here rather than left to the Dockerfile's
+      # defaults. BUILD_TIME is the *commit's* time, not `date`: six parallel
+      # jobs calling date would stamp six different build times onto one release.
+      # VERSION is the tag verbatim, which is what `make release-check`
+      # (git describe --tags --exact-match) prints as well.
+      - name: Resolve the build identity
+        id: identity
+        if: matrix.app.binary
+        run: |
+          build_time="$(git show -s --format=%cI "$GITHUB_SHA")"
+          {
+            echo "version=${GITHUB_REF_NAME}"
+            echo "commit=${GITHUB_SHA}"
+            echo "build_time=${build_time}"
+            echo "args<<BUILD_ARGS"
+            echo "VERSION=${GITHUB_REF_NAME}"
+            echo "COMMIT=${GITHUB_SHA}"
+            echo "BUILD_TIME=${build_time}"
+            echo "BUILD_ARGS"
+          } >> "$GITHUB_OUTPUT"
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -53,6 +84,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Empty for the two images that take no stamp.
+          build-args: ${{ steps.identity.outputs.args }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # BuildKit writes an SPDX SBOM and SLSA provenance as registry
@@ -60,6 +93,38 @@ jobs:
           # records what went in rather than only what came out.
           provenance: mode=max
           sbom: true
+      # The stamp is only real if it reached the published binary. Nothing else
+      # would notice if it did not: the image would log and serve "dev" and every
+      # job would stay green -- which is how this gap survived until it was found
+      # by reading the workflow (docs/rehearsals.md, item 1.5).
+      #
+      # Read out of the binary rather than asked of the running image: the images
+      # are distroless (no shell), the api needs a database to answer
+      # /api/v1/version, and `go version -m` does **not** record -ldflags, so the
+      # injected strings are the only reliable reading. The commit SHA is the
+      # strong one: -X is the only way it can reach these bytes, because
+      # .dockerignore excludes .git and the build therefore has no VCS stamping.
+      - name: The published binary must carry this release's identity
+        if: matrix.app.binary
+        run: |
+          image="ghcr.io/${{ github.repository }}/${{ matrix.app.name }}@${{ steps.build.outputs.digest }}"
+          container="$(docker create "$image")"
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          docker cp "$container:${{ matrix.app.binary }}" ./published-binary
+          status=0
+          for want in \
+            "${{ steps.identity.outputs.version }}" \
+            "${{ steps.identity.outputs.commit }}" \
+            "${{ steps.identity.outputs.build_time }}"
+          do
+            if grep -qaF -- "$want" ./published-binary; then
+              echo "found in the published binary: $want"
+            else
+              echo "the published binary does not carry '$want'" >&2
+              status=1
+            fi
+          done
+          exit "$status"
       # Keyless: the workflow's OIDC identity is the signer, so there is no key
       # material in secrets to leak or rotate. Verify with
       #   cosign verify ghcr.io/<repo>/<app>@<digest> \

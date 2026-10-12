@@ -113,6 +113,12 @@ services:
       dockerfile: apps/migrate/Dockerfile
       network: ${BUILD_NETWORK:-default}
       args:
+        # The release identity api carries (see the api service). Without the
+        # forwarding, one `docker compose build` produced images that disagreed
+        # about which release they came from.
+        VERSION: ${APP_VERSION:-dev}
+        COMMIT: ${APP_COMMIT:-unknown}
+        BUILD_TIME: ${APP_BUILD_TIME:-unknown}
         GOPROXY: ${GOPROXY:-}
     command: ["up"]
     environment:
@@ -208,6 +214,12 @@ services:
       dockerfile: apps/rewrap/Dockerfile
       network: ${BUILD_NETWORK:-default}
       args:
+        # The release identity api carries (see the api service). This one runs
+        # on customer data from the operations manual, so it is the worst image
+        # to leave unable to say which release it is.
+        VERSION: ${APP_VERSION:-dev}
+        COMMIT: ${APP_COMMIT:-unknown}
+        BUILD_TIME: ${APP_BUILD_TIME:-unknown}
         GOPROXY: ${GOPROXY:-}
     profiles: ["tools"]
     environment:
@@ -360,6 +372,12 @@ services:
       dockerfile: apps/http-worker/Dockerfile
       network: ${BUILD_NETWORK:-default}
       args:
+        # The release identity api carries (see the api service). Without the
+        # forwarding, one `docker compose build` produced images that disagreed
+        # about which release they came from.
+        VERSION: ${APP_VERSION:-dev}
+        COMMIT: ${APP_COMMIT:-unknown}
+        BUILD_TIME: ${APP_BUILD_TIME:-unknown}
         GOPROXY: ${GOPROXY:-}
     environment:
       APP_ENV: ${APP_ENV:-development}

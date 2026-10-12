@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"webmonitoring/internal/migrate"
+	"webmonitoring/internal/version"
 )
 
 func main() {
@@ -20,6 +21,12 @@ func main() {
 	if dsn == "" {
 		log.Fatal("POSTGRES_DSN is required")
 	}
+	// Which build applied the schema is part of the migration record: the
+	// ledger should be answerable from the log of the run that changed it.
+	// Importing the package is also what makes the image's
+	// -X webmonitoring/internal/version.* build args effective; without it they
+	// are silently inert.
+	log.Printf("migrate %s (%s) built %s", version.Version, version.Commit, version.BuildTime)
 	ctx := context.Background()
 	runner, err := migrate.New(ctx, dsn)
 	if err != nil {
