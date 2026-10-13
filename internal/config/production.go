@@ -19,6 +19,27 @@ func PositiveInt(get func(string) string, name string, fallback int) int {
 	return value
 }
 
+// NonNegativeInt is PositiveInt for a knob where 0 is a value the operator has
+// to be able to express rather than a typo to be corrected: it returns the
+// parsed 0 instead of the fallback, and still substitutes the fallback for
+// unset, empty, unparseable or negative input.
+//
+// The distinction matters because PositiveInt cannot represent "off" at all -- a
+// caller that guards on the result being > 0 is guarding on a condition the
+// parser has already made impossible, so the off-branch is dead code and the
+// documented way to disable the knob silently does the opposite.
+func NonNegativeInt(get func(string) string, name string, fallback int) int {
+	raw := strings.TrimSpace(get(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return fallback
+	}
+	return value
+}
+
 const (
 	EnvironmentProduction        = "production"
 	defaultDatabasePass          = "webmonitoring"
@@ -343,7 +364,8 @@ func validateJobLease(get func(string) string) []error {
 	return nil
 }
 
-// validateRedisCredentials requires// validateRedisCredentials requires a real password when REDIS_ADDR carries// credentials. Demanding it only in the credentialed form leaves the bare
+// validateRedisCredentials requires a real password when REDIS_ADDR carries
+// credentials. Demanding it only in the credentialed form leaves the bare
 // host:port form -- used by the integration tests and a single-node dev stack --
 // working unchanged, so nothing has to change until a deployment opts in.
 func validateRedisCredentials(get func(string) string) []error {

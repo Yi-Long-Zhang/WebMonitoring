@@ -125,6 +125,9 @@ corepack pnpm dev:console
 
 ### 完整 Compose 模式
 
+最短路径如下；**完整流程**（首次登录收尾、验收、生产化、升级与回滚、交付前清单）见
+[docs/deployment.md](docs/deployment.md) 的部署手册。
+
 需要 Docker Compose，会启用 PostgreSQL、Redis、对象存储、独立 HTTP Worker 和
 Playwright Worker。首次启动前复制环境文件。`POSTGRES_PASSWORD`、
 `S3_ACCESS_KEY`、`S3_SECRET_KEY`、`BROWSER_WORKER_TOKEN`、`ALERT_SECRET_KEY`

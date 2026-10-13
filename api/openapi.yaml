@@ -260,7 +260,18 @@ paths:
                   type: string
                   enum: [ISSUE, VERIFY]
       responses:
-        "200": { description: 验证令牌或验证结果 }
+        "200":
+          description: 验证令牌或验证结果
+          content:
+            application/json:
+              # One path, two answers: action=ISSUE returns the proof to publish,
+              # action=VERIFY returns the asset it just verified. The response
+              # schema is a oneOf rather than a loose object so a client that
+              # types the ISSUE answer reads the fields that actually exist.
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/VerificationInstructions"
+                  - $ref: "#/components/schemas/Asset"
   /assets/{id}/suspend:
     parameters:
       - $ref: "#/components/parameters/ResourceID"
@@ -1434,6 +1445,26 @@ components:
     VerificationMethod:
       type: string
       enum: [FILE, DNS, META]
+    # The ISSUE answer. Which extra key carries the proof depends on the asset's
+    # method, and the console reads the value out of the key its method names --
+    # so the alternative keys are part of the contract, not incidental: a client
+    # that assumed FILE's `path` was always present rendered "创建文件 undefined"
+    # for a DNS or META asset.
+    VerificationInstructions:
+      type: object
+      required: [method, content]
+      properties:
+        method: { $ref: "#/components/schemas/VerificationMethod" }
+        # The token the site has to publish, verbatim. It is what the later
+        # VERIFY action looks for, and it expires 30 minutes after ISSUE.
+        content: { type: string }
+        # FILE: the path to publish `content` at.
+        path: { type: string }
+        # DNS: the name to add a TXT record to, and its type.
+        record: { type: string }
+        recordType: { type: string }
+        # META: the complete tag to insert into the page, `content` included.
+        tag: { type: string }
     Asset:
       type: object
       required: [id, tenantId, name, url, type, enabled, verificationStatus, createdAt, updatedAt]

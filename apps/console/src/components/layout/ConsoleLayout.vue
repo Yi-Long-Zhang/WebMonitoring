@@ -434,9 +434,13 @@ onUnmounted(() => eventStream?.close());
         <el-form-item label="监测地址"><el-input v-model="assetForm.url" placeholder="https://example.com" /></el-form-item>
         <el-form-item label="资产类型">
           <el-select v-model="assetForm.type">
+            <!-- The four values the API accepts. Anything else is refused with
+                 400 INVALID_ASSET, so the list must not drift from
+                 internal/domain/models.go (AssetType) again. -->
             <el-option label="官方网站" value="OFFICIAL" />
-            <el-option label="监测站点" value="MONITORING" />
-            <el-option label="第三方" value="THIRD_PARTY" />
+            <el-option label="业务系统" value="BUSINESS" />
+            <el-option label="登录页面" value="LOGIN" />
+            <el-option label="其他" value="OTHER" />
           </el-select>
         </el-form-item>
         <el-form-item label="所属站点">

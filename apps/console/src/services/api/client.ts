@@ -1,5 +1,5 @@
 import type {
-  AlertChannel, AlertDelivery, Asset, AuditEvent, Baseline, Dashboard, DetectionJob, Evidence, Incident, IncidentEvent, IncidentStatus, ListResponse, Policy, ReportSummary, Session, Site, Tenant, User,
+  AlertChannel, AlertDelivery, Asset, AuditEvent, Baseline, Dashboard, DetectionJob, Evidence, Incident, IncidentEvent, IncidentStatus, ListResponse, Policy, ReportSummary, Session, Site, Tenant, User, VerificationInstructions,
 } from "../../types/domain";
 
 let csrfToken = "";
@@ -177,8 +177,12 @@ export function updateAsset(id: string, input: Partial<Pick<Asset, "name" | "own
   });
 }
 
+// The ISSUE answer carries the proof in a key named after the asset's method --
+// `path` for FILE, `record` for DNS, `tag` for META -- so this returns the whole
+// instructions object and lets the caller pick. Annotating it as `{ path }` was
+// how the DNS and META dialogs ended up rendering "undefined".
 export function issueVerification(id: string) {
-  return request<{ path: string; content: string }>(`/assets/${id}/verification`, {
+  return request<VerificationInstructions>(`/assets/${id}/verification`, {
     method: "POST",
     body: JSON.stringify({ action: "ISSUE" }),
   });

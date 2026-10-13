@@ -31,6 +31,7 @@ import {
 } from "../../services/api/client";
 import type { AlertChannel, Asset, AssetType, DetectionJob, Incident, Site, Tenant, User } from "../../types/domain";
 import { useConsoleStore } from "../../stores/console";
+import { verificationInstructionText } from "./verification";
 
 export function useMonitoringActions() {
   const consoleStore = useConsoleStore();
@@ -41,9 +42,13 @@ export function useMonitoringActions() {
     ElMessage.success("资产已创建，请完成授权验证");
   }
 
+  // What the operator has to publish depends on the asset's verification method:
+  // the ISSUE answer names the proof by key, and verification.ts turns that into
+  // the sentence. The dialog asks "已完成" either way, because VERIFY is what
+  // actually looks for the token and refuses if it is not there yet.
   async function verifyAssetOwnership(asset: Asset) {
-    const result = await issueVerification(asset.id);
-    await ElMessageBox.alert(`请在目标站点创建文件 ${result.path}，内容为：${result.content}`, "完成站点授权", {
+    const issue = await issueVerification(asset.id);
+    await ElMessageBox.alert(verificationInstructionText(issue), "完成站点授权", {
       confirmButtonText: "已完成，开始验证",
     });
     await verifyAsset(asset.id);

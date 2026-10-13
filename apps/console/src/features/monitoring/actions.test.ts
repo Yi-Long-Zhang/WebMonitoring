@@ -6,9 +6,11 @@ vi.mock("element-plus", () => ({
   ElMessageBox: { prompt: vi.fn(), alert: vi.fn() },
 }));
 
+import { ElMessageBox } from "element-plus";
+
 import { useMonitoringActions } from "./actions";
 import { useConsoleStore } from "../../stores/console";
-import type { AlertChannel, DetectionJob, Tenant } from "../../types/domain";
+import type { AlertChannel, Asset, DetectionJob, Tenant } from "../../types/domain";
 
 let requests: string[] = [];
 
@@ -23,6 +25,7 @@ function tenant(id: string): Tenant {
 beforeEach(() => {
   setActivePinia(createPinia());
   requests = [];
+  vi.clearAllMocks();
 });
 
 afterEach(() => {
@@ -120,6 +123,93 @@ describe("setTenantDisabled", () => {
     const actions = useMonitoringActions();
 
     await expect(actions.setTenantDisabled(tenant("self"), true)).rejects.toThrow("默认租户或当前登录租户不可停用");
+  });
+});
+
+// The verification dialog is the operator's only instruction for proving they
+// own the target. What it has to say depends on the asset's method, and the API
+// names that proof by key: FILE sends `path`, DNS `record`, META `tag`. The
+// dialog read `path` regardless, so a DNS asset was told to create a file
+// named "undefined" -- an instruction that cannot be carried out, in the step
+// that gates every detection against that target.
+describe("verifyAssetOwnership", () => {
+  function json(body: unknown) {
+    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  }
+
+  function stubVerification(issue: Record<string, unknown>) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        requests.push(url);
+        if (url.includes("/verification")) {
+          const body = JSON.parse(String(init?.body ?? "{}")) as { action?: string };
+          return body.action === "ISSUE" ? json(issue) : json({ id: "asset-1", enabled: true, verificationStatus: "VERIFIED" });
+        }
+        return json({ items: [], nextCursor: "" });
+      }),
+    );
+  }
+
+  async function dialogText() {
+    const actions = useMonitoringActions();
+    await actions.verifyAssetOwnership({ id: "asset-1", name: "门户" } as Asset);
+    const calls = vi.mocked(ElMessageBox.alert).mock.calls;
+    expect(calls).toHaveLength(1);
+    return String(calls[0]?.[0]);
+  }
+
+  it("tells a DNS asset to add the TXT record the API named", async () => {
+    stubVerification({
+      method: "DNS",
+      record: "_webmonitoring-verify.example.com",
+      recordType: "TXT",
+      content: "webmonitoring-verification=0199b0a4",
+    });
+    const text = await dialogText();
+    expect(text).toContain("_webmonitoring-verify.example.com");
+    expect(text).toContain("webmonitoring-verification=0199b0a4");
+    expect(text).not.toContain("undefined");
+  });
+
+  it("tells a META asset to paste the tag", async () => {
+    stubVerification({
+      method: "META",
+      tag: `<meta name="webmonitoring-verification" content="webmonitoring-verification=0199b0a4">`,
+      content: "webmonitoring-verification=0199b0a4",
+    });
+    const text = await dialogText();
+    expect(text).toContain("<meta name=");
+    expect(text).not.toContain("undefined");
+  });
+
+  // Verification is what actually looks for the token, so a VERIFY that fails
+  // must not be swallowed into "资产已验证并启用".
+  it("surfaces a failed verification and never claims success", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        requests.push(url);
+        if (url.includes("/verification")) {
+          const body = JSON.parse(String(init?.body ?? "{}")) as { action?: string };
+          if (body.action === "VERIFY") {
+            return new Response(
+              JSON.stringify({ code: "VERIFICATION_FAILED", message: "未在目标站点找到有效令牌", traceId: "t" }),
+              { status: 422, headers: { "content-type": "application/json" } },
+            );
+          }
+          return json({ method: "FILE", path: "/.well-known/webmonitoring-verification.txt", content: "token" });
+        }
+        return json({ items: [], nextCursor: "" });
+      }),
+    );
+    const actions = useMonitoringActions();
+
+    await expect(actions.verifyAssetOwnership({ id: "asset-1", name: "门户" } as Asset)).rejects.toThrow(
+      "未在目标站点找到有效令牌",
+    );
   });
 });
 
