@@ -500,7 +500,7 @@ onUnmounted(() => eventStream?.close());
         <el-form-item label="租户标识（slug）"><el-input v-model="tenantForm.slug" placeholder="小写字母、数字或连字符" /></el-form-item>
         <template v-if="!editingTenant">
           <el-form-item label="初始管理员账号"><el-input v-model="tenantForm.adminUsername" autocomplete="off" /></el-form-item>
-          <el-form-item label="初始管理员密码"><el-input v-model="tenantForm.adminPassword" type="password" show-password autocomplete="new-password" /></el-form-item>
+          <el-form-item label="初始管理员密码"><el-input v-model="tenantForm.adminPassword" type="password" show-password autocomplete="new-password" placeholder="至少 12 位" /></el-form-item>
         </template>
       </el-form>
       <template #footer><el-button @click="showTenantDialog = false">取消</el-button><el-button type="primary" @click="submitTenant">保存租户</el-button></template>

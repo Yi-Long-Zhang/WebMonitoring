@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -20,9 +19,18 @@ const (
 	argonKeyLength   = 32
 )
 
+// MinPasswordLength is the shortest password HashPassword accepts, in bytes.
+//
+// Every handler that screens a password before hashing it must compare against
+// this value rather than a literal. A literal is what went wrong in createTenant:
+// it screened at 8 while this gate held 12, so an 8-11 byte password passed the
+// handler and only failed inside HashPassword -- after the tenant row had been
+// written, leaving a tenant that nothing in the API could give an administrator.
+const MinPasswordLength = 12
+
 func HashPassword(password string) (string, error) {
-	if len(password) < 12 {
-		return "", errors.New("password must contain at least 12 characters")
+	if len(password) < MinPasswordLength {
+		return "", fmt.Errorf("password must contain at least %d characters", MinPasswordLength)
 	}
 	salt := make([]byte, argonSaltLength)
 	if _, err := rand.Read(salt); err != nil {

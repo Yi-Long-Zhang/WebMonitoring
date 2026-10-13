@@ -179,6 +179,57 @@ func TestCreateTenantRejectsDuplicateSlug(t *testing.T) {
 	}
 }
 
+// Tenant bootstrap is all-or-nothing: a tenant without an administrator cannot
+// be repaired through the API, so a refused bootstrap must leave no tenant row
+// for the operator to trip over on the retry.
+func TestCreateTenantWithAdminIsAtomic(t *testing.T) {
+	repository := NewMemoryRepository()
+	now := time.Now().UTC()
+	admin := domain.User{ID: "admin-1", Username: "acme-admin", PasswordHash: "x", Role: domain.RoleAdmin, CreatedAt: now}
+
+	// A slug that is already taken refuses the whole call.
+	if err := repository.CreateTenantWithAdmin(context.Background(),
+		domain.Tenant{ID: "tenant", Slug: "default", Name: "Clash", CreatedAt: now},
+		domain.User{ID: admin.ID, TenantID: "tenant", Username: admin.Username, PasswordHash: "x", Role: domain.RoleAdmin, CreatedAt: now},
+	); err != ErrConflict {
+		t.Fatalf("duplicate slug err=%v", err)
+	}
+	if _, err := repository.GetTenant(context.Background(), "tenant"); err != ErrNotFound {
+		t.Fatalf("refused bootstrap left the tenant behind: %v", err)
+	}
+
+	// An administrator that cannot be written refuses the whole call too. The
+	// slug here is free, so the tenant insert is the half that would have
+	// succeeded and the old two-call sequence would have kept.
+	stray := domain.User{ID: "stray", TenantID: "tenant", Username: "dup-admin", PasswordHash: "x", Role: domain.RoleAdmin, CreatedAt: now}
+	if err := repository.CreateUser(context.Background(), stray); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.CreateTenantWithAdmin(context.Background(),
+		domain.Tenant{ID: "tenant", Slug: "acme", Name: "Acme", CreatedAt: now},
+		domain.User{ID: admin.ID, TenantID: "tenant", Username: "dup-admin", PasswordHash: "x", Role: domain.RoleAdmin, CreatedAt: now},
+	); err != ErrConflict {
+		t.Fatalf("conflicting admin err=%v", err)
+	}
+	if _, err := repository.GetTenant(context.Background(), "tenant"); err != ErrNotFound {
+		t.Fatalf("refused bootstrap left the tenant behind: %v", err)
+	}
+
+	// The happy path writes both rows.
+	if err := repository.CreateTenantWithAdmin(context.Background(),
+		domain.Tenant{ID: "tenant", Slug: "acme", Name: "Acme", CreatedAt: now},
+		domain.User{ID: admin.ID, TenantID: "tenant", Username: admin.Username, PasswordHash: "x", Role: domain.RoleAdmin, CreatedAt: now},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.GetTenantBySlug(context.Background(), "acme"); err != nil {
+		t.Fatalf("tenant missing: %v", err)
+	}
+	if _, err := repository.FindUserByUsername(context.Background(), "tenant", "acme-admin"); err != nil {
+		t.Fatalf("bootstrap admin missing: %v", err)
+	}
+}
+
 // A site is only an organizational grouping, but deleting one that still has
 // assets filed under it would unfile them silently. The database enforces this
 // with a foreign key; the in-memory store has to agree, or the two diverge and a

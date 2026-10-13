@@ -98,6 +98,31 @@ func (m *MemoryRepository) GetTenantBySlug(ctx context.Context, slug string) (do
 func (m *MemoryRepository) CreateTenant(ctx context.Context, tenant domain.Tenant) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.createTenantLocked(tenant)
+}
+
+func (m *MemoryRepository) CreateTenantWithAdmin(ctx context.Context, tenant domain.Tenant, admin domain.User) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// The administrator is filed under the tenant being created, not under the
+	// TenantID the caller put on it -- the same thing the Postgres insert does,
+	// so the two stores cannot disagree about which tenant owns the account.
+	// Validate both halves before writing either, so this store gives the same
+	// all-or-nothing guarantee as the transaction in Postgres.
+	admin.TenantID = tenant.ID
+	for _, existing := range m.users {
+		if existing.TenantID == admin.TenantID && strings.EqualFold(existing.Username, admin.Username) {
+			return ErrConflict
+		}
+	}
+	if err := m.createTenantLocked(tenant); err != nil {
+		return err
+	}
+	m.users[tenantKey(admin.TenantID, admin.ID)] = admin
+	return nil
+}
+
+func (m *MemoryRepository) createTenantLocked(tenant domain.Tenant) error {
 	for _, existing := range m.tenants {
 		if strings.EqualFold(existing.Slug, tenant.Slug) {
 			return ErrConflict
