@@ -135,6 +135,13 @@ git push origin v0.1.0
 SPDX SBOM 与 SLSA provenance。Trivy 按 CRITICAL/HIGH 扫每个镜像（`ignore-unfixed`
 只放过上游还没修的），**扫到问题即让作业失败**，报告以 SARIF 传到 code scanning。
 
+**Q：连着打两个 tag 会怎样？**
+
+不会并行。`release.yml` 上挂了 `concurrency`（组名固定 `release`，
+`cancel-in-progress: false`）：同一时间只跑一个发布，后来的排队等着，而且**排队的那次
+不会被取消**——把一次正在推六个镜像的运行掐掉，留下的是半套发布，比让它等着更糟。
+作业另有 60 分钟挂起保护，卡住的拉取或扫描不会一直占着 runner 到默认的 360 分钟。
+
 **Q：怎么验证一个已发布的镜像？**
 
 ```bash
@@ -361,6 +368,9 @@ services` 步骤里**：挂在配置步骤里，一旦那个步骤本身被改�
 保险会和它要保护的东西**一起**消失，等于没装。2026-10-13 之前它只装在本地脚本里，
 CI 这条路一直是靠配置步骤恰好传对了 DSN 才没出事——见
 [rehearsals.md](rehearsals.md)「CI 的『集成用例静默全跳』保险从来没装上」。
+
+四个作业现在都带挂起保护（`timeout-minutes`）：`backend` 与 `node` 30 分钟，两个演练作业
+60 分钟——一个卡在已死服务容器上的 `go test` 不会一直占着 runner 到默认的 360 分钟。
 
 **`load-test.ps1` 不在 CI 里**：它要跑满 100 资产并断言吞吐，在共享 runner 上
 既慢又不稳，保留为手工验收。`multi-replica-drill` 进 CI 是因为它测的东西没有替代
