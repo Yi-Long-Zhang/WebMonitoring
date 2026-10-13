@@ -2,7 +2,8 @@
 
 本文用问答形式说明部署、升级、发版、备份、恢复、验收和故障处理。命令都可直接复制。
 
-**按顺序从零部署的流程不在本文**——那是 [deployment.md](deployment.md)（部署手册）的事。
+**按顺序从零部署的流程不在本文**——那是 [deployment.md](deployment.md)（快速部署：
+一页搭到能干活）的事。
 本文是它的问答式参考：这里解释「为什么」，那里给出「先做什么、再做什么、怎么知道这
 一步成功了」。下面「部署和升级」一节保留的是其中容易出错、值得单独解释的几件事。
 
@@ -18,8 +19,10 @@
 `SESSION_SECURE` 设置为 `true`。
 
 这六个变量在清单里**没有回落**：compose 清单不带任何口令或密钥字面量，缺一个
-`docker compose config` 就会失败并点名是哪一个。`.env.example` 里带的是开发值，
-生产必须逐个替换——`APP_ENV=production` 时校验会拒绝开发默认值并强制最短长度。
+`docker compose config` 就会失败并点名是哪一个。`.env.example` 里带的是开发值
+（例外是 `ALERT_SECRET_KEY`：那个占位值**开发下也不能用**，它必须是 base64 的
+32 字节，否则 `http-worker` 一拿到就退出），生产必须逐个替换——`APP_ENV=production`
+时校验会拒绝开发默认值并强制最短长度。
 数据库密码通过 `POSTGRES_PASSWORD` 统一下发给各服务（清单用它拼出每个服务的
 `POSTGRES_DSN`），因此不要再单独去改 `POSTGRES_DSN` 里的口令，除非你确实要绕开
 这个机制。
