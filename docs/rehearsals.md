@@ -10,6 +10,129 @@
 
 ---
 
+## 发布链路与门禁的四处加固 — 2026-10-13
+
+- **脚本**：没有演练脚本。材料是 `.github/workflows/release.yml`、`.github/workflows/ci.yml`、
+  `api/openapi.yaml`（含重生成的 `apps/console/src/types/generated/api.d.ts`）与
+  `.dockerignore`，外加一次**真实构建**（用来实测 `.dockerignore` 的匹配语义，见第 4 节）。
+- **关键断言**：这四条**没有一条**会让任何功能演练变红——它们修的是门禁**自己**，不是
+  被测的功能。与前两节同源：「**没跑**」和「**跑了但不对**」是两种状态，前者更隐蔽。
+  这一轮的四条里最重的一条（第 2 节末尾）正是「跑起来就会解析不到 action」——它藏住的
+  唯一原因就是那条工作流从没跑过。
+
+### 1. 发布工作流从没有过并发与挂起护栏
+
+`release.yml` 是仓库里唯一会**对外发布产物**的工作流，而它原先既没有 `concurrency`
+也没有 `timeout-minutes`；`ci.yml` 好一些，但四个作业里只有两个演练作业有 60 分钟超时，
+**`backend` 与 `node` 一个都没有**（这条不在本轮登记的四处里，是改的时候顺带读出来的，
+一并补上）。
+
+- **并发**：`group: release` + `cancel-in-progress: false`。连着推两个 tag 会同时跑两次，
+  而两次都往**同一个 GHCR 仓库**推，会在同一批 package 的 tag 与 public/private 可见性上
+  打架。`cancel-in-progress: false` 是刻意的：一次已经推掉三个镜像的运行被取消，留下的是
+  「半个发布」——那是比排队等更糟的状态。
+- **超时**：`release.yml` 的 `images` 作业 60 分钟；`ci.yml` 的 `backend` / `node` 30 分钟
+  （与两个演练作业原有的 60 分钟并列，四个作业现在都有）。
+
+### 2. 十七处 action 引用全部钉到 commit SHA
+
+原先两个 workflow 的 `uses:` **全是浮动 tag**（`@v4` 一类），共 **17 处、11 个不同的
+action**（`ci.yml` 9 处：`checkout`×4、`setup-go`、`pnpm/action-setup`×2、
+`setup-node`×2；`release.yml` 8 处）。现在每一处都写成
+`uses: owner/repo@<40 位 sha> # vX.Y.Z`——尾注保留版本号是给 dependabot 读的，它据此提
+SHA 而不是重提 tag。
+
+**每个 SHA 都用 API 反查过它对应的 tag 与 commit**，不是凭记忆写版本号（过程里查出我
+对 `actions/checkout@v4` 的版本号记忆是错的：实测 `v4` 的当前 tip 是 **v4.4.0**，
+`11d5960a…`）。反查同时查出一个**真缺陷**，它比上面四处都重：
+
+`release.yml` 里原先写的 `aquasecurity/trivy-action@0.28.0` **不是一个浮动 tag，而是一个
+不存在的 ref**：该 action 的 tag 全部拼作 `v0.x.y`（75 个 tag 里有一个孤例 `0.35.0` 不带
+`v`，是那个仓库自己的不规范），有 `v0.28.0`，**没有 `0.28.0`**；同名分支不存在；按 commit
+ref 也解析不出（三种查法都试过）。也就是说**这条工作流第一次跑就会死在「扫描漏洞」那一
+步**——而它一直没暴露的唯一原因，就是这条工作流从没跑过。现在钉到 `v0.28.0` 指向的
+commit（`915b19b…`），**版本号本身不动**（升版本是 dependabot 那个 PR 的事）。
+
+这一条同时推翻了仓库里原先的登记：`docs/roadmap.md` 与本节姊妹段都把 trivy 那条
+记作「浮动 tag」（与 `actions/checkout@v4` 并列），已一并改为「不存在的 ref」。
+
+### 3. 契约漏了 `POST /tenants` 的 409
+
+`api/openapi.yaml` 的 `POST /tenants` 只声明了 200/400/401/403/500，而
+`internal/api/server.go` 在租户标识重复时返回 **409 `TENANT_EXISTS`**——调用方从契约里
+读不到这个失败分支。已补上，并**重生成** `apps/console/src/types/generated/api.d.ts`
+（`ci.yml` 的 `node` 作业断言生成物无漂移：只改 yaml 不重生成，那一步会红）。生成物恰好
+多 9 行，全部落在 `createTenant` 的 responses 里。
+
+### 4. `.dockerignore` 漏了两类东西
+
+这份名单是黑名单式的，原先漏了：
+
+- **`**/*.env`**：`deployments/compose/.env` 是真实环境文件，装着 `POSTGRES_PASSWORD`、
+  `ALERT_SECRET_KEY`。写成**类别规则**而不是写死这一个路径，理由与 `.gitignore` 同
+  ——那里用的就是 `*.env`。`.env.example` / `.env.default` 这类模板不以 `.env` 结尾，
+  照旧留在上下文里。
+- **`*.exe`**：`make build`（`go build ./...`）会在仓库根留下一个二进制，Windows 上带
+  `.exe`。
+
+两类都**不会进镜像**（没有任何 Dockerfile COPY 它们），但会随构建上下文发给 daemon，
+并留在构建缓存里。
+
+**匹配语义是实测的，不是推出来的**：Docker 拿**整条相对路径**去匹配，所以不含 `/` 的
+模式**不跨目录**——这正是这个文件同时写 `dist` 与 `**/dist` 的原因。用一个复刻了全部
+Dockerfile COPY 目标的临时上下文（`alpine` + `COPY . /ctx` + `find`）跑了一次**真实构建**，
+确认 **19 个 COPY 目标一个都没被排除**，尤其是 `internal/api` 与 `apps/api`——它们最容易被
+一条裸 `api` 模式误伤（而这个文件里已经有一条裸 `api` 的邻居，写错就是删掉两个包的源码）。
+同时也确认 `.env.example` 与 `.env.default` 仍在上下文里。
+
+### 5. 结果 — 2026-10-13
+
+四个提交，一个目标一条：
+
+| 提交 | 目标 |
+| --- | --- |
+| `9cf3648` | `release.yml` 的并发与超时；`ci.yml` 的 `backend` / `node` 超时 |
+| `033a8b5` | 17 处 action 钉 SHA；修好 trivy 那个不存在的 ref |
+| `64390af` | `POST /tenants` 补 409 并重生成控制台类型 |
+| `d888d14` | `.dockerignore` 补 `*.exe` 与 `**/*.env` |
+
+四个提交一次性推送后在分支上跑了一次 CI（`codex/release-hardening`，SHA
+`d888d143b3cc3f9fa726625db1b06a1baf48629c`，run `38342942257`），**四门全绿、无一
+`skipped`**：
+
+| 作业 | 结论 | 起止（UTC） |
+| --- | --- | --- |
+| `node` | success | 03:42:05 → 03:43:06 |
+| `backend` | success | 03:42:06 → 03:44:40 |
+| `multi-replica-drill` | success | 03:44:43 → 03:47:45 |
+| `compose-smoke` | success | 03:44:43 → 03:48:54 |
+
+这四门证明的是**这四处改动没有把既有门禁弄坏**，以及 `ci.yml` 的 9 处 pin 是解析得到的。
+它**不**证明第 1、2 节里 `release.yml` 的那部分——见下。
+
+### 未覆盖
+
+- **关于 `release.yml`，能查到的静态事实只有两条**，两条都是从 Actions API 读的：
+  (1) GitHub 把它注册成一个 `active` 的 workflow——即那个路径上存在一个**解析得过的**
+  workflow 文件；但**这一条不能干净地归因到本次改动**，因为 `main` 上的旧版同样解析得过，
+  而 workflow 的注册读的是默认分支，本次推送的是功能分支。(2) 它的运行历史
+  **`total_count = 0`**——坐实「一次都没跑过」不是印象，是查询结果。这两条都只说明
+  **文件在不在、跑没跑过**，不含任何一步是执行过的。
+- **`release.yml` 的那 8 处 pin，本次没有被任何 CI 执行过。** 那条工作流只在 `v*` tag 上
+  触发，本次是分支推送。也就是说：`ci.yml` 的 9 处是**跑通过的**；`release.yml` 的 8 处
+  （含第 2 节修好的 trivy 那处）目前的依据**只是 API 反查，不是跑通**。要把这半边也变成
+  实测，只有一条路——推一个 tag 让它真跑一次（即 2.9 的判据 1）。
+- **60 分钟是估的，不是量的**：`release.yml` 的 `images` 作业从未运行过，那个 60 是从
+  `ci.yml` 两个演练作业抄来的可比值。第一次真实运行后应按日志校准，这一点写在
+  `release.yml` 该行的注释里。
+- **`concurrency` 也一样**：语义清楚（静态 group + 不取消），但**没有**「两个 tag 连着推」
+  的真实对照，本次只是一次静态配置。
+- **只钉了 action，没钉 runner**：`runs-on: ubuntu-latest` 仍是浮动的一类，本轮未动。
+- **`ci.yml` 的 `backend` / `node` 超时同样没有触发过**：30 分钟是照着既有作业的实际耗时
+  给的余量（两者本次分别跑了 2 分 34 秒与 1 分 1 秒），不是量出来的上限。
+
+---
+
 ## CI 的「集成用例静默全跳」保险从来没装上 — 2026-10-13
 
 - **脚本**：`.github/workflows/ci.yml`（`backend` 任务），外加一次**变异实验**（只拿掉
@@ -174,6 +297,7 @@
 - **`POST /api/v1/tenants` 的契约本来就缺口**：`api/openapi.yaml` 只记了 201/400/403，
   实际还会返回 `409 TENANT_EXISTS`。**这是本次改动之前就有的**，本次未动它
   （`routes_contract_test.go` 只比对路径与方法，不比对响应码，所以门禁查不到这一类）。
+  ——**2026-10-13 已补**，见「发布链路与门禁的四处加固」。
 - **密码长度按字节算**：四处校验用的都是 Go 的 `len()`，4 个汉字是 12 字节即通过
   「至少 12 位」。本次未改，**也不建议按字符改**（会削弱已有的口令强度），但这是个
   已知的口径。
@@ -303,6 +427,9 @@ release 步骤）。「这个 tag 对应哪几步迁移、哪几处配置改动�
 - **只出 amd64**：工作流没有 `platforms:`，也没有 QEMU。
 - **action 的 pin 是浮动 tag**（`actions/checkout@v4`、`aquasecurity/trivy-action@0.28.0`
   等），而本仓库对对象存储镜像按 digest 钉死（ADR 0007）——两套标准不一致。
+  ——**2026-10-13 已修**（两个 workflow 的 17 处全部钉到 commit SHA）。修的过程中查出
+  后者**连「浮动 tag」都不是**：`aquasecurity/trivy-action` 没有 `0.28.0` 这个 tag，
+  只有 `v0.28.0`，所以那一步根本解析不到 action。见「发布链路与门禁的四处加固」。
 - **GHCR 首次创建的 package 默认私有**，需要在包设置里改成 public，未登录的机器才拉得
   到；这是网页操作，工作流代劳不了。
 - **发布产物起栈的 overlay 不存在**：`docker-compose.yml` 默认本地构建，所以「本地

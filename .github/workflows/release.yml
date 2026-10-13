@@ -15,9 +15,38 @@ permissions:
   # Required to upload the Trivy report as a SARIF result.
   security-events: write
 
+# One release at a time. Releases are rare, so serialising them costs nothing,
+# and it is what keeps two tags pushed in quick succession from publishing
+# concurrently -- both runs push to the same GHCR repository, so they would race
+# on the same package's tags and on its public/private visibility.
+#
+# cancel-in-progress is false on purpose: cancelling a run that is midway through
+# pushing six images would leave a half-published release behind, which is a
+# worse state than waiting for the queued one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# Every action below is pinned to a commit SHA rather than a movable tag: a tag
+# is a pointer its owner can repoint at any commit, and these steps hold the
+# release and the scan credentials. The trailing comment names the version that
+# SHA is, and dependabot reads that comment, so it still proposes updates --
+# a new SHA instead of a new tag. It is the same rule the repository already
+# applies to the object-store image, which ADR 0007 pins by digest.
 jobs:
   images:
     runs-on: ubuntu-latest
+    # The same hang guard the two drill jobs in ci.yml carry. Nothing else bounds
+    # this job: it builds six images (the browser-worker sits on a 3.55 GB
+    # Playwright base), signs each one and scans each one with Trivy. A stuck
+    # pull or a wedged scan would otherwise sit on the 360-minute default. 60 is
+    # a hang guard, not a budget: it is deliberately far above the expected
+    # runtime so it cannot turn a slow runner into a false failure.
+    #
+    # Unlike the CI jobs this one has never run, so 60 is an estimate carried
+    # over from the comparable jobs rather than a measurement -- expect to adjust
+    # it from the first real run's log.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -37,9 +66,9 @@ jobs:
           # manual, so its image has to be published alongside the rest.
           - { name: rewrap, dockerfile: apps/rewrap/Dockerfile, binary: /app/webmonitoring-rewrap }
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -83,7 +112,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: Image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ steps.identity.outputs.image }}
           tags: |
@@ -92,7 +121,7 @@ jobs:
             type=sha
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: ${{ matrix.app.dockerfile }}
@@ -145,7 +174,7 @@ jobs:
       #   cosign verify ghcr.io/<repo>/<app>@<digest> \
       #     --certificate-identity-regexp '^https://github.com/<repo>/' \
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
       - name: Sign the published image
         run: cosign sign --yes ${{ steps.identity.outputs.image }}@${{ steps.build.outputs.digest }}
       # Scans the published image rather than the build context, so base-image
@@ -153,7 +182,13 @@ jobs:
       # bases are golang, node, nginx, distroless and the Playwright image, and
       # an unfixed base CVE would otherwise block every release forever.
       - name: Scan for vulnerabilities
-        uses: aquasecurity/trivy-action@0.28.0
+        # Was `@0.28.0`, which is not a ref this action has: every trivy-action
+        # tag is spelled `v0.x.y` (there is a `v0.28.0`, there is no `0.28.0`),
+        # so this step could not have resolved the action and the release would
+        # have failed here on its first run -- and it has never run, which is why
+        # nobody noticed. Pinned to the commit `v0.28.0` points at. The version
+        # itself is left alone: dependabot owns bumping it.
+        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
         env:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
@@ -168,6 +203,6 @@ jobs:
         # always(): the step above fails the job on a finding, and the report is
         # most useful precisely when that happens.
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@9f759ee644a3e7c15c1390abf49868036c00067b # v3.38.3
         with:
           sarif_file: trivy-${{ matrix.app.name }}.sarif

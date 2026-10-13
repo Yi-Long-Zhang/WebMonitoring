@@ -8,3 +8,16 @@ dist
 **/dist
 coverage
 *.log
+
+# A local `go build ./...` (`make build`) leaves a binary per command in the
+# repository root, with `.exe` on Windows. The images compile from source inside
+# their build stage, so a local binary is never the one that ships; without this
+# it is only sent to the daemon and cached with the context.
+*.exe
+
+# Real environment files carry credentials (`POSTGRES_PASSWORD`,
+# `ALERT_SECRET_KEY`). No Dockerfile COPYs one, but they would otherwise travel
+# as part of the build context. Same class rule the repository's .gitignore
+# uses (`*.env`, at any depth). The tracked templates -- `.env.example`,
+# `.env.default` -- do not end in `.env` and stay.
+**/*.env

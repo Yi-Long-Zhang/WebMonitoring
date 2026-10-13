@@ -204,11 +204,14 @@ commit-hash 标签，作为候选需要额外确认发布节奏。
 
 **同批登记、本轮不做**：只出 amd64（无 `platforms:`、无 QEMU）；没有任何 GitHub Release
 或可下载产物（`contents: read`，也没有 release 步骤），所以 §8 要求的「迁移顺序与回滚
-策略」「配置与密钥变更清单」在 tag 上**没有载体**；action pin 是浮动 tag
-（`actions/checkout@v4`、`aquasecurity/trivy-action@0.28.0` 等），与本仓库对对象存储镜像
-按 digest 钉死的做法不一致；`release.yml` 没有 `concurrency` / `timeout-minutes`
-（`ci.yml` 的长作业有 60 分钟上限）；`.dockerignore` 是黑名单式，漏了 `http-worker.exe`
-一类的本机产物（进构建上下文与缓存，不进镜像）。
+策略」「配置与密钥变更清单」在 tag 上**没有载体**。
+
+其中三条**已于 2026-10-13 修掉**：action pin 全部钉到 commit SHA；`release.yml` 补上
+`concurrency` 与 `timeout-minutes`（`ci.yml` 的 `backend` / `node` 也补了同样缺失的超时）；
+`.dockerignore` 补上 `*.exe` 与 `**/*.env`。见总账「发布链路与门禁的四处加固」。那次修复
+顺带核出：原先记在这里的 `aquasecurity/trivy-action@0.28.0` **不是一个浮动 tag，而是一个
+不存在的 ref**——发布工作流第一次跑就会在扫描那一步解析不到 action 而失败，这也是它一直
+没被发现的唯一原因（那条工作流从没跑过）。
 
 ---
 
