@@ -37,7 +37,7 @@
 
 | 想知道 | 看 |
 | --- | --- |
-| 怎么从零把一套装起来，按什么顺序做 | [deployment.md](deployment.md)（部署手册，含交付前清单） |
+| 怎么从零把一套装起来，按什么顺序做 | [deployment.md](deployment.md)（快速部署：一页搭到能干活） |
 | 部署与运维的问答参考：发版、备份恢复、密钥轮换、保留期、Trace、TLS | [operations.md](operations.md) |
 | 出故障了怎么办 | [runbooks/](runbooks/README.md) |
 | 备份恢复到底验过没有 | [backup-restore-rehearsal.md](backup-restore-rehearsal.md) |

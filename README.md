@@ -125,15 +125,20 @@ corepack pnpm dev:console
 
 ### 完整 Compose 模式
 
-最短路径如下；**完整流程**（首次登录收尾、验收、生产化、升级与回滚、交付前清单）见
-[docs/deployment.md](docs/deployment.md) 的部署手册。
+最短路径如下；**照着做的一页**在
+[docs/deployment.md](docs/deployment.md)（快速部署：起栈 → 登录 → 登记资产 → 完成
+授权验证 → 跑一次检测看到证据）。生产加固、升级回滚、备份恢复见
+[docs/operations.md](docs/operations.md)。
 
 需要 Docker Compose，会启用 PostgreSQL、Redis、对象存储、独立 HTTP Worker 和
 Playwright Worker。首次启动前复制环境文件。`POSTGRES_PASSWORD`、
 `S3_ACCESS_KEY`、`S3_SECRET_KEY`、`BROWSER_WORKER_TOKEN`、`ALERT_SECRET_KEY`
 和 `ADMIN_PASSWORD` **必须显式提供**——清单文件里没有任何默认值，缺一个
-`docker compose config` 就会失败并指出是哪一个。`.env.example` 已带一份可用的
-开发值；生产部署必须替换掉它们：
+`docker compose config` 就会失败并指出是哪一个。
+
+`.env.example` 里六个变量都带开发值，**但 `ALERT_SECRET_KEY` 的那个占位值不能
+用**：它必须是 base64 的 32 字节，占位值会被拒，`http-worker` 会因此起不来
+（`openssl rand -base64 32` 生成一个换上）。生产部署还要替换掉其余全部开发值：
 
 ```powershell
 Copy-Item .env.example deployments\compose\.env
