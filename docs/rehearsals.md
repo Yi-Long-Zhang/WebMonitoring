@@ -10,6 +10,153 @@
 
 ---
 
+## 发布链路首次运行 — 2026-10-13
+
+- **脚本**：没有演练脚本。材料是两次**真实的发布运行**（tag `v0.1.0`），日志按作业从
+  Actions API 逐行取；外加**对已发布产物本身的验证**（拉取、`cosign verify`、从镜像里
+  取出二进制 grep 标识、复扫 Trivy、按匿名 token 交换读 GHCR manifest）。
+- **关键断言**：这一节的全部结论都来自**产物**，不是「workflow 绿了」。两次运行合计
+  回答了一件事：`release.yml` 这条链路是否真的能把「扫描通过」变成「发布 tag 存在」。
+  答案是能，但**第一次运行红得毫无意义**——它红了之后什么都不拦（详见第 2 节）。
+
+### 1. 第一次运行：六个作业全红，红完什么也没拦住
+
+tag `v0.1.0` 指向 `ef90984d71dbb9b5ed8b4b4e33e0ad754feea7c0`，run `38350038510`。
+
+| 作业 | 结论 | 挂在哪一步 |
+| --- | --- | --- |
+| 六个（api / http-worker / browser-worker / console / migrate / rewrap） | **failure** | 第 11 步 `Scan for vulnerabilities` |
+
+前 10 步**全绿**：六个镜像已构建、推送、把二进制取出来逐个 grep 三个标识、cosign
+无密钥签名。`Upload the scan report` 也是 **success**（`if: always()` 生效，它自己不
+失败——这一点在改动前只是推测，这里是实测）。六个矩阵作业**只有门禁红**。
+
+失败的根因在 `trivy-action` v0.36.0 的 `entrypoint.sh`：`format: sarif` 且
+`limit-severities-for-sarif` 不为真时执行 `unset TRIVY_SEVERITY`，日志原话是
+`Building SARIF report with all severities`。整段只有一次 `trivy` 调用，退出码就来自它，
+所以 `severity: CRITICAL,HIGH` 从来没生效过——**门禁实际按全等级判定**。在**同一个
+发布产物**上量到的一对红绿：
+
+```
+--ignore-unfixed --exit-code 1                            → 退出码 1
+--severity CRITICAL,HIGH --ignore-unfixed --exit-code 1   → 退出码 0
+```
+
+四个 Go 镜像红的原因只有一条 `tzdata DLA-4792-1`（严重级 UNKNOWN，2026b→2026c 的时区
+库公告）。**54 条 HIGH、0 条 CRITICAL**——按工作流自己写的规则本应放行。
+
+### 2. 门禁排在推送之后，所以它拦不住任何东西
+
+`Build and push` 与 `Sign` 都在扫描之前，红的六次里镜像**已经推上 GHCR 并签好名了**；
+`exit-code: '1'` 只能是事后描述。改成：
+
+    构建 → 只推 `<image>:sha-<7>` → 扫描这个 digest → 签名 → 通过后创建发布 tag
+
+发布 tag 由 `docker buildx imagetools create` 从**被扫描的那个 digest** 创建。动手之前
+先用本地 registry 实测过这个前提：含 attestation 的 index 提升到新 tag 后 index digest
+不变，attestation 条目原样保留。`sha-<7>` 本来就是 metadata-action 会产出的 tag，所以
+门禁不额外多占一个 tag——残留是：扫描失败时该镜像仍以 `sha-` tag 存在于注册表，只是
+没有任何发布 tag 指向它。
+
+### 3. 第二次运行：门禁真的拦住了，且只拦住该拦的两个
+
+tag `v0.1.0` 移到修复后的 `6dbe61e8dde414adbb0540bda6a5a1564aee41c0`，run `38356519730`。
+
+| 作业 | 结论 | 第 9 步扫描 | 第 12 步签名 | 第 13 步 Promote |
+| --- | --- | --- | --- | --- |
+| api / http-worker / migrate / rewrap | **success** | success | success | **success** |
+| console | failure | **failure** | skipped | **skipped** |
+| browser-worker | failure | **failure** | skipped | **skipped** |
+
+两处修复各自留下了可读的行为证据：
+
+- 日志从 `Building SARIF report with all severities` 变成了 `Building SARIF report`，
+  环境里 `INPUT_LIMIT_SEVERITIES_FOR_SARIF: true`——这正是不再 `unset` 的那条分支。
+- 上传到 code scanning 的结果数从首轮的 **365**（`1+1+1+1+179+182`）降到 **54**
+  （`0+0+0+0+44+10`），六个 category 一一对应。**这两个数字与本地复扫逐项吻合**，
+  是 GitHub 侧对「severity 只留下 CRITICAL/HIGH」的独立确认。
+
+Promote 步骤在 api 作业里的原话（该作业日志 2527-2540 行）：
+
+```
+TAGS: …/api:0.1.0  …/api:0.1  …/api:sha-6dbe61e  …/api:latest
+SOURCE: ghcr.io/yi-long-zhang/webmonitoring/api:sha-6dbe61e
+#1 0.000 copying sha256:e2d32759… from …:sha-6dbe61e to …/api
+#1 0.000 copying sha256:cd885a33… from …:sha-6dbe61e to …/api
+#1 0.835 pushing sha256:8fc2ee83… to …/api:0.1.0
+#1 1.450 pushing sha256:8fc2ee83… to …/api:0.1
+#1 1.887 pushing sha256:8fc2ee83… to …/api:sha-6dbe61e
+#1 1.979 pushing sha256:8fc2ee83… to …/api:latest
+#1 DONE 2.5s
+```
+
+两条 `copying` 是 index 的两个条目：`cd885a33…`（`linux/amd64`）与 `e2d32759…`（带
+`vnd.docker.reference.type: attestation-manifest` 的那一条）。`8fc2ee83…` 就是被扫描、
+被签名的那一个 index digest。签名步骤的日志确认了同一条：
+`cosign sign --yes ghcr.io/…/api@sha256:8fc2ee83…`。**发布 tag、被扫描的 digest、
+被签名的 digest 三者是同一个值**，不是「重新构建了一个看起来一样的」。
+
+### 4. 六个镜像的最终指向（含首轮留下的混合状态）
+
+匿名 token 交换后逐个读 manifest digest（`docker-content-digest`）：
+
+| 镜像 | `0.1.0` / `0.1` / `latest` | `sha-6dbe61e`（本轮） | `sha-ef90984`（首轮） |
+| --- | --- | --- | --- |
+| api | `8fc2ee83…` | `8fc2ee83…` | `55f0196e…` |
+| http-worker | `f4fd7ce4…` | `f4fd7ce4…` | `e361bb5a…` |
+| migrate | `54ae1de6…` | `54ae1de6…` | `8d73ef2a…` |
+| rewrap | `c79fddc3…` | `c79fddc3…` | `aba5dd40…` |
+| console | `2acc5488…`（**仍是首轮**） | `2f3700d1…`（无发布 tag） | `2acc5488…` |
+| browser-worker | `ed8112a9…`（**仍是首轮**） | `a2b15c3f…`（无发布 tag） | `ed8112a9…` |
+
+被门禁拦下的两个镜像，**首轮已经建好的发布 tag 不会被撤销**——这是首次运行「先发后扫」
+留下的、无法收回的状态（删 tag 也不会撤回镜像，见第 6 节）。两个 commit 之间只差
+`.github/workflows/release.yml` 一个文件（`git diff --stat ef90984 6dbe61e`：78 增 18 删），
+而工作流不进任何镜像，所以 `console` 与 `browser-worker` 的发布 tag 虽然停在首轮 digest
+上，**它们与 `sha-6dbe61e` 那份是同一份源码构建的**（构建时刻不同，因此 digest 不同）。
+四个 Go 镜像则整体移到了本轮 digest。
+
+### 5. 按产物验收（不是看灯）
+
+| 判据 | 做法 | 结果 |
+| --- | --- | --- |
+| 版本真的进了二进制 | `docker create` → `docker cp` 出 `/app/webmonitoring-api` → `grep -aF` 三个串 | `v0.1.0`、`6dbe61e8…`、`2026-10-13T14:06:45+08:00` **全部命中**（第三个等于 `git show -s --format=%cI 6dbe61e`） |
+| keyless 签名 | `cosign:v2.4.1 verify …@sha256:8fc2ee83… --certificate-identity-regexp … --certificate-oidc-issuer …` | 退出码 0；证书里 `githubWorkflowSha=6dbe61e8…`、`githubWorkflowRef=refs/tags/v0.1.0` |
+| `make release-check` 的等价物 | `git describe --tags --exact-match`（`make` 不在 PATH 上） | `v0.1.0`，退出码 0 |
+| SBOM / provenance 取得出来 | `docker buildx imagetools inspect …/api:0.1.0` | 两条条目：`linux/amd64` 的 `cd885a33…` 与标注 `vnd.docker.reference.type: attestation-manifest` 的 `e2d32759…` |
+
+### 6. 顺带核出的三件事
+
+- **`latest` 是一个没人写过的 tag。** 工作流里只有 `type=semver` 两条与 `type=sha` 一条，
+  但 metadata-action 的默认 `flavor.latest=auto` 会在 semver tag 上**额外**加一个
+  `latest`。首轮 run `38350038510` 的 `Image metadata` 步骤已经列出四个 tag 而不是三个；
+  本轮 Promote 步骤的 `TAGS` 里也有它。已登记为待决问题，未改动（见「未覆盖」）。
+- **GHCR 上的 package 出来就是公开的**，不需要网页操作。此前 `operations.md` 与
+  `roadmap.md` 都写着「首次创建的 package 默认私有」。本仓库是 **public** 仓库，六个
+  package 实测**匿名可读**：裸请求会 401，但先做 token 交换
+  （`https://ghcr.io/token?scope=repository:<owner>/<repo>/<app>:pull&service=ghcr.io`）
+  再带 `Authorization: Bearer` 取 manifest，六个镜像全部 200。**两处文档已按此改正。**
+- **code scanning 的告警确实落库了，但不在默认视图里。** `GET /code-scanning/alerts`
+  不带 `ref` 查默认分支，返回 **0**；带 `ref=refs/tags/v0.1.0` 返回 **open: 54**——
+  与 SARIF 的结果数一致。原因是发布跑在 **tag** 上，而告警按 ref 归属。上传步骤本身零
+  警告（`Successfully uploaded results` + `Analysis upload status is complete.`，无任何
+  dropped/warning 行）。**所以「code scanning 页面看不到东西」不等于「没扫到」。**
+
+### 未覆盖
+
+- **`latest` 这个 tag 要不要留**：它是 metadata-action 的默认行为，不是本仓库声明的。
+  列进工作流会改变发布的 tag 集，属决策而非修复，未动。
+- **只出 amd64**：无 `platforms:`、无 QEMU。
+- **没有任何 GitHub Release / 可下载产物**：`contents: read`，也没有 release 步骤，
+  于是 §8 要求的「迁移顺序与回滚策略」「配置与密钥变更清单」在 tag 上没有载体。
+- **发布产物起整套栈**：`docker-compose.yml` 默认本地构建，用发布产物起栈要另写一份
+  把 `build` 换成 `image: …@sha256:…` 的 overlay，**尚未提供**。「本地 `docker compose up`
+  跑通」仍不等于「发布产物跑通」。
+- **`console` 与 `browser-worker` 的 44 + 10 条 HIGH 仍未处置**：底座镜像
+  （`nginx:1.29-alpine` / Playwright 镜像）的真实暴露，门禁按设计拦下，未在本轮处理。
+
+---
+
 ## 发布链路与门禁的四处加固 — 2026-10-13
 
 - **脚本**：没有演练脚本。材料是 `.github/workflows/release.yml`、`.github/workflows/ci.yml`、
@@ -319,7 +466,8 @@ Dockerfile COPY 目标的临时上下文（`alpine` + `COPY . /ctx` + `find`）�
 ## 发布链路接通：两处静默缺陷与发布规则对照 — 2026-10-12
 
 - **脚本**：本节**不是**一次演练通过，因此没有脚本成绩可记。材料是
-  `.github/workflows/release.yml`（**尚未真实运行**）、本机 `docker build` /
+  `.github/workflows/release.yml`（**尚未真实运行**）→ **2026-10-13 已真实运行**，
+  见本文件「发布链路首次运行」、本机 `docker build` /
   `docker create` / `docker cp` / `grep -qaF`，判据来自 `docs/operations.md`「发版」一节
   自身与 `docs/engineering.md` §8。
 - **关键断言**：读配置能发现的缺陷与跑一遍才能发现的缺陷是**两类**。本节两处都属于
@@ -403,7 +551,7 @@ Dockerfile COPY 目标的临时上下文（`alpine` + `COPY . /ctx` + `find`）�
 
 | §8 要求 | 仓库里的材料 | 随发布物走？ |
 | --- | --- | --- |
-| 明确版本或构建标识 | `internal/version` + `GET /api/v1/version`（`operations.md:624`）+ 控制台总览页 + 四个 Go 镜像的构建参数与启动日志 | **本次接上一半**：`release.yml` 从 tag/commit/提交时间注入，并在推送前 grep 二进制确认；尚未真实运行 |
+| 明确版本或构建标识 | `internal/version` + `GET /api/v1/version`（`operations.md:624`）+ 控制台总览页 + 四个 Go 镜像的构建参数与启动日志 | **本次接上一半**：`release.yml` 从 tag/commit/提交时间注入，并在推送前 grep 二进制确认；尚未真实运行 → **2026-10-13 已完整**：同一套 grep 在真实发布里通过，且已从发布镜像里取出二进制复核，见「发布链路首次运行」第 5 节 |
 | 数据库迁移顺序和回滚策略 | `db/migrations/`；`migrate up/status/baseline`；`operations.md:580`「升级失败怎么办」（只前进不回滚）与总账 0.6 | ❌ 没有任何载体挂在 tag 上 |
 | 配置和密钥变更清单 | `.env.example`；`operations.md:783`「密钥轮换（`ALERT_SECRET_KEYS`）」 | ❌ |
 | 关键健康检查 | `GET /healthz`、`GET /readyz`（`operations.md:619-620`，`/readyz` 查 PG / Redis / 对象存储 / Browser Worker） | 部分：镜像自带 `HEALTHCHECK` |
@@ -421,6 +569,9 @@ release 步骤）。「这个 tag 对应哪几步迁移、哪几处配置改动�
   `on: push: tags: ['v*']` 从未匹配；六个镜像的构建与推送、`cosign` 无密钥签名、Trivy
   扫描、SARIF 上传**全部是纸面**。本节两条验证覆盖的是「构建这两个二进制的 Dockerfile」
   与「解析镜像名的那段 bash」，**不是工作流整体**。
+  → **2026-10-13 已结清**：tag `v0.1.0` 触发两次真实运行（`38350038510` 首次全红在门禁、
+  `38356519730` 修复后四个 Go 镜像通过并被提升到发布 tag），六个环节全部真实执行，
+  且已按**产物**逐条验证。见本文件「发布链路首次运行」。
 - **`make` 在开发机上没有安装**：文档里的 `make release-check` 本轮用等价的
   `git describe --tags --exact-match` 跑（`Makefile:59-60` 就是这个命令）。命令能跑通
   不等于「照 Makefile 跑过」。
@@ -440,7 +591,9 @@ release 步骤）。「这个 tag 对应哪几步迁移、哪几处配置改动�
 - **1.5「版本与构建标识」的未覆盖**（原「没有实测过带真实版本号的镜像构建……release
   流程也未接上这些构建参数」）：前半句 2026-10-12 已实测（四个 Go 镜像、真实值、读二进制
   确认三个串都在）；后半句已修（构建参数接进 `release.yml` 与本地 compose）。**仍未
-  实测的是「按 tag 发布的产物」**。
+  实测的是「按 tag 发布的产物」**。→ **2026-10-13 已结清**：tag `v0.1.0` 真实发布，
+  发布 tag 指向的正是被扫描、被签名的那一个 digest，二进制里的三个串也已从**发布镜像**
+  里取出复核。见「发布链路首次运行」。
 - **2.6 的未覆盖**（原「`APP_VERSION` 等构建参数仍未实测注入真实版本号」）：同上。
 
 ---
@@ -1575,7 +1728,7 @@ drill 五次里两次随机报 **0/40**，两次 wall clock 都恰好落在它�
   ⚠️ **2026-10-12 已修正**：前半句已实测——用真实值构建四个 Go 镜像并逐个读二进制，
   `VERSION`/`COMMIT`/`BUILD_TIME` 三个串都在；后半句已修（构建参数接进 `release.yml`
   与本地 compose 的三个服务）。**仍未实测的是「按 tag 发布的产物」**。见总账
-  「发布链路接通」。
+  「发布链路接通」。→ **2026-10-13 已结清**：见「发布链路首次运行」。
 
 ---
 
