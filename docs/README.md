@@ -96,7 +96,11 @@ make test-integration          # 或者：.\scripts\integration-test.ps1
 
 运行器会设置 `WEBMONITORING_TEST_REQUIRE_SERVICES=1`，让上述 skip 变成**失败**
 ——否则一个没能把 DSN 传下去的运行器会全 skip 然后退出 0，看起来是绿的。
-CI 的 backend 任务通过服务容器设置这两个变量（`.github/workflows/ci.yml`）。
+
+CI 同样装了这条保险：`backend` 任务的两个 DSN 由服务容器经
+`Configure integration test services` 步骤传下去，而 `WEBMONITORING_TEST_REQUIRE_SERVICES`
+挂在 `go test` **那一步**上（`.github/workflows/ci.yml`）。**刻意分开放**：挂在配置步骤里，
+一旦配置步骤本身被改坏（变量改名、整步删掉），保险会和它要保护的东西一起消失，等于没装。
 
 ---
 

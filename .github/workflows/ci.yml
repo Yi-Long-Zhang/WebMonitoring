@@ -48,6 +48,16 @@ jobs:
       # -race 是这一层最值钱的部分：多副本的不变量与事件广播都只在并发下暴露，
       # 而此前全仓库没有任何地方启用过它（唯一那条并发测试因此零断言地躺着）。
       - run: go test -race -count=1 -covermode=atomic -coverprofile=coverage.out ./...
+        # 声明本次运行必须有集成服务：置此变量后，缺 DSN 的集成用例是 t.Fatal
+        # 而不是 t.Skip（internal/store/lease_test.go 等六处）。没有它，一个没能
+        # 把 DSN 传下去的运行器会跳过全部集成用例然后退出 0，看起来是绿的——那正是
+        # 门禁最不能有的结果，也是本地 scripts/integration-test.ps1 一直在防的那件事。
+        #
+        # 刻意挂在这一步，而不是上面那个 Configure 步骤：挂在配置步骤里，一旦那个
+        # 步骤本身被改坏（变量改名、整步删掉），保险会和它要保护的东西一起消失，
+        # 等于没装。挂在这里，DSN 断掉就是红的。
+        env:
+          WEBMONITORING_TEST_REQUIRE_SERVICES: "1"
       # 锁到具体版本而不是 latest，否则上游发布新 linter 会凭空让历史提交变红；
       # 用 go install 而不是官方 action，是为了版本与 go.mod 一样显式，且不必再猜
       # action 的大版本与 linter 大版本是否配套。

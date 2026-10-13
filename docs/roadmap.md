@@ -62,6 +62,14 @@ overclaim 已全部修复并合并——1.0 browser-worker 镜像构建被 TS6 �
 bootstrap 这一条来路）。已修：下限收进 `security.MinPasswordLength` 一处，两行改为一次写
 （Postgres 走事务）。对应总账「租户 bootstrap 缺陷」。
 
+**同一日的第二件不在上表条目内的工作**（2026-10-13）：CI 的「集成用例静默全跳」保险
+**从来没装上**——`WEBMONITORING_TEST_REQUIRE_SERVICES` 只有本地
+`scripts/integration-test.ps1:113` 会设，`.github/` 下零引用，于是 DSN 一旦没传下去，
+`backend` 会跳过全部集成用例然后退出 0，照样全绿。已把保险挪到 `go test` **那一步**的
+`env:`（挂在 Configure 步骤里，它会和它要保护的东西一起消失）。本地红→绿对照、CI 正例，
+以及一次**变异实验**（只拿掉 DSN → `backend` 红、38 个用例失败、两个演练作业随之
+`skipped`）见总账「CI 的『集成用例静默全跳』保险从来没装上」。
+
 ---
 
 ## 阶段 2 的剩余量（精确到可执行）
