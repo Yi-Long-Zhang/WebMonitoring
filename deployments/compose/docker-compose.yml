@@ -56,7 +56,7 @@ services:
     environment:
       POSTGRES_DB: webmonitoring
       POSTGRES_USER: webmonitoring
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy deployments/compose/.env.example into .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy .env.example into deployments/compose/.env}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     # Postgres uses shared memory for parallel queries and sorting; the 64 MB
@@ -122,7 +122,7 @@ services:
         GOPROXY: ${GOPROXY:-}
     command: ["up"]
     environment:
-      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy deployments/compose/.env.example into .env}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
+      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy .env.example into deployments/compose/.env}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
       # Set to 1 for an upgrade window whose pending migrations are marked
       # destructive ("-- migrate:destructive"). Fresh installs never need it:
       # bootstrapping an empty database is allowed unattended. Leave unset
@@ -154,8 +154,8 @@ services:
     # server signs with is visible here.
     command: ["--port", ":9000", "--region", "us-east-1", "posix", "/data"]
     environment:
-      ROOT_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY, or copy deployments/compose/.env.example into .env}
-      ROOT_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY, or copy deployments/compose/.env.example into .env}
+      ROOT_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY, or copy .env.example into deployments/compose/.env}
+      ROOT_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY, or copy .env.example into deployments/compose/.env}
     volumes:
       - objectstore-data:/data
     # No published ports. Everything that talks to the object store -- the API,
@@ -223,7 +223,7 @@ services:
         GOPROXY: ${GOPROXY:-}
     profiles: ["tools"]
     environment:
-      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy deployments/compose/.env.example into .env}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
+      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy .env.example into deployments/compose/.env}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
       <<: *postgres-pool-env
       ALERT_SECRET_KEYS: ${ALERT_SECRET_KEYS:-}
       ALERT_SECRET_KEY: ${ALERT_SECRET_KEY:?set ALERT_SECRET_KEY to a base64-encoded 32-byte key}
@@ -246,7 +246,7 @@ services:
       network: ${BUILD_NETWORK:-default}
     environment:
       PORT: "8081"
-      WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?set BROWSER_WORKER_TOKEN, or copy deployments/compose/.env.example into .env}
+      WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?set BROWSER_WORKER_TOKEN, or copy .env.example into deployments/compose/.env}
     read_only: true
     tmpfs:
       - /tmp:size=512m,mode=1777
@@ -308,7 +308,7 @@ services:
       # means same-origin, which is the single-host topology's default.
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       BROWSER_WORKER_URL: http://browser-worker:8081
-      BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?set BROWSER_WORKER_TOKEN, or copy deployments/compose/.env.example into .env}
+      BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?set BROWSER_WORKER_TOKEN, or copy .env.example into deployments/compose/.env}
       # Versioned rotation form. When ALERT_SECRET_KEYS is set it takes precedence
       # over the singular variable, so a rotation is a change to this one line.
       ALERT_SECRET_KEYS: ${ALERT_SECRET_KEYS:-}
@@ -335,13 +335,13 @@ services:
       # Empty endpoint keeps tracing off; set it to an OTLP/HTTP collector to enable.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1}
-      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy deployments/compose/.env.example into .env}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
+      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy .env.example into deployments/compose/.env}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
       <<: [*postgres-pool-env, *queue-alert-env]
       # Set REDIS_ADDR to redis://:password@redis:6379 when REDIS_PASSWORD is set.
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
       S3_ENDPOINT: http://objectstore:9000
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY, or copy deployments/compose/.env.example into .env}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY, or copy deployments/compose/.env.example into .env}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY, or copy .env.example into deployments/compose/.env}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY, or copy .env.example into deployments/compose/.env}
       S3_BUCKET: evidence
     depends_on:
       postgres: { condition: service_healthy }
@@ -387,16 +387,16 @@ services:
       SESSION_SECURE: ${SESSION_SECURE:-false}
       ALLOW_PRIVATE_TARGETS: ${ALLOW_PRIVATE_TARGETS:-false}
       METRICS_TOKEN: ${METRICS_TOKEN:-}
-      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy deployments/compose/.env.example into .env}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
+      POSTGRES_DSN: postgres://webmonitoring:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, or copy .env.example into deployments/compose/.env}@postgres:5432/webmonitoring?sslmode=${POSTGRES_SSLMODE:-disable}
       <<: [*postgres-pool-env, *queue-alert-env]
       # Set REDIS_ADDR to redis://:password@redis:6379 when REDIS_PASSWORD is set.
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
       S3_ENDPOINT: http://objectstore:9000
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY, or copy deployments/compose/.env.example into .env}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY, or copy deployments/compose/.env.example into .env}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY, or copy .env.example into deployments/compose/.env}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY, or copy .env.example into deployments/compose/.env}
       S3_BUCKET: evidence
       BROWSER_WORKER_URL: http://browser-worker:8081
-      BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?set BROWSER_WORKER_TOKEN, or copy deployments/compose/.env.example into .env}
+      BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?set BROWSER_WORKER_TOKEN, or copy .env.example into deployments/compose/.env}
       # Versioned rotation form. When ALERT_SECRET_KEYS is set it takes precedence
       # over the singular variable, so a rotation is a change to this one line.
       ALERT_SECRET_KEYS: ${ALERT_SECRET_KEYS:-}
