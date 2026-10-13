@@ -1024,6 +1024,14 @@ export interface components {
         VerificationStatus: "PENDING" | "VERIFIED" | "REJECTED" | "SUSPENDED";
         /** @enum {string} */
         VerificationMethod: "FILE" | "DNS" | "META";
+        VerificationInstructions: {
+            method: components["schemas"]["VerificationMethod"];
+            content: string;
+            path?: string;
+            record?: string;
+            recordType?: string;
+            tag?: string;
+        };
         Asset: {
             /** Format: uuid */
             id: string;
@@ -1889,7 +1897,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["VerificationInstructions"] | components["schemas"]["Asset"];
+                };
             };
         };
     };

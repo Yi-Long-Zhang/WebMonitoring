@@ -3,6 +3,7 @@ import type { components } from "./generated/api";
 export type Role = components["schemas"]["Role"];
 export type AssetType = components["schemas"]["AssetType"];
 export type VerificationStatus = components["schemas"]["VerificationStatus"];
+export type VerificationInstructions = components["schemas"]["VerificationInstructions"];
 export type Severity = components["schemas"]["Severity"];
 export type IncidentStatus = components["schemas"]["IncidentStatus"];
 export type User = components["schemas"]["User"];
