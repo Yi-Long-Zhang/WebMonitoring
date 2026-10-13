@@ -364,7 +364,8 @@ func validateJobLease(get func(string) string) []error {
 	return nil
 }
 
-// validateRedisCredentials requires// validateRedisCredentials requires a real password when REDIS_ADDR carries// credentials. Demanding it only in the credentialed form leaves the bare
+// validateRedisCredentials requires a real password when REDIS_ADDR carries
+// credentials. Demanding it only in the credentialed form leaves the bare
 // host:port form -- used by the integration tests and a single-node dev stack --
 // working unchanged, so nothing has to change until a deployment opts in.
 func validateRedisCredentials(get func(string) string) []error {
