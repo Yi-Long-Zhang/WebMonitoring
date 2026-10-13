@@ -33,6 +33,11 @@ concurrency:
 # SHA is, and dependabot reads that comment, so it still proposes updates --
 # a new SHA instead of a new tag. It is the same rule the repository already
 # applies to the object-store image, which ADR 0007 pins by digest.
+#
+# It pins the actions this workflow names, and only those. What an action names
+# in turn is whatever its own pinned commit says -- so a pinned action can still
+# point at a movable tag, or at one that has since been deleted. The Trivy step
+# below is a case where exactly that happened.
 jobs:
   images:
     runs-on: ubuntu-latest
@@ -182,13 +187,26 @@ jobs:
       # bases are golang, node, nginx, distroless and the Playwright image, and
       # an unfixed base CVE would otherwise block every release forever.
       - name: Scan for vulnerabilities
-        # Was `@0.28.0`, which is not a ref this action has: every trivy-action
-        # tag is spelled `v0.x.y` (there is a `v0.28.0`, there is no `0.28.0`),
-        # so this step could not have resolved the action and the release would
-        # have failed here on its first run -- and it has never run, which is why
-        # nobody noticed. Pinned to the commit `v0.28.0` points at. The version
-        # itself is left alone: dependabot owns bumping it.
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        # Two separate defects lived on this one line, both invisible until the
+        # workflow ran for the first time:
+        #
+        # 1. It said `@0.28.0`, which is not a ref this action has (every tag is
+        #    spelled `v0.x.y`).
+        # 2. Fixing that to the SHA of `v0.28.0` was not enough, because v0.28.0
+        #    is itself unusable: its action.yaml line 111 is
+        #    `uses: aquasecurity/setup-trivy@v0.2.1`, and setup-trivy has no such
+        #    tag (it has v0.3.1, v0.3.0, v0.2.6). GitHub resolves nested actions
+        #    while setting the job up, so every matrix job died in "Set up job"
+        #    before a single step ran -- run 38347578201. v0.30.0 is broken the
+        #    same way (`setup-trivy@v0.2.2`); v0.32.0 is the first release that
+        #    pins its nested dependencies to SHAs instead of tags.
+        #
+        # So pinning the outer action is not by itself enough: it freezes the
+        # recipe, and the recipe can still name a tag that moves or disappears.
+        # v0.36.0 pins both of its nested uses to commits that exist, which is
+        # what makes this one safe. (dependabot's open PR already proposes this
+        # same bump.)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
