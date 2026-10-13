@@ -106,6 +106,30 @@ func (p *PostgresRepository) CreateTenant(ctx context.Context, tenant domain.Ten
 	return normalizePostgresError(err)
 }
 
+func (p *PostgresRepository) CreateTenantWithAdmin(ctx context.Context, tenant domain.Tenant, admin domain.User) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }() //nolint:errcheck // 延迟清理：此处失败已无可补救，调用方也不依赖它
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO tenants (id, slug, name, disabled, created_at)
+		VALUES ($1, $2, $3, $4, $5)`,
+		tenant.ID, tenant.Slug, tenant.Name, tenant.Disabled, tenant.CreatedAt,
+	); err != nil {
+		return normalizePostgresError(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO users (id, tenant_id, username, email, password_hash, role, disabled, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		admin.ID, tenant.ID, admin.Username, admin.Email, admin.PasswordHash, admin.Role,
+		admin.Disabled, admin.CreatedAt,
+	); err != nil {
+		return normalizePostgresError(err)
+	}
+	return tx.Commit(ctx)
+}
+
 func (p *PostgresRepository) UpdateTenant(ctx context.Context, tenant domain.Tenant) error {
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE tenants SET slug=$2, name=$3, disabled=$4 WHERE id=$1`,

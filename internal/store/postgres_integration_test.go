@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -459,5 +460,79 @@ func TestAlertChannelUpdateKeepsCiphertextReadable(t *testing.T) {
 	}
 	if _, err := repository.GetAlertChannel(context.Background(), tenantID, channel.ID); err != ErrNotFound {
 		t.Fatalf("the channel survived the delete: %v", err)
+	}
+}
+
+// Tenant bootstrap writes two rows that must land together. The in-memory store
+// has to agree with this, or a case that passes on one fails in production.
+func TestPostgresCreateTenantWithAdminRollsBackOnFailure(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("POSTGRES_TEST_DSN"))
+	if dsn == "" {
+		if requireServices() {
+			t.Fatal("POSTGRES_TEST_DSN is not configured although this run declared the services mandatory")
+		}
+		t.Skip("POSTGRES_TEST_DSN is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	runner, err := migrate.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("PostgreSQL integration test unavailable: %v", err)
+	}
+	defer runner.Close()
+	if err := runner.Up(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+
+	repository, err := NewPostgresRepository(ctx, dsn, testAlertSecretKey, DefaultPoolConfig())
+	if err != nil {
+		t.Fatalf("PostgreSQL repository unavailable: %v", err)
+	}
+	defer repository.Close()
+
+	const defaultTenant = "00000000-0000-4000-8000-000000000001"
+	now := time.Now().UTC()
+
+	// An existing user whose ID the bootstrap admin will collide with. The
+	// tenant insert is the half that succeeds; the users primary key is what
+	// makes the second one fail, and only a transaction undoes the first.
+	existing := domain.User{
+		ID: identity.New(), TenantID: defaultTenant, Username: "rollback-" + identity.New(),
+		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
+	}
+	if err := repository.CreateUser(ctx, existing); err != nil {
+		t.Fatal(err)
+	}
+
+	slug := "rollback-" + identity.New()
+	tenant := domain.Tenant{ID: identity.New(), Slug: slug, Name: "Rollback", CreatedAt: now}
+	clash := domain.User{
+		ID: existing.ID, TenantID: tenant.ID, Username: "clash-" + identity.New(),
+		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
+	}
+	if err := repository.CreateTenantWithAdmin(ctx, tenant, clash); !errors.Is(err, ErrConflict) {
+		t.Fatalf("colliding admin returned %v, want ErrConflict", err)
+	}
+	if _, err := repository.GetTenant(ctx, tenant.ID); err != ErrNotFound {
+		t.Fatalf("the failed bootstrap left its tenant behind: %v", err)
+	}
+	if _, err := repository.GetTenantBySlug(ctx, slug); err != ErrNotFound {
+		t.Fatalf("the failed bootstrap left its slug taken: %v", err)
+	}
+
+	// The retry with a free administrator succeeds and writes both rows.
+	admin := domain.User{
+		ID: identity.New(), TenantID: tenant.ID, Username: "acme-admin-" + identity.New(),
+		PasswordHash: "test-hash", Role: domain.RoleAdmin, CreatedAt: now,
+	}
+	if err := repository.CreateTenantWithAdmin(ctx, tenant, admin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.GetTenantBySlug(ctx, slug); err != nil {
+		t.Fatalf("tenant missing after a valid bootstrap: %v", err)
+	}
+	if _, err := repository.FindUserByUsername(ctx, tenant.ID, admin.Username); err != nil {
+		t.Fatalf("bootstrap admin missing: %v", err)
 	}
 }

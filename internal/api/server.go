@@ -1101,35 +1101,42 @@ func (s *Server) createTenant(writer http.ResponseWriter, request *http.Request)
 		writeError(writer, request, http.StatusBadRequest, "INVALID_TENANT", "租户名称或标识无效", nil)
 		return
 	}
-	if strings.TrimSpace(input.AdminUsername) == "" || len(input.AdminPassword) < 8 {
-		writeError(writer, request, http.StatusBadRequest, "INVALID_ADMIN", "管理员用户名或密码不满足要求", nil)
+	if strings.TrimSpace(input.AdminUsername) == "" {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_ADMIN", "管理员用户名不满足要求", nil)
+		return
+	}
+	// Screened against the same minimum HashPassword enforces. Screening at a
+	// lower one used to abort after the tenant row was already written, which
+	// left a tenant no one could ever administer.
+	if len(input.AdminPassword) < security.MinPasswordLength {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_PASSWORD",
+			fmt.Sprintf("密码至少 %d 位", security.MinPasswordLength), nil)
+		return
+	}
+	// Hashed before anything is written, so a password the hasher rejects cannot
+	// leave a partially bootstrapped tenant behind.
+	hash, err := security.HashPassword(input.AdminPassword)
+	if err != nil {
+		s.logger.Error("hash tenant admin password", "error", err)
+		writeError(writer, request, http.StatusBadRequest, "INVALID_PASSWORD", "密码不满足要求", nil)
 		return
 	}
 	now := time.Now().UTC()
 	tenant := domain.Tenant{
 		ID: identity.New(), Slug: slug, Name: strings.TrimSpace(input.Name), CreatedAt: now,
 	}
-	if err := s.repository.CreateTenant(request.Context(), tenant); err != nil {
+	admin := domain.User{
+		ID: identity.New(), TenantID: tenant.ID, Username: strings.TrimSpace(input.AdminUsername),
+		PasswordHash: hash, Role: domain.RoleAdmin, CreatedAt: now,
+	}
+	// One write, not two: a failure here must not leave an administratorless
+	// tenant, because no endpoint can put an administrator into one afterwards.
+	if err := s.repository.CreateTenantWithAdmin(request.Context(), tenant, admin); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(writer, request, http.StatusConflict, "TENANT_EXISTS", "租户标识已存在", nil)
 			return
 		}
 		s.repositoryFailure(writer, request, "create tenant", err)
-		return
-	}
-	hash, err := security.HashPassword(input.AdminPassword)
-	if err != nil {
-		s.logger.Error("hash tenant admin password", "tenant", tenant.ID, "error", err)
-		writeError(writer, request, http.StatusInternalServerError, "TENANT_ADMIN_FAILED", "无法初始化租户管理员", nil)
-		return
-	}
-	admin := domain.User{
-		ID: identity.New(), TenantID: tenant.ID, Username: strings.TrimSpace(input.AdminUsername),
-		PasswordHash: hash, Role: domain.RoleAdmin, CreatedAt: now,
-	}
-	if err := s.repository.CreateUser(request.Context(), admin); err != nil {
-		s.logger.Error("seed tenant admin", "tenant", tenant.ID, "error", err)
-		writeError(writer, request, http.StatusInternalServerError, "TENANT_ADMIN_FAILED", "无法初始化租户管理员", nil)
 		return
 	}
 	s.appendAudit(request, session.User, "tenant.create", "tenant", tenant.ID, "SUCCESS", map[string]any{"slug": tenant.Slug})
@@ -1204,7 +1211,7 @@ func (s *Server) createUser(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	username := strings.TrimSpace(input.Username)
-	if username == "" || len(input.Password) < 12 {
+	if username == "" || len(input.Password) < security.MinPasswordLength {
 		writeError(writer, request, http.StatusBadRequest, "INVALID_USER", "用户名或密码不满足要求", nil)
 		return
 	}
@@ -1329,8 +1336,9 @@ func (s *Server) resetUserPassword(writer http.ResponseWriter, request *http.Req
 	if !decodeJSON(writer, request, &input) {
 		return
 	}
-	if len(input.Password) < 12 {
-		writeError(writer, request, http.StatusBadRequest, "INVALID_PASSWORD", "密码至少 12 位", nil)
+	if len(input.Password) < security.MinPasswordLength {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_PASSWORD",
+			fmt.Sprintf("密码至少 %d 位", security.MinPasswordLength), nil)
 		return
 	}
 	hash, err := security.HashPassword(input.Password)
@@ -1378,8 +1386,9 @@ func (s *Server) changeOwnPassword(writer http.ResponseWriter, request *http.Req
 		writeError(writer, request, http.StatusUnauthorized, "INVALID_PASSWORD", "当前密码不正确", nil)
 		return
 	}
-	if len(input.NewPassword) < 12 {
-		writeError(writer, request, http.StatusBadRequest, "INVALID_PASSWORD", "密码至少 12 位", nil)
+	if len(input.NewPassword) < security.MinPasswordLength {
+		writeError(writer, request, http.StatusBadRequest, "INVALID_PASSWORD",
+			fmt.Sprintf("密码至少 %d 位", security.MinPasswordLength), nil)
 		return
 	}
 	hash, err := security.HashPassword(input.NewPassword)

@@ -61,6 +61,15 @@ type Repository interface {
 	GetTenant(ctx context.Context, tenantID string) (domain.Tenant, error)
 	GetTenantBySlug(ctx context.Context, slug string) (domain.Tenant, error)
 	CreateTenant(ctx context.Context, tenant domain.Tenant) error
+	// CreateTenantWithAdmin creates a tenant and its first administrator as one
+	// unit: either both rows are written or neither is.
+	//
+	// Tenant bootstrap cannot be repaired after the fact. CreateUser always
+	// writes into the caller's own tenant and accepts only OPERATOR or AUDITOR,
+	// so a tenant that ends up with no administrator has no route back into the
+	// API at all. Writing the two rows separately left that state reachable
+	// whenever the second write failed.
+	CreateTenantWithAdmin(ctx context.Context, tenant domain.Tenant, admin domain.User) error
 	UpdateTenant(ctx context.Context, tenant domain.Tenant) error
 	// CountTenantResources reports how many tenant-scoped rows exist per
 	// resource kind, so a destructive tenant delete can fail closed when the
