@@ -37,7 +37,8 @@
 
 | 想知道 | 看 |
 | --- | --- |
-| 怎么部署、升级、发版、备份、恢复、配 TLS | [operations.md](operations.md) |
+| 怎么从零把一套装起来，按什么顺序做 | [deployment.md](deployment.md)（部署手册，含交付前清单） |
+| 部署与运维的问答参考：发版、备份恢复、密钥轮换、保留期、Trace、TLS | [operations.md](operations.md) |
 | 出故障了怎么办 | [runbooks/](runbooks/README.md) |
 | 备份恢复到底验过没有 | [backup-restore-rehearsal.md](backup-restore-rehearsal.md) |
 | 哪些功能真的实测过、结果如何 | [rehearsals.md](rehearsals.md)（全部实测的唯一事实来源） |
