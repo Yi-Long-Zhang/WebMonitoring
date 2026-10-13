@@ -10,6 +10,78 @@
 
 ---
 
+## CI 的「集成用例静默全跳」保险从来没装上 — 2026-10-13
+
+- **脚本**：`.github/workflows/ci.yml`（`backend` 任务），外加一次**变异实验**（只拿掉
+  `Configure integration test services` 步骤里的两个 DSN，保险保留）。本地对照用
+  `go test ./internal/store/ ./internal/rewrap/ ./internal/events/ ./internal/jobqueue/`。
+- **关键断言**：门禁的红必须来自**被测的事**，而不是「门禁自己没跑」。这一条修的正是后者。
+  它不属于「功能不对」，所以任何一次功能演练都照不出它——只有读配置才看得见。
+
+### 1. 缺口
+
+仓库为「DSN 没传下去 → 集成用例全部静默 skip → 退出码仍是 0」这个失败模式写了保险：
+`WEBMONITORING_TEST_REQUIRE_SERVICES` 非空时，缺 DSN 的集成用例是 `t.Fatal` 而不是
+`t.Skip`（四个包各一份 `requireServices()`：`internal/events/redis_integration_test.go:14`、
+`internal/jobqueue/redis_integration_test.go:163`、
+`internal/rewrap/postgres_integration_test.go:38`、`internal/store/lease_test.go:52`，
+守卫点分布在六个 `_test.go` 文件里）。
+
+但**只有本地 `scripts/integration-test.ps1:113` 设它**，`.github/` 下**零引用**
+（`grep -rn REQUIRE_SERVICES .github/` 无输出）。后果：CI 的 `backend` 之所以真跑了集成
+用例，靠的是 `Configure integration test services` 步骤**恰好**把两个 DSN 传下去了，
+**不是靠那条保险**。那一步一旦被改坏（变量改名、整步删掉），全部集成用例静默跳过、退出码
+仍是 0，作业照样绿——而绿的那个东西已经不是同一个东西了。
+
+（这条是同日修租户 bootstrap 时读 `ci.yml` 顺带核出来的，当时登记为「未修」。）
+
+### 2. 修法
+
+把保险挂到 `go test` **那一步**的 `env:` 上，**不是**挂进 Configure 步骤：挂在配置步骤里，
+一旦那个步骤本身被改坏（变量改名、整步删掉），保险会和它要保护的东西**一起**消失，等于没装。
+挂在这里，DSN 断掉就是红的。
+
+### 3. 验证
+
+- **本地红→绿（同一条件，只差那一个变量，都不给 DSN，退出码取自 `$?`）**：
+  - 不设：`./internal/store/ ./internal/rewrap/ ./internal/events/ ./internal/jobqueue/`
+    四个包**全部 `ok`**，退出码 **0** —— 这就是那个洞本身。
+  - 设了：**38 个用例失败**、退出码 **1**，两个 DSN 的守卫都触发。
+    总账 2026-10-09 那节记的是「`internal/store` 的 **13** 个集成用例全部失败」，
+    本次多得多——因为 `testRepositories` 这类助手被 `audit_filter_test.go`、
+    `bounded_queries_test.go`、`active_job_test.go` 等文件共用，**实际覆盖面比那一节
+    写下的更宽**（那一节没有错，只是当时只点了 store 一个包、且只数了直接调用的那些）。
+- **CI 正例**（run `38335464271`，`9e4f416`）：四门全绿；`go test` 步骤的 env 转储里
+  确实有 `WEBMONITORING_TEST_REQUIRE_SERVICES: 1`，而**紧邻其上的 Configure 步骤的
+  env 里没有**——正好是刻意的挂法。集成包照常执行（`internal/store` **57.7%**、
+  `internal/jobqueue` 30.9%、`internal/rewrap` 80.8%、`internal/events` 82.0%，
+  与上一轮同值，没有回归）。
+- **CI 变异**（run `38335714981`，`28b2db2`，一次性分支）：只拿掉 Configure 步骤的两个
+  DSN、保留保险 → `backend` **failure**，且**红的位置正是 `go test` 那一步**
+  （`Configure integration test services`、`gofmt`、`go vet` 三步全绿，说明不是配置或
+  YAML 层面的问题），**38 个用例失败**、与本地同数。两个演练作业随后 `skipped`
+  （`needs: [backend, node]`）——所以丢 DSN 现在会停掉**整条流水线**，而不只是一个作业。
+
+### 4. 结果 — 2026-10-13
+
+| 分支 | commit | run | 结论 |
+| --- | --- | --- | --- |
+| `codex/ci-require-services` | `9e4f416` | `38335464271` | 四门全绿（`backend`/`node`/`compose-smoke`/`multi-replica-drill`），保险已装上且当前被满足 |
+| `codex/ci-guard-mutation`（一次性，不合并） | `28b2db2` | `38335714981` | `backend` **failure**、两个演练作业 `skipped`——**预期**，这就是保险开火 |
+
+### 未覆盖
+
+- **这是人工验一次，不是常设机制**：本次由人手动拿掉 DSN 确认保险会开火，**没有**任何
+  自动化的东西保证「保险本身被拆掉」会被发现——变量名将来被改名、或那个 `env:` 块被删掉，
+  保险会静默失效，而 CI 依旧全绿。这一条本次未做。
+- **只覆盖 `go test` 这一条路径**：`compose-smoke` 与 `multi-replica-drill` 里没有
+  `go test`，本次未动它们（它们的「静默跳过」形态与此不同，未查）。
+- **`docs/README.md` 那句话此前有歧义**（「CI 的 backend 任务通过服务容器设置这两个
+  变量」既可读成两个 DSN、也可读成含保险），本次已改写；但**没有回头审计其它文档**里
+  有没有同类的、把「CI 装了保险」当成既成事实的表述。
+
+---
+
 ## 租户 bootstrap 缺陷：8–11 位管理员密码留下没有管理员的租户 — 2026-10-13
 
 - **脚本**：不是演练，因此没有演练成绩。材料是新写的三个用例
@@ -99,7 +171,7 @@
 - **密码长度按字节算**：四处校验用的都是 Go 的 `len()`，4 个汉字是 12 字节即通过
   「至少 12 位」。本次未改，**也不建议按字符改**（会削弱已有的口令强度），但这是个
   已知的口径。
-- **CI 上的「静默跳过」保险没有装上**（本次顺带核出来的，**未修**）：仓库为「DSN 没传下去、
+- **CI 上的「静默跳过」保险没有装上**（本次顺带核出来的；**当日已修**，见上一节）：仓库为「DSN 没传下去、
   集成用例全部静默 skip、退出码仍是 0」这个失败模式写了保险——
   `postgresTestDSN` 等在 `WEBMONITORING_TEST_REQUIRE_SERVICES` 非空时把 skip 变成
   `t.Fatal`（`internal/store/lease_test.go:35-45`），而**只有本地
@@ -108,8 +180,9 @@
   之所以真跑了真库用例，靠的是 `ci.yml` 确实把 `POSTGRES_TEST_DSN` 传下去了，**不是靠那条
   保险**：万一 `ci.yml` 的传参哪天被改坏，`backend` 会照样全绿地跳过全部集成用例。这不影响
   本次结论（DSN 在场，store 覆盖率 57.7% 与会话内本机真库那一跑同值），但它是**门禁结构上
-  的缺口**，与本仓库「门禁红／门禁根本没跑」的既有教训同源。**本次不动它**——改 CI 不属于
-  这个修复的目标，登记待办。
+  的缺口**，与本仓库「门禁红／门禁根本没跑」的既有教训同源。**当时**不动它——改 CI 不属于
+  那个修复的目标；**同日已单独修掉**（把保险从 Configure 步骤挪到 `go test` 步骤的 `env:`），
+  本地红→绿对照、CI 正例与变异实验见上一节。
 
 ---
 
