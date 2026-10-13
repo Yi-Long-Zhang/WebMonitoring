@@ -48,9 +48,11 @@ jobs:
     # a hang guard, not a budget: it is deliberately far above the expected
     # runtime so it cannot turn a slow runner into a false failure.
     #
-    # Unlike the CI jobs this one has never run, so 60 is an estimate carried
-    # over from the comparable jobs rather than a measurement -- expect to adjust
-    # it from the first real run's log.
+    # Unlike the CI jobs this one had never run when 60 was written, so it was an
+    # estimate carried over from the comparable jobs. The first real run
+    # (38350038510) measured it: the slowest job, browser-worker, took 3m41s
+    # end to end, and the fastest 1m47s. 60 therefore stands as a hang guard with
+    # a wide margin rather than a tight budget -- which is what it is for.
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -100,7 +102,13 @@ jobs:
         env:
           BINARY: ${{ matrix.app.binary }}
         run: |
-          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.app.name }}" >> "$GITHUB_OUTPUT"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.app.name }}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          # Where this job pushes first, before any release tag exists. The scan
+          # below runs against it, and only a passing scan promotes that digest
+          # onto the release tags. `sha-<7>` is a tag metadata-action emits
+          # anyway, so gating here costs no tag of its own.
+          echo "stage=$image:sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           if [ -z "$BINARY" ]; then
             exit 0
           fi
@@ -131,7 +139,10 @@ jobs:
           context: .
           file: ${{ matrix.app.dockerfile }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          # Deliberately not `steps.meta.outputs.tags`: the release tags are
+          # created later, by the promote step, and only once the scan has
+          # passed. See that step for why the digest survives the move.
+          tags: ${{ steps.identity.outputs.stage }}
           labels: ${{ steps.meta.outputs.labels }}
           # Empty for the two images that take no stamp.
           build-args: ${{ steps.identity.outputs.args }}
@@ -174,18 +185,19 @@ jobs:
             fi
           done
           exit "$status"
-      # Keyless: the workflow's OIDC identity is the signer, so there is no key
-      # material in secrets to leak or rotate. Verify with
-      #   cosign verify ghcr.io/<repo>/<app>@<digest> \
-      #     --certificate-identity-regexp '^https://github.com/<repo>/' \
-      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
-      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
-      - name: Sign the published image
-        run: cosign sign --yes ${{ steps.identity.outputs.image }}@${{ steps.build.outputs.digest }}
-      # Scans the published image rather than the build context, so base-image
-      # packages are covered too. ignore-unfixed keeps the gate actionable: the
-      # bases are golang, node, nginx, distroless and the Playwright image, and
-      # an unfixed base CVE would otherwise block every release forever.
+      # The scan runs here, before anything is published under a release tag. The
+      # build above pushed only `<image>:sha-<7>`, so this is looking at the exact
+      # bytes the release would ship, and a failure means no release tag is ever
+      # created for this image -- which is the difference between a gate and a
+      # notification. It used to run after the push and after the signature, and
+      # that ordering is why the first real release (run 38350038510) published
+      # six images and then reported itself red: `exit-code: '1'` could only ever
+      # describe what had already been shipped.
+      #
+      # Scans the image rather than the build context, so base-image packages are
+      # covered too. ignore-unfixed keeps the gate actionable: the bases are
+      # golang, node, nginx, distroless and the Playwright image, and an unfixed
+      # base CVE would otherwise block every release forever.
       - name: Scan for vulnerabilities
         # Two separate defects lived on this one line, both invisible until the
         # workflow ran for the first time:
@@ -211,10 +223,21 @@ jobs:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         with:
-          image-ref: ${{ steps.identity.outputs.image }}:${{ steps.meta.outputs.version }}
+          image-ref: ${{ steps.identity.outputs.stage }}
           format: sarif
           output: trivy-${{ matrix.app.name }}.sarif
+          # `severity` does nothing on its own here. With `format: sarif` the
+          # action unsets TRIVY_SEVERITY unless `limit-severities-for-sarif` is
+          # true -- entrypoint.sh in the pinned commit, the `unset TRIVY_SEVERITY`
+          # under "Building SARIF report with all severities". The whole step is a
+          # single `trivy` invocation, so the unset also decides the exit code:
+          # without this line the gate runs on every severity, UNKNOWN included.
+          # That is how run 38350038510 failed all four Go images on one
+          # UNKNOWN-severity tzdata advisory (DLA-4792-1) that CRITICAL,HIGH
+          # ignores -- the same published api image exits 1 without this line and
+          # 0 with it.
           severity: CRITICAL,HIGH
+          limit-severities-for-sarif: true
           ignore-unfixed: true
           exit-code: '1'
       - name: Upload the scan report
@@ -234,3 +257,40 @@ jobs:
           # is what makes it silent: six images scanned, one image's findings on
           # file. Naming the image keeps them apart.
           category: ${{ matrix.app.name }}
+      # Keyless: the workflow's OIDC identity is the signer, so there is no key
+      # material in secrets to leak or rotate. Verify with
+      #   cosign verify ghcr.io/<repo>/<app>@<digest> \
+      #     --certificate-identity-regexp '^https://github.com/<repo>/' \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      #
+      # Signing comes after the scan but before the promotion, so the release
+      # tags never point at an image that is not yet signed.
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+      - name: Sign the scanned image
+        run: cosign sign --yes ${{ steps.identity.outputs.image }}@${{ steps.build.outputs.digest }}
+      # Only here, at the end of a green run, do the release tags come into
+      # existence. `imagetools create` copies the index -- the amd64 manifest
+      # *and* the SBOM/provenance attestation manifest next to it -- so every
+      # release tag resolves to the identical digest that was scanned and signed
+      # above, not to a rebuild that merely looks the same. That was measured
+      # against a local registry before this was written: promoting a two-entry
+      # index left both entries in place and the index digest unchanged.
+      #
+      # Every tag metadata-action produced is created, `latest` included. That
+      # one is the action's own `flavor.latest=auto` default rather than anything
+      # this file asks for -- it was published by the first real release without
+      # appearing in this file at all. Listing it here would change the release's
+      # tag set, and that is a decision this change is not entitled to make; the
+      # open question is recorded in docs/rehearsals.md instead.
+      - name: Promote the scanned digest to the release tags
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          SOURCE: ${{ steps.identity.outputs.stage }}
+        run: |
+          args=()
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then
+              args+=(-t "$tag")
+            fi
+          done <<< "$TAGS"
+          docker buildx imagetools create "${args[@]}" "$SOURCE"
