@@ -41,8 +41,7 @@ jobs:
           cache: true
       - name: Configure integration test services
         run: |
-          echo "POSTGRES_TEST_DSN=postgres://webmonitoring:webmonitoring@localhost:5432/webmonitoring?sslmode=disable" >> "$GITHUB_ENV"
-          echo "REDIS_TEST_ADDR=localhost:6379" >> "$GITHUB_ENV"
+          echo "MUTATION: deliberately not passing the DSNs down"
       - run: git ls-files '*.go' -z | xargs -0 gofmt -l | tee /tmp/gofmt.txt && test ! -s /tmp/gofmt.txt
       - run: go vet ./...
       # -race 是这一层最值钱的部分：多副本的不变量与事件广播都只在并发下暴露，
