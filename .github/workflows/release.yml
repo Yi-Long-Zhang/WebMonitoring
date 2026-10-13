@@ -206,3 +206,13 @@ jobs:
         uses: github/codeql-action/upload-sarif@9f759ee644a3e7c15c1390abf49868036c00067b # v3.38.3
         with:
           sarif_file: trivy-${{ matrix.app.name }}.sarif
+          # Without this, the six jobs collapse into one report. The action works
+          # out its code-scanning category from its `matrix` input, which defaults
+          # to `toJson(matrix)`; codeql-action then folds only *string* matrix
+          # values into that category and degrades every object value to an empty
+          # segment (`src/api-client.ts`, computeAutomationID) -- and this matrix's
+          # entries are objects, so all six jobs compute the same category and each
+          # upload replaces the one before it. Nothing goes red either way, which
+          # is what makes it silent: six images scanned, one image's findings on
+          # file. Naming the image keeps them apart.
+          category: ${{ matrix.app.name }}
