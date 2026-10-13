@@ -7,6 +7,12 @@ on:
 permissions:
   contents: read
 
+# Every action below is pinned to a commit SHA rather than a movable tag: a tag
+# is a pointer its owner can repoint at any commit, and these steps hold the
+# release and the scan credentials. The trailing comment names the version that
+# SHA is, and dependabot reads that comment, so it still proposes updates --
+# a new SHA instead of a new tag. It is the same rule the repository already
+# applies to the object-store image, which ADR 0007 pins by digest.
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -40,8 +46,8 @@ jobs:
           --health-timeout 3s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.27.x"
           cache: true
@@ -104,11 +110,11 @@ jobs:
     # minute, so 30 leaves the same headroom backend has.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.19.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           cache: pnpm
@@ -154,11 +160,11 @@ jobs:
     env:
       SMOKE_PROJECT_NAME: webmonitoring-smoke-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.19.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           cache: pnpm
@@ -182,7 +188,7 @@ jobs:
     env:
       MRDRILL_PROJECT_NAME: webmonitoring-drill-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Run multi-replica drill
         shell: pwsh
         run: ./scripts/multi-replica-drill.ps1
