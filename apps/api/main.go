@@ -308,7 +308,7 @@ func main() {
 	if lease, ok := repository.(store.ReplicaLease); ok {
 		server.RetentionRunner().SetLease(lease)
 	}
-	if interval := time.Duration(envInt64("RETENTION_INTERVAL_HOURS", 24)) * time.Hour; interval > 0 {
+	if interval := config.RetentionInterval(os.Getenv); interval > 0 {
 		go server.RetentionRunner().RunDaily(ctx, interval)
 	} else {
 		logger.Warn("background retention disabled; only the manual endpoint will run it")
@@ -318,9 +318,9 @@ func main() {
 	// because it is about the incident queue rather than about detection, and it
 	// is safe to run on every replica: the pass claims each incident before it
 	// notifies, so an overlapping sweep finds nothing left to report.
-	escalationInterval := time.Duration(envInt64("ESCALATION_INTERVAL_MINUTES", 5)) * time.Minute
-	unclaimedFor := time.Duration(envInt64("ESCALATION_UNCLAIMED_MINUTES", 30)) * time.Minute
-	if envInt64("ESCALATION_INTERVAL_MINUTES", 5) > 0 {
+	escalationInterval := config.EscalationInterval(os.Getenv)
+	unclaimedFor := config.EscalationUnclaimed(os.Getenv)
+	if escalationInterval > 0 {
 		go func() {
 			ticker := time.NewTicker(escalationInterval)
 			defer ticker.Stop()
