@@ -101,10 +101,13 @@ docker compose -f deployments/compose/docker-compose.yml run --rm migrate baseli
 
 ## 发版
 
-> **状态：链路已接通，尚未真实运行过。** 本节写于第一次打 tag 之前——2026-10-12 之前
-> `git tag` 一直是空的，`on: push: tags: ['v*']` 从未匹配过。已实测的只有构建参数的注入
-> 与镜像名的解析（见总账「发布链路接通」两处缺陷），**工作流整体一次都没跑完**。照本节
-> 操作前，先确认总账里已经有对应的实测小节。
+> **状态：链路已真实运行过（2026-10-13，tag `v0.1.0`）。** 六个镜像已推到 GHCR 并完成
+> cosign 无密钥签名与 buildx 的 SBOM / provenance 附加；`cosign verify`、二进制里的发布
+> 标识、`git describe --tags --exact-match` 都按产物验过。逐条实测见总账「发布链路首次
+> 运行」。**但仍有一处要照本节操作前知道**：门禁（Trivy）按设计拦下了 `console` 与
+> `browser-worker`（44 + 10 条 HIGH，均来自底座镜像），这两个镜像**没有**当前的发布 tag
+> ——它们现有的 `0.1.0` / `0.1` / `latest` 是首次运行「先发后扫」时留下的，指向更早的
+> digest。详见总账同节第 4 节。
 
 **Q：怎么发一个版本？**
 
@@ -122,8 +125,9 @@ git push origin v0.1.0
 六个镜像推到 GHCR：`api`、`http-worker`、`browser-worker`、`console`、`migrate`、
 `rewrap`。注册表路径是 `ghcr.io/<owner>/<repo>/<app>`，**全小写**——docker 的引用
 语法不接受大写仓库名（`repository name … must be lowercase`），工作流用 bash 的
-`${GITHUB_REPOSITORY,,}` 转一次后由各步骤共用。每个镜像三个 tag：`0.1.0`、`0.1`、
-`sha-<短 SHA>`。
+`${GITHUB_REPOSITORY,,}` 转一次后由各步骤共用。每个镜像**四个** tag：`0.1.0`、`0.1`、
+`sha-<短 SHA>`、`latest`——最后一个是 `docker/metadata-action` 的默认
+`flavor.latest=auto` 加上去的，工作流里并没有声明它（实测见总账「发布链路首次运行」第 6 节）。
 
 四个 Go 镜像（`api`/`http-worker`/`migrate`/`rewrap`）的二进制里会被写进这次发布的
 版本、commit 与**提交时间**（不是构建时刻——六个并行作业各自取 `date`，会给同一次
@@ -135,12 +139,23 @@ git push origin v0.1.0
 SPDX SBOM 与 SLSA provenance。Trivy 按 CRITICAL/HIGH 扫每个镜像（`ignore-unfixed`
 只放过上游还没修的），**扫到问题即让作业失败**，报告以 SARIF 传到 code scanning。
 
+镜像先以 `<image>:sha-<7>` 推上去，扫描通过后才由 `docker buildx imagetools create`
+把这个 digest 提升到上面那批发布 tag——**扫描失败就不会有发布 tag**。所以「发布 tag 存在」
+本身就是这次扫描通过的证据；而失败时那个 `sha-` tag 仍留在注册表，只是没有任何发布 tag
+指向它。
+
+code scanning 的告警**归属在 tag 上**：`release.yml` 由 tag 触发，`GET /code-scanning/alerts`
+不带 `ref` 查的是默认分支，会返回 0。要看它们得带 `ref=refs/tags/v0.1.0`，或在页面上
+切到该 tag。
+
 **Q：连着打两个 tag 会怎样？**
 
 不会并行。`release.yml` 上挂了 `concurrency`（组名固定 `release`，
 `cancel-in-progress: false`）：同一时间只跑一个发布，后来的排队等着，而且**排队的那次
 不会被取消**——把一次正在推六个镜像的运行掐掉，留下的是半套发布，比让它等着更糟。
 作业另有 60 分钟挂起保护，卡住的拉取或扫描不会一直占着 runner 到默认的 360 分钟。
+这个值是估计出来的，首次运行量到实测：最慢作业（browser-worker）3 分 41 秒、最快 1 分
+47 秒，所以 60 是宽裕的挂起保护而非预算。
 
 **Q：怎么验证一个已发布的镜像？**
 
@@ -154,8 +169,9 @@ docker run --rm ghcr.io/sigstore/cosign/cosign:v2.4.1 verify \
 
 **Q：GHCR 上的包需要设成公开吗？**
 
-需要。首次发布创建的 package 默认是**私有**的，未登录的机器 `docker pull` 会 401；
-到该 package 的设置里改成 public。这是网页操作，工作流代劳不了。
+本仓库**不需要**——它是 public 仓库，首次发布创建的 package 出来就是公开的，实测六个
+package 匿名可读。此前这里写「首次创建默认私有」，那条对本仓库不成立，已改正。
+（公开仓库之外的情形没有实测过，若是 private 仓库再按网页设置去核。）
 
 **Q：发布失败或者要回退怎么办？**
 

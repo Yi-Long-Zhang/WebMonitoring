@@ -46,7 +46,7 @@
 | 2 | 2.6 | 依赖升级与供应链 | 已实现 · 已记账 · 已在 main（**有一处补记**） | `d54e9d1`…`f798def`，merge `c290c4b`；总账 2.6。**补记**：TS6 那一批（`f798def`）打断了 browser-worker 镜像构建，2026-10-10 才修（`04d040f`，merge `ec13fd1`）——见总账「SSE 事件流租户隔离与跨进程投递」第 4 节 |
 | 2 | 2.7 | 结构治理（拆 `server.go`、拆 `Process`） | **规划中**（可选，收益是维护速度而非正确性） | 见「阶段 2 剩余量」 |
 | 2 | 2.8 | 对象存储镜像的供应链 | 已实现 · 已记账 · 已在 main | `c2f1be1`、`ab18f43`，merge `d63a1be`；五个判据逐条见 2.8「结果」，总账「对象存储镜像下架与替换」「CI 首次全绿」 |
-| 2 | 2.9 | 发布链路（`release.yml`）与首次运行 | 已实现 · 已记账 · 已在 main（**工作流本身尚未真实运行过**） | `7ba1839`、`3c3f44b`、`824c3b2`；见 2.9 与总账「发布链路接通」 |
+| 2 | 2.9 | 发布链路（`release.yml`）与首次运行 | 已实现 · 已记账 · 已在 main · **首次真实运行已完成**（2026-10-13） | `7ba1839`、`3c3f44b`、`824c3b2`、`ef90984`、`35a3db2`，merge `6dbe61e`；run `38350038510` 与 `38356519730`；见 2.9 与总账「发布链路接通」「发布链路首次运行」 |
 
 另外两件不在路线图条目里、但属于「已交付」的事实：0.1 与 0.10 的总账小节是**主题式
 标题**（不带编号），所以按编号检索总账找不到这两节；表里的对应关系是核出来的。
@@ -177,34 +177,47 @@ commit-hash 标签，作为候选需要额外确认发布节奏。
 `compose-smoke`、备份演练、恢复演练三条均退出码 0，且对象存储的读写路径走的是仓库自己的
 代码（`internal/evidence`），不是旁路脚本。
 
-### 2.9 发布链路（`release.yml`）— 2026-10-12 接通，首次运行待做
+### 2.9 发布链路（`release.yml`）— 2026-10-12 接通，2026-10-13 首次真实运行
 
-**代码已在 `main` 上，而工作流本身一次都没跑过。** 这一项含三件事：把构建标识接进
+**代码已在 `main` 上，2026-10-13 已按 tag 真实发布过一轮。** 这一项含三件事：把构建标识接进
 `release.yml`（此前它从不传 `build-args`，按 tag 发布的镜像会自称 `dev`）、把矩阵漏掉的
 `rewrap` 补上（`deployments/compose/docker-compose.yml` 里它是正式服务，运维手册直接让
 运维 `docker compose run --rm rewrap`）、以及修掉两处上路前才读出来的缺陷（`migrate` /
 `rewrap` 的窄式 COPY 列表缺 `internal/version`；四处拼出的 GHCR 镜像名带大写，docker 连
 解析都不接受）。经过、逐行证据与 §8 规则对照见总账「发布链路接通」。
 
-**待做的判据是产物，不是「workflow 绿了」**：
+首次运行又暴露出两个只有真跑才会现形的缺陷——`severity: CRITICAL,HIGH` 在
+`format: sarif` 下被 action 主动 `unset`（门禁实际按全等级判定），以及扫描排在推送与
+签名**之后**（红了也拦不住任何东西）。两条已修并二次运行验证，见总账「发布链路首次运行」。
 
-1. **推一个 `v*` tag，让工作流第一次真实运行**——这是唯一能验证它的方式，也是
-   「产物与发布」那条未实测项的收口处。
-2. 四个 Go 镜像的二进制里确实带着这次发布的版本 / commit / 提交时间，`api` 的
-   `GET /api/v1/version` 报的与 tag 一致。
-3. `cosign verify` 验得过（模板在 `operations.md`「发版」一节）。
-4. SBOM 与 provenance 取得出来（`docker buildx imagetools inspect`）。
-5. **把 GHCR 上的 package 改成 public**——首次创建默认私有，未登录的机器拉不到。
-   网页操作，工作流代劳不了。
-6. **可选、本轮未做**：给六个有 `build` 的服务写一份 `image: …@sha256:…` +
+**判据是产物，不是「workflow 绿了」**——逐条回填（tag `v0.1.0`，run `38356519730`）：
+
+1. ~~推一个 `v*` tag，让工作流第一次真实运行~~——**已做**。首次是 run `38350038510`
+   （六个作业只红在门禁），修完把 tag 移到 `6dbe61e` 后是 run `38356519730`。
+2. ~~四个 Go 镜像的二进制里确实带着这次发布的版本 / commit / 提交时间~~——**已验**。
+   从发布镜像里 `docker cp` 出 `/app/webmonitoring-api`，三个串全部命中，第三个等于
+   `git show -s --format=%cI 6dbe61e`。`GET /api/v1/version` 未单独跑（需要数据库）。
+3. ~~`cosign verify` 验得过~~——**已验**，退出码 0，证书里 `githubWorkflowSha` 与
+   `githubWorkflowRef=refs/tags/v0.1.0` 都对得上。
+4. ~~SBOM 与 provenance 取得出来~~——**已验**。`imagetools inspect` 显示两条条目，
+   其一带 `vnd.docker.reference.type: attestation-manifest`。
+5. ~~把 GHCR 上的 package 改成 public~~——**这条不需要**。此前记的「首次创建默认私有」
+   对本仓库不成立：本仓库是 public，六个 package 实测匿名可读。文档已改正。
+6. **仍未做（可选）**：给六个有 `build` 的服务写一份 `image: …@sha256:…` +
    `build: !reset null` 的 overlay，让整套栈跑在**发布产物**上。代价是要改
    `scripts/compose-smoke.ps1`（它把 `-f` 写死在开头，`up -d --build` 还会强制本地构建）。
    在那之前，「本地 `docker compose up` 跑通」不等于「发布产物跑通」——与 2.8 判据 5
    同类的区别。
 
-**同批登记、本轮不做**：只出 amd64（无 `platforms:`、无 QEMU）；没有任何 GitHub Release
+**同批登记、仍未做**：只出 amd64（无 `platforms:`、无 QEMU）；没有任何 GitHub Release
 或可下载产物（`contents: read`，也没有 release 步骤），所以 §8 要求的「迁移顺序与回滚
-策略」「配置与密钥变更清单」在 tag 上**没有载体**。
+策略」「配置与密钥变更清单」在 tag 上**没有载体**。另新增一条待决问题：`latest` 这个
+tag 是 metadata-action 的 `flavor.latest=auto` 默认加上的，工作流里没有声明它，留不留
+需要决策（见总账「发布链路首次运行」的「未覆盖」）。
+
+另有两条**已拦下的真实暴露**：`console` 与 `browser-worker` 各 44 / 10 条 HIGH
+（0 CRITICAL），全部来自底座镜像（`nginx:1.29-alpine`、Playwright 镜像）。门禁按设计
+拦下它们，两个镜像因此没有本轮发布 tag。**处置未做**，另开条目。
 
 其中三条**已于 2026-10-13 修掉**：action pin 全部钉到 commit SHA；`release.yml` 补上
 `concurrency` 与 `timeout-minutes`（`ci.yml` 的 `backend` / `node` 也补了同样缺失的超时）；
@@ -225,10 +238,12 @@ commit-hash 标签，作为候选需要额外确认发布节奏。
 
 - **外部依赖实机**：外部 S3（bucket 创建、预签名 URL、真实读写）、真实 SMTP 收信、
   Prometheus 真实抓取。
-- **产物与发布**：**2026-10-12 已实测一半**——真实版本号注入四个 Go 镜像并逐个读二进制
-  确认三个串都在，构建参数也已接进 `release.yml` 与本地 compose（见总账「发布链路
-  接通」）。**仍未实测的是「按 tag 发布的产物」**：tag 从未推过，推镜像、`cosign` 签名、
-  Trivy 扫描、SARIF 上传全部是纸面。
+- **产物与发布**：**2026-10-13 已整条收口**。真实版本号注入四个 Go 镜像并逐个读二进制
+  确认三个串都在（2026-10-12）；按 tag 发布的产物本身也验过了——镜像推到 GHCR、cosign
+  无密钥签名、Trivy 扫描、SARIF 上传、SBOM / provenance 附加，且**发布 tag 指向的就是
+  被扫描、被签名的那一个 digest**。见 2.9 与总账「发布链路首次运行」。
+  **仍未覆盖的是**「用发布产物起整套栈」（需要另写 overlay，见 2.9 判据 6）与
+  `console` / `browser-worker` 的 44 + 10 条 HIGH。
 - **报告**：在真实浏览器里把报告打印成 PDF（分页与中文字体）。
 - **CI 门禁自身**：**2026-10-12 已实测**（SHA `ffbd2e1`，run `38198384564`）。`-race`、覆盖率
   下限 55% 与 golangci-lint v2.14.0 在 CI 上通过，且 `Configure integration test services`
