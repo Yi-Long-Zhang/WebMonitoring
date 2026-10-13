@@ -77,8 +77,12 @@
 - **只覆盖 `go test` 这一条路径**：`compose-smoke` 与 `multi-replica-drill` 里没有
   `go test`，本次未动它们（它们的「静默跳过」形态与此不同，未查）。
 - **`docs/README.md` 那句话此前有歧义**（「CI 的 backend 任务通过服务容器设置这两个
-  变量」既可读成两个 DSN、也可读成含保险），本次已改写；但**没有回头审计其它文档**里
-  有没有同类的、把「CI 装了保险」当成既成事实的表述。
+  变量」既可读成两个 DSN、也可读成含保险），本次已改写。**顺手把全仓库审计了一遍**
+  （`grep -rn WEBMONITORING_TEST_REQUIRE_SERVICES`，排除 `.git` 与 `.cache`）：除该处外，
+  只有本页与 `docs/roadmap.md` 提到它，且都写明了哪一侧设、挂在哪一步——
+  **没有别处把「CI 装了保险」当成既成事实**。
+  `docs/operations.md:348` 的 job 表只枚举 `backend` 跑什么（`go test -race` 连真
+  Postgres 与 Redis 容器），**没有提这条保险**；那不是错话，是缺项，本次未补。
 
 ---
 
