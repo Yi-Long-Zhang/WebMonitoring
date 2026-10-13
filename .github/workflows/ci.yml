@@ -10,6 +10,12 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    # The two drill jobs below already carry a hang guard; this job and `node`
+    # did not, so a wedged `go test -race` -- one blocked on a dead service
+    # container, say -- would sit on the 360-minute default. 30 is a hang guard,
+    # not a budget: the observed runtime is about 2.5 minutes including cold
+    # module downloads, so it cannot turn a slow runner into a false failure.
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:17-alpine
@@ -94,6 +100,9 @@ jobs:
 
   node:
     runs-on: ubuntu-latest
+    # Same hang guard as the other three jobs; the observed runtime is about a
+    # minute, so 30 leaves the same headroom backend has.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

@@ -15,9 +15,32 @@ permissions:
   # Required to upload the Trivy report as a SARIF result.
   security-events: write
 
+# One release at a time. Releases are rare, so serialising them costs nothing,
+# and it is what keeps two tags pushed in quick succession from publishing
+# concurrently -- both runs push to the same GHCR repository, so they would race
+# on the same package's tags and on its public/private visibility.
+#
+# cancel-in-progress is false on purpose: cancelling a run that is midway through
+# pushing six images would leave a half-published release behind, which is a
+# worse state than waiting for the queued one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   images:
     runs-on: ubuntu-latest
+    # The same hang guard the two drill jobs in ci.yml carry. Nothing else bounds
+    # this job: it builds six images (the browser-worker sits on a 3.55 GB
+    # Playwright base), signs each one and scans each one with Trivy. A stuck
+    # pull or a wedged scan would otherwise sit on the 360-minute default. 60 is
+    # a hang guard, not a budget: it is deliberately far above the expected
+    # runtime so it cannot turn a slow runner into a false failure.
+    #
+    # Unlike the CI jobs this one has never run, so 60 is an estimate carried
+    # over from the comparable jobs rather than a measurement -- expect to adjust
+    # it from the first real run's log.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
