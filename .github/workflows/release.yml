@@ -188,7 +188,7 @@ jobs:
         # have failed here on its first run -- and it has never run, which is why
         # nobody noticed. Pinned to the commit `v0.28.0` points at. The version
         # itself is left alone: dependabot owns bumping it.
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
