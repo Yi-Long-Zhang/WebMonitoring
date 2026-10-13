@@ -10,6 +10,109 @@
 
 ---
 
+## 租户 bootstrap 缺陷：8–11 位管理员密码留下没有管理员的租户 — 2026-10-13
+
+- **脚本**：不是演练，因此没有演练成绩。材料是新写的三个用例
+  （`internal/api/tenant_bootstrap_test.go`、`internal/store/memory_test.go` 的
+  `TestCreateTenantWithAdminIsAtomic`、`internal/store/postgres_integration_test.go` 的
+  `TestPostgresCreateTenantWithAdminRollsBackOnFailure`）、一次**变异实验**（把事务去掉，
+  看用例是否变红）以及一次真 `postgres:17-alpine` 上的集成运行。
+- **关键断言**：这条缺陷不属于「功能不对」那一类——租户建得出来、建出来的能登录、能干活，
+  它只在**一个长度区间**上出问题。它的严重性不来自触发频率，来自**不可恢复性**：它留下的
+  状态没有任何 API 能修。
+
+### 1. 现象与根因
+
+- **现象（修复前，实测）**：`POST /api/v1/tenants` 带 8–11 位管理员密码，返回
+  `500 {"code":"TENANT_ADMIN_FAILED","message":"无法初始化租户管理员"}`，而用例断言
+  「被拒之后该租户不存在」时失败——**租户行已经落库**。
+- **根因（具体行）**：`internal/api/server.go` 当时校验 `len(input.AdminPassword) < 8`，
+  而 `internal/security/password.go` 的 `HashPassword` 要求 `< 12`。执行顺序是
+  校验 → 先 `CreateTenant` → 再 `HashPassword`，于是 8–11 位在这个缝里穿过去：
+  校验放行、租户写库、哈希报错、返回 500。**下限在五处各写了一遍字面量**
+  （四个 handler + `HashPassword`），这一处漏成了 8——把 8 改成 12 只治这一次，
+  所以修法是把它收进 `security.MinPasswordLength` 一处。
+- **为什么这个中间态不可接受**：`createUser`（现 `server.go:1236`）恒用
+  `session.User.TenantID`，且只接受 OPERATOR 与 AUDITOR（现 `server.go:1224`）——
+  **租户管理员只有 bootstrap 这一条来路**（`server.go` 的注释写明「admin and platform
+  super-admin accounts are created elsewhere (tenant bootstrap)」）。所以零用户的租户
+  永远拿不到 ADMIN、永远登不进去，重试撞 `409 TENANT_EXISTS`，唯一出路是删掉重建。
+  8–11 位是很容易敲出来的长度，**这条路径不需要恶意就能走到**。
+
+### 2. 修法
+
+- `internal/security/password.go:29` 导出 `MinPasswordLength = 12`，`HashPassword`
+  与四个 handler 的校验都改用它；文案由常量生成（`fmt.Sprintf("密码至少 %d 位", …)`），
+  免得下次改常量时文案说谎。
+- `internal/store/repository.go:72` 新增 `Repository.CreateTenantWithAdmin`，两行一次写：
+  Postgres 走事务（沿用 `UpdateBaseline` 的写法），内存实现先验两半再写。哈希也提到
+  任何写入之前，于是「哈希拒绝的密码」不可能留下半个租户。
+- `apps/console/src/components/layout/ConsoleLayout.vue:503` 给租户初始管理员密码框补上
+  `placeholder="至少 12 位"`——另外三个密码框都有，只有这个漏了。
+
+### 3. 验证
+
+- **红 → 绿（同一用例）**：修复前
+  `go test ./internal/api/ -run TestCreateTenantWithTooShortAdminPasswordLeavesNoTenant`
+  输出上面那行 500 并 FAIL；修复后 PASS。
+- **用例有牙（变异实验）**：把 `CreateTenantWithAdmin` 的第二个 `INSERT` 由 `tx.Exec`
+  临时改回 `p.pool.Exec`（即去掉事务），该用例立刻 FAIL
+  （`users_tenant_id_fkey` 外键冲突）；改回后 PASS。
+- **真库**：临时 `postgres:17-alpine`（`-p 127.0.0.1:55432:5432`）上
+  `POSTGRES_TEST_DSN=… go test ./internal/store/ -run TestPostgres` 全过，含新的回滚用例。
+- **整条集成**：`scripts/integration-test.ps1` 退出码 0，末行 `integration tests passed in
+  74.4s`，其中 `internal/store` 真库覆盖率 57.7%。
+- **前端**：`pnpm typecheck`、`pnpm lint` 干净，`vitest` 85 个用例全过。
+- **CI**：见本节「结果」。
+
+### 4. 结果 — 2026-10-13
+
+修复提交 `17ec88a` 推送后，`ci.yml` 的 run `38332843153` **四个作业全部 success**：
+
+| 作业 | 结论 | 起止（UTC） |
+| --- | --- | --- |
+| `backend` | success | 01:35:25 → 01:37:17 |
+| `node` | success | 01:35:25 → 01:36:33 |
+| `multi-replica-drill` | success | 01:37:20 → 01:40:09 |
+| `compose-smoke` | success | 01:37:20 → 01:42:11 |
+
+两个演练作业**不是 `skipped`**，照常执行到底。另外 `ci.yml` 的
+`Configure integration test services` 步骤**确实设了** `POSTGRES_TEST_DSN`，所以
+**新加的真库回滚用例在 CI 上也跑过**：`backend` 作业日志末段的
+`ok  webmonitoring/internal/store  2.516s  coverage: 57.7% of statements`，与本节第 3 条
+本机真库那一跑的 57.7% 同值（真库那一段被跳过时，覆盖率会明显低一截）。
+
+所以这条缺陷的两条关键判据——**内存实现的原子性**（`internal/api` 的用例）与
+**Postgres 事务的回滚**（`internal/store` 的真库用例）——在 CI 上都被真实执行过，
+不只是本机验过。
+
+### 未覆盖
+
+- **「`TENANT_ADMIN_FAILED` 没有消费者」是 grep 的结论，不是运行期观察**：控制台、
+  `api/openapi.yaml` 与脚本里都没有引用过它，所以这次把 500 改 400 没有破坏任何调用方
+  ——但这一条没有在浏览器里点过一遍。
+- **控制台的「至少 12 位」只是 placeholder，不是校验**：8–11 位仍然能提交到服务端，由
+  服务端 400 拒绝。这一条同样没有在浏览器里实际提交过。
+- **`POST /api/v1/tenants` 的契约本来就缺口**：`api/openapi.yaml` 只记了 201/400/403，
+  实际还会返回 `409 TENANT_EXISTS`。**这是本次改动之前就有的**，本次未动它
+  （`routes_contract_test.go` 只比对路径与方法，不比对响应码，所以门禁查不到这一类）。
+- **密码长度按字节算**：四处校验用的都是 Go 的 `len()`，4 个汉字是 12 字节即通过
+  「至少 12 位」。本次未改，**也不建议按字符改**（会削弱已有的口令强度），但这是个
+  已知的口径。
+- **CI 上的「静默跳过」保险没有装上**（本次顺带核出来的，**未修**）：仓库为「DSN 没传下去、
+  集成用例全部静默 skip、退出码仍是 0」这个失败模式写了保险——
+  `postgresTestDSN` 等在 `WEBMONITORING_TEST_REQUIRE_SERVICES` 非空时把 skip 变成
+  `t.Fatal`（`internal/store/lease_test.go:35-45`），而**只有本地
+  `scripts/integration-test.ps1:113` 设它**，`.github/` 下**零引用**（`grep -rn
+  REQUIRE_SERVICES .github/` 无输出，本次 CI 的 `backend` 日志里也没有）。所以 CI 这一次
+  之所以真跑了真库用例，靠的是 `ci.yml` 确实把 `POSTGRES_TEST_DSN` 传下去了，**不是靠那条
+  保险**：万一 `ci.yml` 的传参哪天被改坏，`backend` 会照样全绿地跳过全部集成用例。这不影响
+  本次结论（DSN 在场，store 覆盖率 57.7% 与会话内本机真库那一跑同值），但它是**门禁结构上
+  的缺口**，与本仓库「门禁红／门禁根本没跑」的既有教训同源。**本次不动它**——改 CI 不属于
+  这个修复的目标，登记待办。
+
+---
+
 ## 发布链路接通：两处静默缺陷与发布规则对照 — 2026-10-12
 
 - **脚本**：本节**不是**一次演练通过，因此没有脚本成绩可记。材料是
