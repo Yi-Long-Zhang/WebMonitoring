@@ -81,8 +81,10 @@
   （`grep -rn WEBMONITORING_TEST_REQUIRE_SERVICES`，排除 `.git` 与 `.cache`）：除该处外，
   只有本页与 `docs/roadmap.md` 提到它，且都写明了哪一侧设、挂在哪一步——
   **没有别处把「CI 装了保险」当成既成事实**。
-  `docs/operations.md:348` 的 job 表只枚举 `backend` 跑什么（`go test -race` 连真
-  Postgres 与 Redis 容器），**没有提这条保险**；那不是错话，是缺项，本次未补。
+  `docs/operations.md` 的 job 表原先只枚举 `backend` 跑什么（`go test -race` 连真
+  Postgres 与 Redis 容器）、**没提这条保险**——那不是错话，是缺项，**已一并补上**：
+  该行加了一句「缺 DSN 时集成用例**失败**而不是跳过」，表下另有一段说明它为什么
+  挂在 `go test` 那一步而不是配置步骤里。
 
 ---
 

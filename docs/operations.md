@@ -345,10 +345,22 @@ API/Worker 重启。测试数据保存在 `.data-smoke`（已被 Git 忽略）�
 
 | CI job | 跑什么 |
 | --- | --- |
-| `backend` | `gofmt` 校验、`go vet`、`go test -race -count=1`（连真 Postgres 和 Redis 服务容器，产出覆盖率文件）、**覆盖率下限**（低于 55% 失败）、`golangci-lint`、`govulncheck`（阻断式，跑出可达漏洞即失败） |
+| `backend` | `gofmt` 校验、`go vet`、`go test -race -count=1`（连真 Postgres 和 Redis 服务容器，产出覆盖率文件；缺 DSN 时集成用例**失败**而不是跳过，见下）、**覆盖率下限**（低于 55% 失败）、`golangci-lint`、`govulncheck`（阻断式，跑出可达漏洞即失败） |
 | `node` | 契约生成一致性（`generate:api` 后 `git diff --exit-code` 生成类型）、`lint`、`typecheck`、`test`、`build` |
 | `compose-smoke` | `compose-smoke.ps1` 全链路 |
 | `multi-replica-drill` | `multi-replica-drill.ps1`（默认 2 个 api 副本 + 3 个 http-worker） |
+
+上表 `backend` 那一格里的「失败而不是跳过」，指的是 `go test` 这一步带
+`WEBMONITORING_TEST_REQUIRE_SERVICES=1`：集成用例（真 Postgres / 真 Redis 那些）靠环境变量
+门控，缺 DSN 时默认是 `t.Skip`——于是一个没能把 DSN 传下去的运行器会**跳过全部集成用例
+然后退出 0**，看起来是绿的。这个变量把它变成 `t.Fatal`。本地
+`scripts/integration-test.ps1` 设的是同一个变量，所以两侧语义一致。
+
+**它刻意挂在 `go test` 那一步，而不是那两个 DSN 所在的 `Configure integration test
+services` 步骤里**：挂在配置步骤里，一旦那个步骤本身被改坏（变量改名、整步删掉），
+保险会和它要保护的东西**一起**消失，等于没装。2026-10-13 之前它只装在本地脚本里，
+CI 这条路一直是靠配置步骤恰好传对了 DSN 才没出事——见
+[rehearsals.md](rehearsals.md)「CI 的『集成用例静默全跳』保险从来没装上」。
 
 **`load-test.ps1` 不在 CI 里**：它要跑满 100 资产并断言吞吐，在共享 runner 上
 既慢又不稳，保留为手工验收。`multi-replica-drill` 进 CI 是因为它测的东西没有替代
