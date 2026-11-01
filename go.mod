@@ -11,7 +11,7 @@ go 1.27
 toolchain go1.27.2
 
 require (
-	github.com/alicebob/miniredis/v2 v2.39.0
+	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/andybalholm/cascadia v1.3.5
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/minio/minio-go/v7 v7.3.0
